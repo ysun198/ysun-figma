@@ -63,7 +63,7 @@ async function refreshCodex() {
 async function hostEnabled() {
   const { stdout } = await execFile(
     codexExecutable(),
-    ['plugin', 'list', '--json'],
+    ['plugin', 'list', '--marketplace', 'figma-local', '--json'],
     { timeout: 30000, maxBuffer: 8 * 1024 * 1024 },
   );
   return JSON.parse(stdout).installed.some(
