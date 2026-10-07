@@ -1,44 +1,44 @@
-# Architecture
+# 架构
 
-One local companion connects Codex to Figma's native Plugin API. The workbench observes that environment; it does not maintain another editable document model.
+一个本地伴随服务连接 Codex 与 Figma 原生 Plugin API。工作台观察同一个执行环境，设计文档由 Figma 持有。
 
-| Boundary                                            | Owns                                                           |
-| --------------------------------------------------- | -------------------------------------------------------------- |
-| `src/native-runtime.js`, `src/script-runtime.js`    | Native execution, event observation and receipt delivery       |
-| `src/design-queries.js`                             | Read-only design queries and export through the Plugin API     |
-| `scripts/execution.cjs`                             | Scheduling, operation transitions and the SQLite ledger        |
-| `scripts/bridge-server.cjs`                         | Authenticated loopback transport and live native clients       |
-| `scripts/mcp.cjs`                                   | MCP tools, validation and adaptation of the shared environment |
-| `scripts/catalog*.cjs`, `src/account-reader.js`     | Account discovery, coverage and verified cloud-file bindings   |
-| `src/app-ui.js`, `src/canvas-view.js`               | File workbench and native raster preview                       |
-| `scripts/installation.cjs`, `scripts/state.cjs`     | Private storage and atomic activation of one current package   |
-| `scripts/updates.cjs`, `scripts/update-service.cjs` | Signed release reception and per-user update lifecycle         |
-| `scripts/codex-refresh.cjs`                         | Official host installation of current metadata and skills      |
+| 模块                                                | 职责                                   |
+| --------------------------------------------------- | -------------------------------------- |
+| `src/native-runtime.js`、`src/script-runtime.js`    | 原生执行、事件观察与回执交付           |
+| `src/design-queries.js`                             | 通过 Plugin API 查询和导出设计         |
+| `scripts/execution.cjs`                             | 调度、操作状态转换与 SQLite 执行记录   |
+| `scripts/bridge-server.cjs`                         | 经认证的本机回环传输与活跃原生客户端   |
+| `scripts/mcp.cjs`                                   | MCP 工具、校验与共享执行环境适配       |
+| `scripts/catalog*.cjs`、`src/account-reader.js`     | 账号目录、覆盖范围与已验证的云文件绑定 |
+| `src/app-ui.js`、`src/canvas-view.js`               | 文件工作台与原生图像预览               |
+| `scripts/installation.cjs`、`scripts/state.cjs`     | 私有存储与当前唯一安装包的原子切换     |
+| `scripts/updates.cjs`、`scripts/update-service.cjs` | 签名发行包接收与每用户更新生命周期     |
+| `scripts/codex-refresh.cjs`                         | 通过官方宿主命令安装当前元数据与技能   |
 
-## Execution facts
+## 执行与恢复
 
-An exact client/file target is required. Ambiguous windows are never selected by title. Cloud bindings require the verified native file URL; account discovery cannot grant native access.
+每次操作需要确切的客户端和文件目标。云文件绑定来自已验证的原生文件 URL；账号目录发现本身不会授予原生访问权限。存在歧义的窗口由 agent 核验，不能按标题猜选。
 
-Each edit carries a stable operation ID and request hash. Pending input lives in memory. SQLite owns operation states and receipts, with WAL and FULL synchronous commits; receipt delivery and terminal state commit together. Duplicate requests return the existing result rather than executing again. A lost connection or restart does not turn uncertainty into success or trigger replay. Inspect and reconcile uncertain outcomes before another edit.
+每次编辑携带稳定的操作 ID 和请求哈希，待执行输入保存在内存中。SQLite 统一管理操作状态和回执，使用 WAL 与 FULL 同步提交；回执交付与终态一起提交。重复请求返回已有结果。连接中断或重启后，结果不确定的操作保留原始状态，由 agent 先检查、再确认结果，随后才能继续编辑。
 
-Reads and edits use the same scheduler. Figma's native events and completed writes invalidate preview freshness. The sidebar keeps the last image and viewport while a fresh whole-page PNG is exported, avoiding competing reads during an edit. Pan and zoom never claim native node selection.
+读取与编辑共用调度器。Figma 原生事件和已完成写入会使预览过期；刷新期间，侧边栏保留上一张图像和视口，等待新的整页 PNG 导出，避免与编辑争用读取。预览中的平移和缩放只作用于图像视口。
 
-## Separate adapters
+## 适配边界
 
-The account-directory adapter reads the current authenticated Figma browser. This private browser implementation can change independently of the native Plugin API. Incomplete coverage is explicit; missing discovery does not disable connected files. File metadata and timestamps come from Figma rather than local approximations.
+账号目录适配器读取当前已登录的 Figma 浏览器。文件浏览器的内部实现可能独立于 Plugin API 变化。覆盖不完整会明确记录；发现能力不可用时，已连接的文件仍可使用。文件元数据和时间戳来自 Figma。
 
-Host theme variables drive the interfaces. Inline icons are licensed Lucide geometry, without a runtime icon dependency. Small shared CSS supplies neutral states and responsive sizing. The host owns conversation input; the plugin supplies factual file/client/page context through MCP Apps.
+界面使用宿主主题变量。内联图标采用有许可证的 Lucide 几何路径，共享 CSS 提供中性状态和自适应尺寸。会话输入由宿主持有，插件通过 MCP Apps 提供确切的文件、客户端和页面上下文。
 
-## Source and distribution
+## 源码与分发
 
-Edit `src/`, `scripts/` and the skills. The build composes the native runtime and bundles the official MCP Apps SDK; generated files exist only in ignored `build/plugin/`. `package.json` is the sole public runtime file allowlist. No private browser state, host bundles or development records belong in a release.
+维护 `src/`、`scripts/` 和技能文件。构建组合原生运行时并打包官方 MCP Apps SDK，生成文件只放在被 Git 忽略的 `build/plugin/` 中。`package.json` 是公开运行文件白名单的唯一来源。私有浏览器状态、宿主应用代码和开发记录留在发行包之外。
 
-One package version identifies immutable release contents. The launcher validates an installed receipt, stages changes atomically and preserves private state. It has no historical runtime archive, former-format importer or alternate operation store.
+一个包版本对应不可变的发行内容。启动器验证安装回执，原子切换包并保留私有状态；本地只保留当前运行包和切换过程中必要的恢复数据。
 
-The publisher signs each release descriptor with Ed25519; clients trust the packaged public key and verify exact archive contents before execution. The per-user receiver waits for the companion's atomic maintenance admission, preventing a new operation from crossing activation. A successful startup probe commits the staged package; rollback and a small recovery journal handle failure or process interruption. The canonical source for host refresh is that verified current package. Temporary staging is owned and removed after activation or recovery.
+发布者使用 Ed25519 签署发布描述。客户端信任随包提供的公钥，执行前验证压缩包内容。接收器取得伴随服务的维护准入后，阻止新操作跨越切换边界。启动探测通过才提交新包，回滚和恢复日志处理失败或进程中断。宿主刷新使用已验证的当前包作为唯一来源，切换或恢复完成后清理暂存目录。
 
-One private `updates/status.json` owns scheduling, HTTP validators, the signed feed and any rejected release. The receiver re-verifies cached signatures before accepting HTTP 304 and revalidates staged releases while waiting for idle. Hourly checks have jitter; startup wakes coalesce, and both host and network failures preserve backoff across restarts. Shutdown cancels network work but lets an in-progress atomic activation finish. GitHub serves static release assets; it is not a push relay. This follows [HTTP conditional request and retry semantics](https://www.rfc-editor.org/rfc/rfc9110.html) and [jittered periodic work](https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/), without adding a desktop-app updater framework to the MCP runtime.
+一个私有 `updates/status.json` 统一持有调度、HTTP 缓存验证信息、签名发布描述和被拒绝的版本。接收器在接受 HTTP 304 前重新验证缓存签名，等待空闲时重新核对候选发行包。每小时检查加入随机错峰，启动唤醒合并，宿主与网络失败的退避状态跨重启保留。关闭接收器会取消网络工作，但已进入原子切换的操作会完成后再清理。GitHub 提供静态发行资源。更新机制遵循 [HTTP 条件请求和重试语义](https://www.rfc-editor.org/rfc/rfc9110.html)与[定时任务错峰实践](https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/)。
 
-Native build identity hashes its actual source. Package-only changes do not rewrite the native entrypoints or restart a connected Figma instance. MCP transports announce the new tool/resource lists; the workbench replaces its HTML through the official MCP Apps resource API and transfers navigation in memory, disposing old observers and pending callbacks. No design state is copied into this handoff.
+原生构建标识来自源码哈希。仅包内容变化时，原生入口文件和已连接的 Figma 实例保持稳定。MCP 连接通知新的工具与资源列表；工作台通过官方 MCP Apps 资源 API 替换 HTML，在内存中转移导航状态，并清理旧观察器和待处理回调。设计数据继续由 Figma 持有。
 
-Run `npm test` and `npm run check` before a release. Pure tests do not establish Desktop behavior: changes to native execution or host integration also need bounded acceptance in the actual editor and packaged runtime. Keep private design evidence outside the source tree.
+发布前运行 `npm test` 和 `npm run check`。原生执行或宿主集成变更还需要实际编辑器与打包运行时的针对性验收。私有设计验收资料保存在源码树之外。

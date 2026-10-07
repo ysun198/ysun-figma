@@ -1,26 +1,26 @@
-# Installation
+# 安装与更新
 
-Give Codex the release ZIP and ask it to install and connect. These details are for agents and maintainers.
+把发行包 ZIP 交给 Codex，让它安装并连接。以下细节供 agent 和维护者使用。
 
-Extract the ZIP to a stable directory and verify its supplied `SHA256SUMS`. Register that directory as a local marketplace and enable the plugin:
+将 ZIP 解压到稳定目录，核对随包提供的 `SHA256SUMS`，然后注册本地插件市场并启用插件：
 
 ```sh
 codex plugin marketplace add /absolute/extracted/directory --json
 codex plugin add figma-plugin-local@figma-local --json
 ```
 
-Preserve unrelated plugins and configuration. If this marketplace was registered at a different path, remove only its old registration with `codex plugin marketplace remove figma-local --json` before registering the new path.
+保留其他插件和配置。如果 `figma-local` 已注册到不同目录，先用 `codex plugin marketplace remove figma-local --json` 移除它自己的旧注册，再注册新路径。
 
-Call `figma_connect`. With native app automation, import the returned stable manifest in Figma Desktop if missing, run **ysun figma → Connect**, and enter the one-time code. Enable Figma's **Plugins → Development → Hot reload plugin** for this imported plugin. Verify the exact file and client with `figma_status`. Reuse a working authorization; reopened plugins restore it automatically. Cloud-file bindings require the actual open file URL, never a matching title.
+调用 `figma_connect`。借助原生应用自动化，在 Figma 桌面端导入返回的稳定 manifest（如果尚未导入），运行 **ysun figma → Connect**，输入一次性配对码。为该开发插件开启 Figma 的 **Plugins → Development → Hot reload plugin**。用 `figma_status` 验证确切的文件和客户端；已有有效授权应复用，重新打开插件后会自动恢复。云文件绑定必须来自实际打开的文件 URL，不能按标题匹配。
 
-The native Plugin API requires an open file and running plugin; it has no headless installation or account-wide editing endpoint. Figma Desktop must be authenticated. Account discovery additionally needs authenticated ego-browser. When automation is unavailable, report the specific remaining action.
+原生 Plugin API 需要已打开的文件和正在运行的插件，没有无界面安装或账号全量编辑接口。Figma 桌面端需要登录；账号目录发现还需要已登录的 ego-browser。自动化不可用时，明确说明剩余的具体操作。
 
-## Updates
+## 自动更新
 
-The installed launcher registers the per-user macOS LaunchAgent `com.ysun.figma.updates`. It checks at startup, then every 60–75 minutes, including while Codex is closed. Opening another conversation wakes it, with a 15-minute cooldown between healthy checks. Conditional HTTP requests reuse a verified signed descriptor; offline failures use exponential backoff with jitter, and server `Retry-After` deadlines survive restarts. Offline operation continues with the last verified code. Disabling or uninstalling this plugin stops the receiver when it next checks the host.
+安装后的启动器注册当前用户的 macOS LaunchAgent `com.ysun.figma.updates`。接收器在启动时检查更新，之后每 60–75 分钟检查一次，Codex 关闭时也会运行。打开新会话会唤醒接收器；两次正常检查之间有 15 分钟冷却时间。HTTP 条件请求复用已验证签名的发布描述，网络失败采用带随机错峰的指数退避，服务端 `Retry-After` 指定的等待时间会跨进程重启保留。离线时继续使用最后验证通过的代码。禁用或卸载插件后，接收器会在下一次宿主检查时停止。
 
-The receiver verifies an Ed25519-signed release descriptor, archive hash and exact public file allowlist. It waits for queued/running operations and revalidates the release before retrying activation, so a withdrawn or superseded update cannot remain queued. It stages one current package, probes the new companion and rolls back on failure. A failed startup probe rejects that exact archive until the publisher supplies a different release. Private authorization, receipts, catalog and exports are preserved. Normal concurrent starts only verify files. Host metadata and skills refresh through the official `codex plugin add` command; active transports notify capability changes and open workbenches load the current UI through the MCP Apps resource bridge.
+接收器验证 Ed25519 签名、压缩包哈希和精确的公开文件白名单。排队或执行中的操作会阻止切换；重试切换前会重新核对发布状态，清理已撤回或被新版替代的候选更新。新包原子切换后执行启动探测，失败则回滚；启动探测失败的压缩包会被拒绝，等待发布者提供不同的发行包。私有授权、回执、目录和导出文件保留。正常并发启动只验证文件。宿主元数据和技能通过官方 `codex plugin add` 命令刷新；活跃连接通知工具与资源变化，已打开的工作台通过 MCP Apps 资源桥加载当前界面。
 
-Native build identity follows code content, independently of the package version. A UI or skill update leaves an unchanged native kernel running. An actual kernel change restarts through [Figma's hot reloading](https://developers.figma.com/docs/plugins/plugin-quickstart-guide/#hot-reloading), restoring saved authorization. A new native instance must renew its cloud binding from the actual open file URL; agents perform that verification rather than carrying an unverified identity across instances. Re-import the stable manifest only when permissions or editor types actually changed.
+原生构建标识由代码内容决定，与包版本独立。界面或技能更新不会重启未变化的原生内核。实际内核变更通过 [Figma 热重载](https://developers.figma.com/docs/plugins/plugin-quickstart-guide/#hot-reloading)重启并恢复授权。新原生实例必须从实际打开的文件 URL 重新验证云文件绑定，由 agent 完成核验。权限或编辑器类型发生变化时，重新导入稳定 manifest。
 
-A source push alone does not update users. Maintainers choose publication with the **Publish release** workflow; uploads are drafts until all signed assets are ready. [OpenAI's local-plugin guide](https://developers.openai.com/plugins/build/plugins#install-a-local-plugin-manually) documents the official host installation command.
+源码提交本身不会更新用户的插件。维护者通过 **Publish release** 工作流选择发布；所有签名资源准备完成后，草稿发行版才会公开。[OpenAI 本地插件指南](https://developers.openai.com/plugins/build/plugins#install-a-local-plugin-manually)说明了官方宿主安装命令。

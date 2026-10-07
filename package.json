@@ -35,6 +35,7 @@
     "docs/INSTALL.md",
     "docs/PRIVACY.md",
     "docs/ARCHITECTURE.md",
+    "README.en.md",
     "LICENSE",
     "NOTICE.md",
     "scripts/updates.cjs",
@@ -42,8 +43,8 @@
     "scripts/codex-refresh.cjs"
   ],
   "scripts": {
-    "format": "prettier --write src scripts test test-support docs .github/workflows README.md NOTICE.md eslint.config.cjs package.json plugin.json manifest.json mcp.json .prettierrc.json",
-    "format:check": "prettier --check src scripts test test-support docs .github/workflows README.md NOTICE.md eslint.config.cjs package.json plugin.json manifest.json mcp.json .prettierrc.json",
+    "format": "prettier --write src scripts test test-support docs .github/workflows README*.md NOTICE.md eslint.config.cjs package.json plugin.json manifest.json mcp.json .prettierrc.json",
+    "format:check": "prettier --check src scripts test test-support docs .github/workflows README*.md NOTICE.md eslint.config.cjs package.json plugin.json manifest.json mcp.json .prettierrc.json",
     "lint": "eslint src scripts test test-support eslint.config.cjs --max-warnings 0",
     "build": "node scripts/build.cjs",
     "pretest": "node scripts/build.cjs",

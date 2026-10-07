@@ -1,17 +1,17 @@
-# Privacy and access
+# 隐私与访问
 
-The plugin has no analytics, advertising, remote relay, account service or bundled API key. The companion listens on IPv4 loopback `127.0.0.1:38491`; another computer cannot connect directly. Figma handles cloud documents under its own service and permissions. MCP hosts may send tool inputs and results to their model service according to their settings.
+插件不包含分析追踪、广告、远程中继、账号服务或预置 API 密钥。本地伴随服务监听 IPv4 回环地址 `127.0.0.1:38491`，其他电脑无法直接连接。Figma 按自身服务和权限管理云端文档；MCP 宿主可能依照其设置，将工具输入和结果发送给模型服务。
 
-A five-minute, one-use pairing code authorizes trusted local scripts to execute the native Plugin API in one file. The native credential cannot submit jobs or read another client's data; the MCP adapter has a separate private administrator credential. Grants expire after 90 days without renewal, sessions after eight hours. **Forget authorization** revokes the saved grant.
+一次性配对码有效期为五分钟，授权可信本地脚本在一个文件中执行原生 Plugin API。原生凭证不能提交任务或读取其他客户端的数据；MCP 适配器持有独立的私有管理员凭证。授权未续期时在 90 天后过期，会话有效期为八小时。**Forget authorization** 会撤销已保存的授权。
 
-Figma's local `clientStorage` holds the grant. A random, non-secret identity in document plugin data preserves local identity across reopening; no credential is written to the document. Copied identities and matching titles cannot establish cloud-file bindings. Each live binding requires the verified file URL.
+Figma 的本地 `clientStorage` 保存授权。文档插件数据中的随机非秘密标识用于重新打开后的本地身份恢复，凭证不会写入设计文档。复制出的标识或相同标题不能建立云文件绑定；每次活跃绑定都需要验证文件 URL。
 
-Private code, authorization, operation records, catalog and exports live in `~/.canvas-bridge/`. `FIGMA_PLUGIN_STATE_DIR` selects an isolated absolute directory. Directories use 0700 and private files 0600 on macOS. The companion stores grant hashes; its administrator token rotates on startup.
+私有代码、授权、执行记录、目录和导出文件保存在 `~/.canvas-bridge/`。`FIGMA_PLUGIN_STATE_DIR` 可以指定隔离的绝对目录。macOS 上目录权限为 0700，私有文件为 0600。伴随服务保存授权哈希，管理员令牌在启动时轮换。
 
-Operation receipts can contain design data, file/page names, console messages and export metadata. Completed receipt details expire after seven days or the 200-record limit. Compact identities and final states remain to prevent replay; uncertain outcomes remain until inspected and reconciled. Source scripts and arguments are not persisted. Unused input assets expire after 24 hours. Do not delete state with pending or uncertain operations.
+操作回执可能包含设计数据、文件或页面名称、控制台消息和导出元数据。已完成回执的详细内容按七天保留期限或 200 条数量上限清理；精简的操作标识与终态保留，用于防止重复执行。不确定结果保留至检查和确认完成。源码脚本和参数不会持久化，未使用的输入资源在 24 小时后过期。存在待执行或不确定操作时，不应删除状态目录。
 
-The workbench receives tool data through the MCP App bridge, without pairing or administrator credentials. Its page preview uses native PNG exports, not an embedded Figma website. Only view and sort preferences are stored in widget localStorage. The workbench updates factual design context but does not send user messages.
+工作台通过 MCP App 桥接收工具数据，不接收配对凭证或管理员凭证。页面预览使用原生 PNG 导出。组件 localStorage 仅保存视图和排序偏好。工作台更新确切的设计上下文，不发送用户消息。
 
-Account discovery uses the authenticated Figma browser without copying session cookies or tokens into the companion or widget. The private catalog contains account/file identifiers, metadata, verified bindings and coverage. Signed thumbnail links are access-bearing metadata. Account switches clear the prior directory; incomplete scans preserve known files and report their coverage honestly.
+账号目录发现读取已登录的 Figma 浏览器，不会把会话 Cookie 或令牌复制到伴随服务或工作台。私有目录保存账号和文件标识、元数据、已验证的绑定与覆盖范围；签名缩略图链接带有访问能力，应作为私有元数据处理。切换账号会清除前一个账号的目录；扫描不完整时保留已知文件，并记录实际覆盖情况。
 
-Release packages exclude private state, credentials, Git history, personal designs and development records. A per-user macOS LaunchAgent checks the public GitHub release feed at startup and about hourly, and downloads only publisher-signed updates. Recent checks coalesce; failures back off. Those requests contain no Figma credentials, document data or operation records. Updates replace one current package and preserve private data. Disabling or uninstalling the plugin stops this receiver on its next host check. Its plist lives in `~/Library/LaunchAgents/com.ysun.figma.updates.plist`; update state and errors live in the private `updates/` directory.
+发行包不包含私有状态、凭证、Git 历史、个人设计或开发记录。当前用户的 macOS LaunchAgent 在启动时和后台约每小时检查公开 GitHub 发布源，仅下载发布者签名的更新；近期检查合并，失败自动退避。请求不携带 Figma 凭证、文档数据或执行记录。更新替换当前唯一运行包，保留私有数据。禁用或卸载插件后，接收器在下一次宿主检查时停止。服务配置位于 `~/Library/LaunchAgents/com.ysun.figma.updates.plist`，更新状态与错误记录位于私有 `updates/` 目录。

@@ -1,10 +1,10 @@
-# Third-party notices
+# 第三方声明
 
-This project is independently developed. Figma and Codex are products of their respective owners; this project is not affiliated with or endorsed by them. The MIT license does not grant trademark rights.
+本项目独立开发，与 Figma 或 Codex 的产品所有者无隶属或背书关系。MIT 许可证不授予商标使用权。以下许可证文本保留原文。
 
-## Interface icons
+## 界面图标
 
-The inline interface icons in `src/app.template.html` and `src/codex.css` come from [Lucide](https://github.com/lucide-icons/lucide/tree/1fae58d0a9c661a338036838caf3399b5507bab6), commit `1fae58d0a9c661a338036838caf3399b5507bab6`. Their stroke width follows the interface's scale. No Codex application code or proprietary icon paths are distributed.
+`src/app.template.html` 和 `src/codex.css` 中的内联界面图标来自 [Lucide](https://github.com/lucide-icons/lucide/tree/1fae58d0a9c661a338036838caf3399b5507bab6)，固定提交为 `1fae58d0a9c661a338036838caf3399b5507bab6`。描边宽度随界面尺寸调整。发行内容不包含 Codex 应用代码或专有图标路径。
 
 ISC License
 
@@ -24,7 +24,7 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 ---
 
-The following Lucide icons are derived from the Feather project:
+以下 Lucide 图标衍生自 Feather 项目：
 
 airplay, alert-circle, alert-octagon, alert-triangle, aperture, arrow-down-circle, arrow-down-left, arrow-down-right, arrow-down, arrow-left-circle, arrow-left, arrow-right-circle, arrow-right, arrow-up-circle, arrow-up-left, arrow-up-right, arrow-up, at-sign, calendar, cast, check, chevron-down, chevron-left, chevron-right, chevron-up, chevrons-down, chevrons-left, chevrons-right, chevrons-up, circle, clipboard, clock, code, columns, command, compass, corner-down-left, corner-down-right, corner-left-down, corner-left-up, corner-right-down, corner-right-up, corner-up-left, corner-up-right, crosshair, database, divide-circle, divide-square, dollar-sign, download, external-link, feather, frown, hash, headphones, help-circle, info, italic, key, layout, life-buoy, link-2, link, loader, lock, log-in, log-out, maximize, meh, minimize, minimize-2, minus-circle, minus-square, minus, monitor, moon, more-horizontal, more-vertical, move, music, navigation-2, navigation, octagon, pause-circle, percent, plus-circle, plus-square, plus, power, radio, rss, search, server, share, shopping-bag, sidebar, smartphone, smile, square, table-2, tablet, target, terminal, trash-2, trash, triangle, tv, type, upload, x-circle, x-octagon, x-square, x, zoom-in, zoom-out
 
@@ -52,8 +52,8 @@ SOFTWARE.
 
 ## Figma Plugin API
 
-The public API declaration, pinned source and MIT license are in `skills/ysun-figma/references/`: `plugin-api.d.ts`, `API-SOURCE.json` and `PLUGIN-API-LICENSE`.
+公开 API 声明、固定版本来源和 MIT 许可证位于 `skills/ysun-figma/references/`，对应文件为 `plugin-api.d.ts`、`API-SOURCE.json` 和 `PLUGIN-API-LICENSE`。
 
-## Bundled dependencies
+## 打包依赖
 
-The build collects the licenses of dependencies actually bundled into the MCP App in `THIRD_PARTY_NOTICES.md`. Release packages also include the license and provenance of the bundled official Node.js runtime.
+构建将实际打包进 MCP App 的依赖许可证收集到 `THIRD_PARTY_NOTICES.md`。发行包同时包含官方 Node.js 运行时的许可证和来源信息。
