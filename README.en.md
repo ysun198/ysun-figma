@@ -6,15 +6,13 @@ Read, edit and export Figma files from Codex through the local, native Plugin AP
 
 ## Use
 
-Give Codex the [latest release ZIP](https://github.com/ysun198/ysun-figma/releases/latest) and ask it to install and connect. The macOS package includes its Node.js runtime. Codex can import, launch and pair the native plugin through available app automation; saved authorization reconnects automatically.
+Currently available for macOS. Install Codex and Figma Desktop, then sign in to your Figma account.
 
-Published releases arrive automatically, without an update button. A local receiver checks at startup and about hourly in the background, verifies the publisher's signature and activates healthy code while execution is idle. Recent checks are coalesced; network failures back off automatically. Authorization, operation records and designs stay local. Ordinary source pushes do not publish an update.
+1. **Install the plugin**: Download the ZIP from the [latest release](https://github.com/ysun198/ysun-figma/releases/latest), then tell Codex: “Install the ysun figma plugin I just downloaded and connect it to Figma.”
+2. **Change your design**: Open the file in Figma Desktop and describe what you want in your Codex conversation. For example: “Use ysun figma to make this page dark and add a login dialog.” Changes are written directly to that Figma file.
+3. **See the result**: Open ysun figma in the Codex sidebar and select the file. The preview updates as your design changes. You can also view the result in Figma Desktop.
 
-Keep Figma Desktop and the native plugin running. Use your existing Codex conversation for commands, and open the sidebar workbench for name search, card/list views and live page previews. The preview preserves pan and zoom while native changes arrive. Editing, layer selection and prototype playback happen in Figma Desktop; the sidebar is a raster preview, not an embedded editor.
-
-Account discovery uses the authenticated Figma browser through ego-browser. It depends on Figma's file-browser implementation, not a public account-list API. Without that adapter, connected native files remain usable and the saved directory remains visible.
-
-Nine focused skills cover files, design, prototypes, FigJam, Slides, design systems, motion and design-to-code. They share one native execution environment and a pinned, MIT-licensed Figma API reference.
+Keep Figma Desktop and its ysun figma plugin running while you work. Use Figma Desktop for manual editing and prototype playback. Future releases install automatically.
 
 ## Develop
 
