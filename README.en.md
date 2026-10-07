@@ -2,7 +2,9 @@
 
 [简体中文](README.md) | **English**
 
-Read, edit and export Figma designs in Codex. Use it through chat or `/` commands, or open its dedicated sidebar workbench.
+**Tell Codex what you have in mind. Let it build your design in Figma.**
+
+Start with a message or a `/` command, or open the plugin in the Codex sidebar.
 
 Copy this into Codex:
 
