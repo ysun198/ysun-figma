@@ -4,7 +4,13 @@
 
 在 Codex 里读取、修改和导出 Figma 设计，侧边栏实时查看预览。
 
-把[这个仓库的链接](https://github.com/ysun198/ysun-figma)发给 Codex，说：“帮我安装 ysun figma，并连接 Figma。”后续更新会自动安装。
+复制这句话发给 Codex：
+
+```text
+帮我安装 ysun figma：https://github.com/ysun198/ysun-figma
+```
+
+后续更新会自动安装。
 
 目前支持 macOS，需要 Figma 桌面端。免费账号可用，本地操作不消耗官方远程 MCP 额度；Figma 的文件权限和套餐限制仍然适用。
 

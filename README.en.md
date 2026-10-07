@@ -4,7 +4,13 @@
 
 Read, edit and export Figma designs in Codex, with a live preview in the sidebar.
 
-Send Codex [this repository's URL](https://github.com/ysun198/ysun-figma) and ask: “Install ysun figma and connect it to Figma.” Future releases install automatically.
+Copy this into Codex:
+
+```text
+Install ysun figma: https://github.com/ysun198/ysun-figma
+```
+
+Future releases install automatically.
 
 Currently available for macOS and requires Figma Desktop. Free accounts are supported. Local operations do not consume the official remote MCP quota; Figma's file permissions and plan restrictions still apply.
 
