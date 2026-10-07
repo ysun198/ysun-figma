@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ysun figma</title>
+    <style>
+      /* CODEX_STYLES */
+      body {
+        padding: calc(var(--unit) * 5);
+      }
+      .file {
+        display: flex;
+        flex-direction: column;
+        gap: calc(var(--unit) / 2);
+        margin-bottom: calc(var(--unit) * 4);
+      }
+      #target-file {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        font-weight: var(--medium);
+      }
+      small,
+      .status {
+        color: var(--muted);
+        font-size: var(--sm);
+      }
+      label {
+        display: block;
+      }
+      input {
+        width: 100%;
+        min-height: var(--field-size);
+        margin: calc(var(--unit) * 2) 0;
+        padding: 0 calc(var(--unit) * 3);
+        border: var(--stroke) solid var(--search-line);
+        border-radius: var(--radius);
+        background: transparent;
+      }
+      input:focus {
+        outline: calc(var(--stroke) * 2) solid var(--ring);
+        outline-offset: calc(var(--stroke) * 2);
+      }
+      .status {
+        padding: calc(var(--unit) * 3) 0;
+        overflow-wrap: anywhere;
+        white-space: pre-line;
+      }
+      .status[data-tone='error'] {
+        color: var(--color-text-danger, var(--fg));
+      }
+      .status[data-tone='success'] {
+        color: var(--color-text-success, var(--fg));
+      }
+      footer {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        gap: calc(var(--unit) * 2);
+        margin-top: calc(var(--unit) * 2);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="file">
+      <span id="target-file">正在连接…</span><small id="target-page"></small>
+    </div>
+    <div id="pair-form">
+      <label for="pair-code">Codex 连接码</label
+      ><input
+        id="pair-code"
+        type="password"
+        autocomplete="off"
+        spellcheck="false"
+        placeholder="由 Codex 自动填写"
+      /><button id="pair" class="action">连接</button>
+    </div>
+    <div id="status" class="status" role="status" aria-live="polite">
+      正在连接…
+    </div>
+    <div>
+      <button id="resume" class="button" hidden>恢复连接</button
+      ><button id="retry-receipt" class="button" hidden>重试发送结果</button>
+    </div>
+    <footer>
+      <button id="close" class="button" data-testid="close">关闭</button
+      ><button id="disconnect" class="button" hidden>撤销授权</button>
+    </footer>
+    <!-- BRIDGE_SCRIPT -->
+  </body>
+</html>

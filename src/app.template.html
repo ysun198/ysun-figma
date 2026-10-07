@@ -1,0 +1,733 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ysun figma</title>
+    <style>
+      /* CODEX_STYLES */
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        overscroll-behavior: none;
+      }
+      main {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        width: 100%;
+        height: 100%;
+        min-height: 0;
+        padding: calc(
+            var(--unit) * 5 +
+              var(--safe-area-top, env(safe-area-inset-top, 0px))
+          )
+          calc(
+            var(--unit) * 5 +
+              var(--safe-area-right, env(safe-area-inset-right, 0px))
+          )
+          calc(
+            var(--unit) * 5 +
+              var(--safe-area-bottom, env(safe-area-inset-bottom, 0px))
+          )
+          calc(
+            var(--unit) * 5 +
+              var(--safe-area-left, env(safe-area-inset-left, 0px))
+          );
+        overflow: hidden;
+      }
+      #toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: calc(var(--unit) * 2) calc(var(--unit) * 1.5);
+        flex: none;
+        position: relative;
+        min-width: 0;
+        margin-bottom: calc(var(--unit) * 5);
+        user-select: none;
+      }
+      #location {
+        display: flex;
+        align-items: center;
+        gap: calc(var(--unit) * 2);
+        flex: 1;
+        min-width: 0;
+      }
+      #file-name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      #search-field {
+        display: flex;
+        align-items: center;
+        gap: calc(var(--unit) * 2);
+        flex: 0 1 15rem;
+        min-width: 0;
+        min-height: var(--field-size);
+        padding: 0 calc(var(--unit) * 3);
+        border: var(--stroke) solid var(--search-line);
+        border-radius: var(--radius);
+        background: transparent;
+      }
+      #search-field > svg {
+        color: var(--muted);
+      }
+      #search {
+        flex: 1;
+        width: 0;
+        min-width: 0;
+        padding: 0;
+        border: 0;
+        outline: 0;
+        background: transparent;
+        font-size: var(--sm);
+        line-height: var(--line-sm);
+      }
+      #search::placeholder {
+        color: var(--muted);
+      }
+      #search::-webkit-search-cancel-button {
+        display: none;
+      }
+      #clear-search {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex: none;
+        width: var(--glyph-size);
+        height: var(--glyph-size);
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: var(--muted);
+      }
+      #file-actions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: flex-end;
+        gap: calc(var(--unit) * 1.5);
+        min-width: 0;
+        margin-left: auto;
+      }
+      #view-switch {
+        display: flex;
+        flex: none;
+        gap: inherit;
+      }
+      #desktop {
+        color: var(--fg);
+      }
+      #notice {
+        display: flex;
+        align-items: center;
+        gap: calc(var(--unit) * 3);
+        position: absolute;
+        z-index: 10;
+        bottom: calc(
+          var(--unit) * 5 +
+            var(--safe-area-bottom, env(safe-area-inset-bottom, 0px))
+        );
+        left: 50%;
+        transform: translateX(-50%);
+        width: max-content;
+        max-width: calc(100% - var(--unit) * 10);
+        padding: calc(var(--unit) * 2) calc(var(--unit) * 3);
+        border: var(--stroke) solid var(--line);
+        border-radius: var(--radius-xl);
+        corner-shape: var(--corner-shape);
+        background: var(--bg);
+        color: var(--fg);
+        box-shadow: var(
+          --shadow-md,
+          0 var(--unit) calc(var(--unit) * 3) #0000001a
+        );
+        font-size: var(--md);
+        line-height: var(--line-md);
+        user-select: text;
+        transition:
+          opacity 0.4s,
+          transform 0.4s,
+          display 0.4s allow-discrete;
+      }
+      #notice[hidden] {
+        opacity: 0;
+        transform: translate(-50%, 100%);
+      }
+      @starting-style {
+        #notice {
+          opacity: 0;
+          transform: translate(-50%, 100%);
+        }
+      }
+      #notice-text {
+        display: flex;
+        align-items: center;
+        min-width: 0;
+        min-height: var(--compact-size);
+        overflow-wrap: anywhere;
+        font-weight: var(--medium);
+      }
+      #dismiss-notice {
+        width: var(--compact-size);
+        min-height: var(--compact-size);
+        padding: 0;
+        border: 0;
+        border-radius: var(--radius);
+        corner-shape: round;
+      }
+      #workspace {
+        flex: 1;
+        min-height: 0;
+        min-width: 0;
+        overflow: auto;
+        overscroll-behavior: contain;
+        scrollbar-gutter: stable;
+        padding: var(--unit) var(--unit) calc(var(--unit) * 2);
+      }
+      #workspace[data-view='list'] {
+        display: grid;
+        align-content: start;
+        grid-template-columns: var(--field-size) minmax(15ch, 1fr) repeat(
+            3,
+            max-content
+          );
+        column-gap: calc(var(--unit) * 4);
+      }
+      #list-header {
+        display: grid;
+        grid-column: 1 / -1;
+        grid-template-columns: subgrid;
+        align-items: center;
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        min-height: calc(var(--unit) * 10.5);
+        padding: calc(var(--unit) * 2);
+        border-bottom: var(--stroke) solid var(--subtle-line);
+        background: var(--bg);
+        color: var(--muted);
+        font-size: var(--sm);
+        line-height: var(--line-sm);
+        user-select: none;
+      }
+      #list-header > span {
+        grid-column: span 2;
+      }
+      #list-header button {
+        display: flex;
+        align-items: center;
+        gap: var(--unit);
+        min-width: 0;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: var(--muted);
+        text-align: left;
+        font-size: inherit;
+        white-space: nowrap;
+      }
+      #list-header button[aria-pressed='true'] {
+        color: var(--fg);
+      }
+      #list-header svg {
+        visibility: hidden;
+      }
+      #list-header button[aria-pressed='true'] svg {
+        visibility: visible;
+      }
+      #list-header button[data-direction='asc'] svg {
+        transform: rotate(180deg);
+      }
+      #gallery {
+        display: grid;
+        align-content: start;
+        grid-template-columns: repeat(auto-fill, minmax(min(100%, 12rem), 1fr));
+        gap: calc(var(--unit) * 4);
+      }
+      .card {
+        display: block;
+        position: relative;
+        min-width: 0;
+        overflow: hidden;
+        padding: 0;
+        text-align: left;
+        border: var(--stroke) solid var(--subtle-line);
+        border-radius: var(--radius-2xl);
+        corner-shape: var(--corner-shape);
+        background: var(--surface);
+        box-shadow: var(
+          --shadow-sm,
+          0 var(--unit) calc(var(--unit) * 4) #0000000d
+        );
+        user-select: none;
+      }
+      .card::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background: var(--card-overlay);
+        opacity: 0;
+        pointer-events: none;
+      }
+      .card:focus-visible {
+        outline-color: var(--fg);
+      }
+      .card:focus-visible::after {
+        opacity: 1;
+      }
+      .thumbnail {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        aspect-ratio: 16 / 10;
+        overflow: hidden;
+        background: var(--under);
+      }
+      .thumbnail img {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+      }
+      .thumbnail > span {
+        color: var(--muted);
+        font-size: var(--xs);
+      }
+      .caption {
+        display: flex;
+        flex-direction: column;
+        gap: calc(var(--unit) / 2);
+        min-width: 0;
+        padding: calc(var(--unit) * 3.5) calc(var(--unit) * 5);
+      }
+      .name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: var(--sm);
+        font-weight: var(--medium);
+        line-height: var(--line-sm);
+      }
+      .lastViewedAt,
+      .updatedAt,
+      .createdAt {
+        color: var(--muted);
+        font-size: var(--xs);
+        white-space: nowrap;
+      }
+      .lastViewedAt,
+      .createdAt,
+      .updatedAt[data-empty='true'] {
+        display: none;
+      }
+      .updatedAt::after {
+        content: '更新';
+      }
+      #gallery[data-view='list'] {
+        grid-column: 1 / -1;
+        grid-template-columns: subgrid;
+        row-gap: 0;
+      }
+      #gallery[data-view='list'] .card {
+        display: grid;
+        grid-column: 1 / -1;
+        grid-template-columns: subgrid;
+        align-items: center;
+        border: 0;
+        border-radius: var(--radius-xl);
+        padding: calc(var(--unit) * 1.25) calc(var(--unit) * 2);
+        background: transparent;
+        box-shadow: none;
+      }
+      #gallery[data-view='list'] .card::after {
+        display: none;
+      }
+      #gallery[data-view='list'] .thumbnail {
+        width: var(--field-size);
+        height: var(--field-size);
+        border: var(--stroke) solid var(--line);
+        border-radius: var(--radius-lg);
+        corner-shape: var(--corner-shape);
+        background: var(--bg);
+      }
+      #gallery[data-view='list'] .thumbnail > span {
+        display: none;
+      }
+      #gallery[data-view='list'] .caption {
+        display: contents;
+      }
+      #gallery[data-view='list'] .lastViewedAt,
+      #gallery[data-view='list'] .updatedAt,
+      #gallery[data-view='list'] .createdAt {
+        display: block;
+      }
+      #gallery[data-view='list'] .updatedAt::after {
+        content: none;
+      }
+      #gallery[data-view='list'] .name {
+        font-size: var(--md);
+        font-weight: var(--normal);
+      }
+      #gallery[data-view='list'] .lastViewedAt,
+      #gallery[data-view='list'] .updatedAt,
+      #gallery[data-view='list'] .createdAt {
+        font-size: var(--sm);
+        line-height: var(--line-sm);
+      }
+      #empty {
+        display: flex;
+        grid-column: 1 / -1;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        min-height: 100%;
+        text-align: center;
+        padding: calc(var(--unit) * 6) calc(var(--unit) * 4);
+        color: var(--muted);
+      }
+      #empty p {
+        max-width: 40ch;
+        margin: 0 0 calc(var(--unit) * 4);
+        text-wrap: balance;
+      }
+      #viewer {
+        display: flex;
+        flex-direction: column;
+        flex: 1;
+        min-height: 0;
+        min-width: 0;
+        overflow: hidden;
+        border: var(--stroke) solid var(--subtle-line);
+        border-radius: var(--radius-2xl);
+        corner-shape: var(--corner-shape);
+        background: var(--under);
+      }
+      #canvas-toolbar {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: calc(var(--unit) * 1.5);
+        flex: none;
+        padding: calc(var(--unit) * 2);
+        border-bottom: var(--stroke) solid var(--subtle-line);
+        background: var(--bg);
+      }
+      #canvas-page,
+      #canvas-session {
+        min-width: 0;
+        max-width: 100%;
+        flex: 0 1 auto;
+        color: var(--fg);
+        font: inherit;
+      }
+      #canvas-controls {
+        display: flex;
+        align-items: center;
+        gap: inherit;
+        margin-left: auto;
+      }
+      #canvas-viewport {
+        position: relative;
+        flex: 1;
+        min-height: 0;
+        min-width: 0;
+        overflow: hidden;
+        padding: calc(var(--unit) * 4);
+        touch-action: none;
+        user-select: none;
+        cursor: grab;
+      }
+      #canvas-viewport[data-dragging='true'] {
+        cursor: grabbing;
+      }
+      #canvas-viewport:focus-visible {
+        outline: var(--stroke) solid var(--ring);
+        outline-offset: calc(var(--stroke) * -1);
+      }
+      #canvas-image {
+        position: absolute;
+        top: 0;
+        left: 0;
+        max-width: none;
+        transform-origin: 0 0;
+        pointer-events: none;
+      }
+      #canvas-status {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: calc(var(--unit) * 3);
+        padding: calc(var(--unit) * 6);
+        color: var(--muted);
+        cursor: default;
+        text-align: center;
+      }
+      @media (hover: hover) {
+        #clear-search:hover,
+        #list-header button:hover {
+          color: var(--fg);
+        }
+        .card:hover::after {
+          opacity: 1;
+        }
+        #gallery[data-view='list'] .card:hover {
+          background: var(--hover);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #notice {
+          transition: none;
+        }
+        @starting-style {
+          #notice {
+            opacity: 1;
+            transform: translateX(-50%);
+          }
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header id="toolbar">
+        <nav id="location" aria-label="文件" hidden>
+          <button
+            id="back"
+            class="button icon-button"
+            type="button"
+            aria-label="返回文件"
+            title="返回文件"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m15 18-6-6 6-6" />
+            </svg>
+          </button>
+          <span id="file-name"></span>
+        </nav>
+        <div id="search-field">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m21 21-4.34-4.34" />
+            <circle cx="11" cy="11" r="8" /></svg
+          ><input
+            id="search"
+            type="search"
+            placeholder="搜索项目"
+            aria-label="按项目名称搜索"
+            autocomplete="off"
+          /><button
+            id="clear-search"
+            class="icon-button"
+            type="button"
+            aria-label="清空搜索"
+            title="清空搜索"
+            hidden
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="10" />
+              <path d="m15 9-6 6" />
+              <path d="m9 9 6 6" />
+            </svg>
+          </button>
+        </div>
+        <div id="file-actions">
+          <div id="view-switch" role="group" aria-label="显示方式">
+            <button
+              id="view-cards"
+              class="button icon-button"
+              type="button"
+              aria-label="卡片视图"
+              title="卡片"
+              aria-pressed="true"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <rect width="7" height="7" x="3" y="3" rx="1" />
+                <rect width="7" height="7" x="14" y="3" rx="1" />
+                <rect width="7" height="7" x="14" y="14" rx="1" />
+                <rect width="7" height="7" x="3" y="14" rx="1" />
+              </svg>
+            </button>
+            <button
+              id="view-list"
+              class="button icon-button"
+              type="button"
+              aria-label="列表视图"
+              title="列表"
+              aria-pressed="false"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M3 5h.01" />
+                <path d="M3 12h.01" />
+                <path d="M3 19h.01" />
+                <path d="M8 5h13" />
+                <path d="M8 12h13" />
+                <path d="M8 19h13" />
+              </svg>
+            </button>
+          </div>
+          <button
+            id="desktop"
+            class="button"
+            type="button"
+            aria-label="打开 Figma 桌面端"
+            title="打开 Figma 桌面端"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <rect width="20" height="14" x="2" y="3" rx="2" />
+              <line x1="8" x2="16" y1="21" y2="21" />
+              <line x1="12" x2="12" y1="17" y2="21" /></svg
+            ><span>打开 Figma 桌面端</span>
+          </button>
+        </div>
+      </header>
+      <section id="workspace" aria-label="文件区域" tabindex="0">
+        <div id="list-header" role="group" aria-label="项目排序" hidden>
+          <span>名称</span>
+          <button
+            id="sort-lastViewedAt"
+            type="button"
+            aria-label="按上次浏览排序"
+            aria-pressed="false"
+          >
+            <span>上次浏览</span
+            ><svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 5v14" />
+              <path d="m19 12-7 7-7-7" />
+            </svg>
+          </button>
+          <button
+            id="sort-updatedAt"
+            type="button"
+            aria-label="按上次修改排序"
+            aria-pressed="true"
+          >
+            <span>上次修改</span
+            ><svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 5v14" />
+              <path d="m19 12-7 7-7-7" />
+            </svg>
+          </button>
+          <button
+            id="sort-createdAt"
+            type="button"
+            aria-label="按创建时间排序"
+            aria-pressed="false"
+          >
+            <span>创建时间</span
+            ><svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 5v14" />
+              <path d="m19 12-7 7-7-7" />
+            </svg>
+          </button>
+        </div>
+        <div id="gallery" aria-label="文件预览" data-view="cards"></div>
+        <section id="empty" role="status">
+          <p id="empty-text">正在载入…</p>
+          <button id="connect" class="action" type="button" hidden>重试</button>
+        </section>
+      </section>
+      <section id="viewer" aria-label="Figma 本地画布预览" hidden>
+        <div id="canvas-toolbar" hidden>
+          <select
+            id="canvas-session"
+            class="button menu-select"
+            aria-label="Figma 实例"
+            hidden
+          >
+            <button type="button"><selectedcontent></selectedcontent></button>
+          </select>
+          <select
+            id="canvas-page"
+            class="button menu-select"
+            aria-label="页面"
+            disabled
+          >
+            <button type="button"><selectedcontent></selectedcontent></button>
+          </select>
+          <div id="canvas-controls" role="group" aria-label="画布视图">
+            <button
+              id="canvas-minus"
+              class="button icon-button"
+              type="button"
+              aria-label="缩小"
+              title="缩小"
+              disabled
+            >
+              −
+            </button>
+            <button
+              id="canvas-zoom"
+              class="button"
+              type="button"
+              title="实际大小"
+              disabled
+            >
+              100%
+            </button>
+            <button
+              id="canvas-plus"
+              class="button icon-button"
+              type="button"
+              aria-label="放大"
+              title="放大"
+              disabled
+            >
+              +
+            </button>
+            <button id="canvas-fit" class="button" type="button" disabled>
+              适合画布
+            </button>
+          </div>
+        </div>
+        <div
+          id="canvas-viewport"
+          tabindex="0"
+          aria-label="拖动平移画布，按住 Command 或 Control 滚动缩放"
+        >
+          <img
+            id="canvas-image"
+            alt="Figma 页面预览"
+            draggable="false"
+            hidden
+          />
+          <div id="canvas-status" role="status">
+            <span id="canvas-status-text"></span>
+            <button id="canvas-retry" class="action" type="button" hidden>
+              重试
+            </button>
+          </div>
+        </div>
+      </section>
+      <div
+        id="notice"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        hidden
+      >
+        <span id="notice-text"></span
+        ><button id="retry" class="action" type="button" hidden>重试</button
+        ><button
+          id="dismiss-notice"
+          class="button icon-button"
+          type="button"
+          aria-label="关闭提示"
+          title="关闭提示"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M18 6 6 18" />
+            <path d="m6 6 12 12" />
+          </svg>
+        </button>
+      </div>
+    </main>
+    <!-- APP_SCRIPT -->
+  </body>
+</html>

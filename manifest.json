@@ -1,0 +1,20 @@
+{
+  "name": "ysun figma",
+  "id": "1675211139174009382",
+  "api": "1.0.0",
+  "main": "plugin-runtime.js",
+  "ui": "ui.html",
+  "menu": [
+    {
+      "name": "Connect",
+      "command": "connect"
+    }
+  ],
+  "editorType": ["figma", "figjam", "slides"],
+  "documentAccess": "dynamic-page",
+  "permissions": ["teamlibrary"],
+  "networkAccess": {
+    "allowedDomains": ["http://localhost:38491"],
+    "reasoning": "Connects only to the user's local companion for paired script execution. No remote service is used."
+  }
+}

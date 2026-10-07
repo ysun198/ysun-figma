@@ -1,0 +1,74 @@
+{
+  "name": "figma-plugin-local",
+  "version": "0.24.0",
+  "private": true,
+  "description": "ysun figma：在 Codex 中读取、编辑和导出 Figma 设计",
+  "license": "MIT",
+  "distributionFiles": [
+    "manifest.json",
+    "plugin-runtime.js",
+    "ui.html",
+    "app.html",
+    "THIRD_PARTY_NOTICES.md",
+    "src/core.js",
+    "src/account-reader.js",
+    "scripts/bridge-client.cjs",
+    "scripts/bridge-server.cjs",
+    "scripts/execution.cjs",
+    "scripts/state.cjs",
+    "scripts/companion.cjs",
+    "scripts/installation.cjs",
+    "scripts/mcp.cjs",
+    "scripts/artifact-client.cjs",
+    "scripts/artifacts.cjs",
+    "scripts/targets.cjs",
+    "scripts/app.cjs",
+    "scripts/catalog.cjs",
+    "scripts/catalog-sync.cjs",
+    "scripts/launch-mcp.sh",
+    "scripts/launch-mcp.cjs",
+    "plugin.json",
+    "mcp.json",
+    "skills/",
+    "assets/",
+    "docs/INSTALL.md",
+    "docs/PRIVACY.md",
+    "docs/ARCHITECTURE.md",
+    "LICENSE",
+    "NOTICE.md",
+    "scripts/updates.cjs",
+    "scripts/update-service.cjs",
+    "scripts/codex-refresh.cjs"
+  ],
+  "scripts": {
+    "format": "prettier --write src scripts test test-support docs .github/workflows README.md NOTICE.md eslint.config.cjs package.json plugin.json manifest.json mcp.json .prettierrc.json",
+    "format:check": "prettier --check src scripts test test-support docs .github/workflows README.md NOTICE.md eslint.config.cjs package.json plugin.json manifest.json mcp.json .prettierrc.json",
+    "lint": "eslint src scripts test test-support eslint.config.cjs --max-warnings 0",
+    "build": "node scripts/build.cjs",
+    "pretest": "node scripts/build.cjs",
+    "test": "node --test --test-concurrency=4 --test-timeout=20000 test/*.test.cjs",
+    "check": "npm run format:check && npm run lint && node scripts/build.cjs --check && node scripts/check.cjs",
+    "release": "npm test && npm run check && node scripts/release.cjs"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@modelcontextprotocol/ext-apps": "2.0.3",
+    "esbuild": "0.28.2",
+    "eslint": "10.12.0",
+    "globals": "17.13.0",
+    "prettier": "3.9.9"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ysun198/ysun-figma.git"
+  },
+  "updates": {
+    "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAqH4qEc07XOyhjd8aBHKtcjOMqY4N7jp2daPv+jr4zm8=\n-----END PUBLIC KEY-----\n"
+  }
+}

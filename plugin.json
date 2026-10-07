@@ -1,0 +1,19 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "figma-plugin-local",
+  "description": "连接 Figma 文件，在 Codex 中读取、编辑和导出设计。",
+  "extensions": {
+    "com.openai": {
+      "onboardingSkill": "./skills/ysun-figma/SKILL.md",
+      "interface": {
+        "displayName": "ysun figma",
+        "shortDescription": "连接 Figma，读取、编辑和导出设计",
+        "longDescription": "独立开发的 Figma 工具，免费账号可用。在 Codex 中搜索账号文件、查看原生画布；通过本地插件读取、编辑和导出，不消耗官方远程 MCP 额度。",
+        "capabilities": ["Interactive", "Read", "Write"],
+        "defaultPrompt": ["打开 ysun figma 并连接我的设计"],
+        "composerIcon": "./assets/icon.svg",
+        "logo": "./assets/icon.svg"
+      }
+    }
+  }
+}

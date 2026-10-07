@@ -1,0 +1,16 @@
+.DS_Store
+.bridge/
+coverage/
+*.log
+.local/
+exports-*/
+node_modules/
+dist/
+build/
+.env
+.env.*
+.npmrc
+*.pem
+*.key
+*.p12
+*.pfx

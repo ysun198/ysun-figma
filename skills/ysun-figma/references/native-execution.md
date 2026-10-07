@@ -1,0 +1,49 @@
+# Native execution
+
+The single API reference is the pinned MIT-licensed [Figma Plugin API types](plugin-api.d.ts); [API-SOURCE.json](API-SOURCE.json) identifies its upstream commit and hash. Search for the relevant interface/method instead of reading the entire type file. A declaration describes the API, not an entitlement: `figma_capabilities` and the actual call determine this account/editor's availability.
+
+`figma_run` accepts an async JavaScript **body**, not an IIFE or TypeScript. `figma`, `args`, `bridge` and a captured `console` are in scope. `return` selected properties/IDs; whole native objects are reduced to identities. Logs and completed exports are returned even after execution fails. Do not call `figma.closePlugin`, replace `figma.ui.onmessage`, or stop the connection runtime. This is trusted full Plugin API access; `readOnly=true` is a declaration, not a sandbox.
+
+Supply one stable `operationId` per intended edit/import. A repeated ID with the same resolved file/instance, script, parameters and assets reads its original receipt; a changed payload with that ID is rejected. For a queued/running job, use `figma_job` with that ID. After `outcome_unknown`, read the actual affected nodes and original receipt before `figma_reconcile`; choose applied, partially_applied or not_applied based on persisted nodes. Do not use a new ID to guess-retry. Execution is sequential per file across native connections; choose operation/Undo boundaries appropriate to the dependencies and recovery cost. A thrown script may have partially changed the file and is never advertised as rolled back.
+
+## Helpers
+
+| Helper | Behavior |
+|---|---|
+| `bridge.set(node, properties)` | Set `layoutMode`, resize for width/height, then assign remaining properties. Native getters/setters still enforce their rules. |
+| `bridge.autoLayout("VERTICAL" or "HORIZONTAL", properties)` | Create a frame with automatic axes; explicit properties may override them. |
+| `await bridge.loadFonts(textNode)` | Load actual native `getRangeAllFontNames` values, including mixed glyph runs and font axes. Also accepts a native text sublayer or its owning sticky/shape/connector. |
+| `await bridge.screenshot(node, {maxDimension:1600})` | Native bounded PNG export. `figma_run`/`figma_job` attach small preview images. |
+| `bridge.assetText("icon.svg")` | Decode a transferred UTF-8 text asset, up to 1 MiB. |
+| `bridge.exportFile(name, Uint8Array, mimeType)` | Export exact bytes; unique filename of 1–120 Unicode letters/numbers, spaces, dots, underscores or hyphens, starting with a letter/number, 32 MiB total per job. Save with `figma_export`, which refuses overwriting. |
+
+`bridge.assets` holds transferred bytes. Pass returned node/variable/collection IDs from the actual receipt into the next operation's `args`. `bridge.documentId` and `documentRevision` support expiring query cursors. Structured results cap at 4 MiB; inspect narrower subtrees rather than returning the whole account file. `logLimits` discloses dropped entries and truncated messages; absence from a truncated log is not proof that an action never occurred.
+
+`figma_upload_assets` returns one `assets` entry per asset with assetName, nodeId, type and actual width/height. SVG and raster imports use their intrinsic size unless requested otherwise: both width/height set exact native bounds, while only one preserves the intrinsic aspect ratio. Supplying both can stretch a non-square asset; use one dimension when uniform scaling is intended. Raster image-fill replacement preserves geometry, other paints and the existing image mode/crop, so omit x/y/width/height. Choose `fillIndex` when multiple paints are ambiguous, or `replaceAllFills` when replacing them all is intended; `scaleMode` and import `spacing` can be chosen explicitly. Import logs record each node ID before subsequent setters, including when a later native operation rejects. SVG exports follow native defaults/configured export settings unless `svgOutlineText` or `svgIdAttribute` is explicitly supplied.
+
+## Query evidence
+
+Public queries report `sparse`, `truncated`, `issues`, `issueCount` and `issuesTruncated`, including field serialization budgets and caught native getter errors. File searches return continuation cursors; design-system component searches use page scope unless `scope="file"` is requested. A complete traversal with sparse fields is still incomplete evidence. Narrow the actual affected nodes/fields, or inspect the relevant native property with a read-only script.
+
+`nativeReads` summarizes measured native lookups, page loads, reference resolution, CSS and exports by call count, total/max elapsed time and slowest target ID. Reference resolution uses the native local variables/collections returned in this query before looking up references outside those results; no persistent reference cache is maintained. Failed queries retain measurements in `queryDiagnostics` and the raw method/target/error in logs. Use them to locate a slow or cloud-dependent step; do not blindly replay writes or infer cloud connectivity from the local bridge. `figma_capabilities(nodeId, methods)` probes exact dotted native paths without enumerating unrelated libraries; node methods are unknown (`null`) when no explicit node or single native selection exists, rather than sampled from an arbitrary child. Method presence does not establish an entitlement.
+
+## API differences that matter
+
+- Official remote conveniences (`node.query`, `node.set`, `node.screenshot`, `figma.createAutoLayout`, `figma.util`) are absent locally. Use the local tools/helpers or exact public native methods. There is no automatic remote page reset; preserve the user's active page, selection and viewport.
+- Load existing text fonts before changing characters/style. For mixed fonts use the helper; do not overwrite the font just to make an edit work. For new text or a text style, load the chosen actual available font before assigning `fontName`, including `TextStyle.fontName`.
+- Append to the final parent before positioning. Set parent layout first. Resize fixed dimensions before setting HUG/FILL; FILL requires an auto-layout parent. `bridge.set` does not supply a missing parent.
+- Paints and effects are immutable value arrays: clone, bind/change and reassign. Use actual variables/modes; never silently create a second token source.
+- An instance's main component may be a variant. Read `componentPropertyDefinitions` on its parent `COMPONENT_SET`; local context returns `component.propertyOwner`. Property names include their native IDs; use returned names rather than guessing.
+- `getNodeByIdAsync`, `getStyleByIdAsync` and variable async methods are required by dynamic-page access. Explicit page reads/searches load pages without activating them.
+- These async methods can need Figma's cloud connection, even while the local bridge is online. A rejected lookup is not a null/not-found result. For a check restricted to the already loaded page, use its actual node collection; this cannot establish absence across unloaded pages. Log the node/page ID before a consequential async step so a later cloud failure can be located in the original receipt.
+- Native fileKey may be absent. Connection/document IDs and titles are insufficient proof of a cloud file; verify its actual URL before `figma_file(action="bind")`.
+
+Load the dedicated [FigJam](../../ysun-figma-figjam/SKILL.md), [Slides](../../ysun-figma-slides/SKILL.md), [prototype](../../ysun-figma-prototype/SKILL.md) or [motion](../../ysun-figma-motion/SKILL.md) workflow when relevant. Native shader application uses [shaders](shaders.md).
+
+A `phase="preflight"` error means this request submitted no native job: correct its concrete input error. If `targetChange` is returned, read the current exact status and its expected/actual identities before resolving the intended target again. After reconnection, retrieve an already accepted operation by its original ID instead of reissuing it against the new instance. A failed reconciliation commit retains the original write barrier; retry that same confirmation after storage is available, without another native write. Interrupted waits retain the accepted job/operation ID. A `phase="receipt"` error means retrieval of the original operation failed, not that it never existed. A `phase="delivery"` error preserves the original native receipt, native status and any already saved exports; it does not mean the canvas operation failed. Use `figma_job(includePreviews=false)` to inspect that original receipt without downloading previews, or `figma_export` to an empty directory. Never rerun the native script to repair artifact delivery. After execution starts, inspect the original receipt and its logs before another write. Log created IDs before risky later setters. A partial result is evidence for recovery, not automatic rollback.
+
+If a host cache path disappears after an upgrade, read figma_status.apiReferencePath and skillRootPath. These point to the single stable current installation, not a preserved old version.
+
+## Closed host transport
+
+Locate `FIGMA_PLUGIN_STATE_DIR` or the default `~/.canvas-bridge`, then use its `runtime/node` to call `companion/current/scripts/mcp.cjs`'s existing `callTool(name, arguments)` export. Read inputs from a JSON file instead of interpolating user content into shell source. Inspect the original operation ID through that same export before submitting again; keep its ID and payload. Inspect the same job/status/targeting fields and use `figma_export` for previews. Host rejection before submission is distinct from a native execution failure. This path uses the same grants and receipts, not another executor, and does not prove the host tool list has recovered. A closed host UI still needs supported host reload and actual sidebar acceptance.

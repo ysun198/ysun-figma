@@ -1,0 +1,261 @@
+/* Host variables own the theme. Shared metrics keep both interfaces consistent. */
+:root {
+  color-scheme: light dark;
+  --unit: 0.25rem;
+  --glyph-size: calc(var(--unit) * 4);
+  --toolbar-size: calc(var(--unit) * 7);
+  --compact-size: calc(var(--unit) * 6);
+  --field-size: calc(var(--unit) * 8);
+  --stroke: var(--border-width-regular, 1px);
+  --bg: var(--color-background-primary, light-dark(#fff, #181818));
+  --fg: var(--color-text-primary, light-dark(#1a1c1f, #dfdfdf));
+  --muted: var(
+    --color-text-secondary,
+    light-dark(
+      color-mix(in oklab, var(--fg) 50%, transparent),
+      color-mix(in oklab, #fff 50%, transparent)
+    )
+  );
+  --line: var(
+    --color-border-secondary,
+    light-dark(
+      color-mix(in oklab, var(--fg) 8%, transparent),
+      color-mix(in oklab, #fff 8%, transparent)
+    )
+  );
+  --subtle-line: light-dark(
+    color-mix(in oklab, var(--fg) 5%, transparent),
+    color-mix(in oklab, #fff 4%, transparent)
+  );
+  --surface: var(
+    --color-background-secondary,
+    light-dark(
+      color-mix(in oklab, #fff 70%, transparent),
+      color-mix(in oklab, #212121 96%, transparent)
+    )
+  );
+  --under: var(--color-background-tertiary, light-dark(#f9f9f9, #000));
+  --search-line: var(
+    --color-border-primary,
+    light-dark(
+      color-mix(in oklab, var(--fg) 12%, transparent),
+      color-mix(in oklab, #fff 16%, transparent)
+    )
+  );
+  --ring: var(
+    --color-ring-primary,
+    light-dark(#339cff, color-mix(in oklab, #339cff 70%, transparent))
+  );
+  --hover: light-dark(
+    color-mix(in oklab, var(--fg) 5%, transparent),
+    color-mix(in oklab, #fff 8%, transparent)
+  );
+  --card-overlay: color-mix(in oklab, var(--fg) 5%, transparent);
+  --inverse: var(--color-text-inverse, light-dark(#fff, #181818));
+  --radius: var(--border-radius-full, 9999px);
+  --corner-scale: 1;
+  --corner-shape: round;
+  --radius-lg: var(
+    --border-radius-lg,
+    calc(var(--unit) * 2.5 * var(--corner-scale))
+  );
+  --radius-xl: var(
+    --border-radius-xl,
+    calc(var(--unit) * 3 * var(--corner-scale))
+  );
+  --radius-2xl: calc(var(--radius-xl) * 4 / 3);
+  --sm: var(--font-text-sm-size, 0.8125rem);
+  --xs: var(--font-text-xs-size, 0.75rem);
+  --md: var(--font-text-md-size, 0.875rem);
+  --line-sm: var(--font-text-sm-line-height, 1.25rem);
+  --line-xs: var(--font-text-xs-line-height, 1rem);
+  --line-md: var(--font-text-md-line-height, 1.5);
+  --normal: var(--font-weight-normal, 430);
+  --medium: var(--font-weight-medium, 500);
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: var(--normal) var(--sm)/var(--line-sm)
+    var(--font-sans, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
+}
+[hidden] {
+  display: none !important;
+}
+button,
+input {
+  font: inherit;
+  color: inherit;
+}
+button {
+  cursor: var(--cursor-interactive, default);
+}
+:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+button:focus-visible,
+#workspace:focus-visible {
+  outline: calc(var(--stroke) * 2) solid var(--ring);
+  outline-offset: calc(var(--stroke) * 2);
+}
+svg {
+  width: var(--glyph-size);
+  height: var(--glyph-size);
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--unit);
+  flex: none;
+  min-height: var(--toolbar-size);
+  padding: 0 calc(var(--unit) * 2);
+  border: var(--stroke) solid transparent;
+  border-radius: var(--radius-lg);
+  corner-shape: var(--corner-shape);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--sm);
+  line-height: var(--line-sm);
+  white-space: nowrap;
+  user-select: none;
+}
+.button:focus {
+  outline: none;
+}
+.button:focus-visible {
+  outline: calc(var(--stroke) * 2) solid var(--ring);
+  outline-offset: 0;
+}
+.button[aria-pressed='true'] {
+  background: var(--hover);
+  color: var(--fg);
+}
+.icon-button {
+  width: var(--toolbar-size);
+  padding: 0;
+}
+.menu-select,
+.menu-select::picker(select) {
+  appearance: base-select;
+}
+.menu-select {
+  justify-content: space-between;
+  gap: calc(var(--unit) * 2);
+  cursor: var(--cursor-interactive, default);
+}
+.menu-select > button {
+  display: contents;
+}
+.menu-select selectedcontent {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.menu-select:open {
+  background: var(--hover);
+  outline: none;
+}
+.menu-select::picker-icon {
+  content: '';
+  flex: none;
+  width: var(--glyph-size);
+  height: var(--glyph-size);
+  background: var(--muted);
+  mask: url('data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.6%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22m6%209%206%206%206-6%22%20%2F%3E%3C%2Fsvg%3E')
+    center / contain no-repeat;
+}
+.menu-select::picker(select) {
+  padding: var(--unit);
+  border: 0;
+  border-radius: var(--radius-2xl);
+  corner-shape: var(--corner-shape);
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  box-shadow:
+    0 0 0 calc(var(--stroke) / 2) var(--line),
+    0 calc(var(--unit) * 2) calc(var(--unit) * 4) calc(var(--unit) * -1)
+      #0000001f;
+}
+.menu-select option {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--unit) * 1.5);
+  min-block-size: 0;
+  padding: var(--unit) calc(var(--unit) * 2);
+  border-radius: var(--radius-xl);
+  corner-shape: var(--corner-shape);
+  background: transparent;
+  color: var(--fg);
+  font-weight: var(--medium);
+  white-space: normal;
+  overflow-wrap: anywhere;
+  outline: none;
+}
+.menu-select option:hover,
+.menu-select option:focus-visible {
+  background: var(--hover);
+}
+.menu-select option::checkmark {
+  content: '';
+  order: 1;
+  display: block;
+  visibility: hidden;
+  flex: none;
+  width: var(--glyph-size);
+  height: var(--glyph-size);
+  margin-inline-start: auto;
+  background: currentColor;
+  mask: url('data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.6%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M20%206%209%2017l-5-5%22%20%2F%3E%3C%2Fsvg%3E')
+    center / contain no-repeat;
+}
+.menu-select option:checked::checkmark {
+  visibility: visible;
+}
+.action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--unit);
+  min-height: var(--compact-size);
+  padding: 0 calc(var(--unit) * 2);
+  border: var(--stroke) solid var(--line);
+  border-radius: var(--radius-lg);
+  corner-shape: var(--corner-shape);
+  background: var(--fg);
+  color: var(--inverse);
+  font-size: var(--xs);
+  line-height: var(--line-xs);
+  white-space: nowrap;
+  user-select: none;
+}
+.action:focus-visible {
+  outline-offset: 0;
+}
+@supports (corner-shape: superellipse(1.5)) {
+  :root {
+    --corner-scale: 1.25;
+    --corner-shape: superellipse(1.5);
+  }
+}
+@media (hover: hover) {
+  .button:hover:not(:disabled) {
+    background: var(--hover);
+  }
+  .action:hover:not(:disabled) {
+    background: color-mix(in oklab, var(--fg) 80%, transparent);
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "repository": "https://github.com/figma/plugin-typings",
+  "commit": "c56f7a4d2a00e964cfecc2d9529c83a0461b7bee",
+  "file": "plugin-api.d.ts",
+  "sha256": "1afb1fa5c9b657c9b04806bfc750fbf4d00297d7b18d029d790a5e232d622c42",
+  "license": "MIT",
+  "licenseFile": "PLUGIN-API-LICENSE",
+  "retrieved": "2026-10-05"
+}
