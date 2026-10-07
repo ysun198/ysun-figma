@@ -12,7 +12,7 @@ Copy this into Codex:
 Install ysun figma: https://github.com/ysun198/ysun-figma
 ```
 
-Currently supports macOS only and requires Figma Desktop. Free accounts are supported. Local operations do not consume the official remote MCP quota; Figma's file permissions and plan restrictions still apply.
+The plugin currently supports macOS only and requires Figma Desktop. It reads and writes designs directly through the desktop app, with unlimited local operations. Free Figma accounts also have unlimited use of the plugin, without consuming the official MCP quota.
 
 ## Develop
 
