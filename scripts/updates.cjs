@@ -17,15 +17,23 @@ const {
   prepareManagedCompanion,
 } = require('./installation.cjs');
 const MAX_ARCHIVE = 160 * 1024 * 1024;
+const MINUTE = 60000,
+  HOUR = 60 * MINUTE;
 const directory = () => path.join(bridgeStateDirectory(), 'updates');
 const statusPath = () => path.join(directory(), 'status.json');
-function updateStatus() {
+function readUpdateState() {
   try {
     return JSON.parse(fs.readFileSync(statusPath(), 'utf8'));
   } catch (error) {
     if (error.code === 'ENOENT') return null;
     throw error;
   }
+}
+function updateStatus() {
+  const state = readUpdateState();
+  if (!state) return null;
+  const { feed, ...status } = state;
+  return status;
 }
 function repository(pkg) {
   const match = /^https:\/\/github\.com\/([\w-]+\/[\w.-]+)\.git$/.exec(
@@ -59,10 +67,20 @@ function verifyRelease(envelope, pkg) {
     throw new Error('Release descriptor is invalid');
   return release;
 }
-async function download(url, maximum, fetchImpl = fetch) {
+async function request(url, fetchImpl, signal, headers = {}, timeout = 120000) {
   const response = await fetchImpl(url, {
-    signal: AbortSignal.timeout(120000),
+    signal: AbortSignal.any([signal, AbortSignal.timeout(timeout)]),
+    headers,
   });
+  if (!response.ok && response.status !== 304) {
+    const error = new Error(`Update download failed: HTTP ${response.status}`);
+    error.retryAfter = response.headers.get('retry-after');
+    await response.body?.cancel();
+    throw error;
+  }
+  return response;
+}
+async function readBody(response, maximum) {
   if (!response.ok)
     throw new Error(`Update download failed: HTTP ${response.status}`);
   if (Number(response.headers.get('content-length')) > maximum)
@@ -163,18 +181,58 @@ function createUpdater({
   fetchImpl = fetch,
   activate = prepareManagedCompanion,
   refreshHost = require('./codex-refresh.cjs').refreshCodex,
+  clock = Date.now,
+  random = Math.random,
+  intervalMs = HOUR,
 } = {}) {
   let candidate;
+  const cancellation = new AbortController();
   const trusted = JSON.parse(
     fs.readFileSync(path.join(packageRoot, 'package.json')),
   );
   const base = `https://github.com/${repository(trusted)}/releases`;
-  function save(stage, extra = {}) {
-    writePrivateJson(statusPath(), {
-      checkedAt: new Date().toISOString(),
-      stage,
-      ...extra,
-    });
+  function save(state, stage, extra = {}) {
+    Object.assign(
+      state,
+      { stage, message: undefined, availableVersion: undefined },
+      extra,
+    );
+    writePrivateJson(statusPath(), state);
+  }
+  function finish(state, stage, extra = {}, error) {
+    state.failures = error ? (state.failures || 0) + 1 : 0;
+    let delay;
+    if (error) {
+      delay =
+        Math.min(3 * HOUR, MINUTE * 2 ** Math.min(state.failures - 1, 12)) *
+        (1 + random());
+      const retry = error.retryAfter;
+      const retryAt = /^\d+$/.test(retry || '')
+        ? clock() + Number(retry) * 1000
+        : Date.parse(retry);
+      if (!Number.isNaN(new Date(retryAt).getTime()))
+        delay = Math.max(delay, retryAt - clock());
+    } else {
+      delay =
+        stage === 'waiting_for_idle'
+          ? 30000 * (1 + random() / 2)
+          : intervalMs * (1 + random() / 4);
+    }
+    state.nextCheckAt = new Date(clock() + delay).toISOString();
+    save(state, stage, extra);
+  }
+  function nextDelay({ onOpen = false } = {}) {
+    const state = readUpdateState();
+    if (!state) return 0;
+    // Opening several conversations must not create a request burst or bypass
+    // a server's Retry-After. Only healthy checks can move ahead of schedule.
+    if (
+      onOpen &&
+      ['current', 'rejected'].includes(state.stage) &&
+      clock() - Date.parse(state.checkedAt) >= 15 * MINUTE
+    )
+      return 0;
+    return Math.max(0, (Date.parse(state.nextCheckAt) || 0) - clock());
   }
   function dispose() {
     if (candidate)
@@ -183,8 +241,12 @@ function createUpdater({
   }
   async function check() {
     privateDirectory(directory());
+    cancellation.signal.throwIfAborted();
+    const state = readUpdateState() || {};
+    state.checkedAt = new Date(clock()).toISOString();
+    state.nextCheckAt = null;
     let installed,
-      refreshPending = updateStatus()?.refreshPending;
+      refreshPending = state.refreshPending;
     try {
       installed = JSON.parse(
         fs.readFileSync(path.join(currentPath(), 'package.json')),
@@ -192,42 +254,89 @@ function createUpdater({
       if (refreshPending) {
         await refreshHost();
         refreshPending = false;
-        save('current', { installedVersion: installed });
+        save(state, 'current', { installedVersion: installed, refreshPending });
       }
-      const release =
-        candidate?.release ||
-        verifyRelease(
-          JSON.parse(
-            (
-              await download(
-                base + '/latest/download/update.json',
-                65536,
-                fetchImpl,
-              )
-            ).toString('utf8'),
-          ),
-          trusted,
+      let cached = state.feed,
+        release;
+      if (cached) {
+        try {
+          release = verifyRelease(cached.envelope, trusted);
+        } catch {
+          cached = undefined;
+          state.feed = undefined;
+        }
+      }
+      const headers = { 'Cache-Control': 'no-cache' };
+      if (cached?.etag) headers['If-None-Match'] = cached.etag;
+      else if (cached?.lastModified)
+        headers['If-Modified-Since'] = cached.lastModified;
+      // Revalidate even a staged archive: the publisher may have withdrawn or
+      // superseded it while a long-running edit held maintenance admission.
+      const response = await request(
+        base + '/latest/download/update.json',
+        fetchImpl,
+        cancellation.signal,
+        headers,
+        20000,
+      );
+      if (response.status === 304) {
+        if (!cached) throw new Error('No verified cached release for HTTP 304');
+      } else {
+        const envelope = JSON.parse(
+          (await readBody(response, 65536)).toString('utf8'),
         );
+        release = verifyRelease(envelope, trusted);
+        cached = {
+          envelope: {
+            payload: envelope.payload,
+            signature: envelope.signature,
+          },
+        };
+      }
+      state.feed = {
+        ...cached,
+        etag:
+          response.headers.get('etag') ||
+          (response.status === 304 ? cached.etag : undefined),
+        lastModified:
+          response.headers.get('last-modified') ||
+          (response.status === 304 ? cached.lastModified : undefined),
+      };
       if (!newer(release.version, installed)) {
         dispose();
-        save('current', { installedVersion: installed });
+        finish(state, 'current', {
+          installedVersion: installed,
+          refreshPending,
+        });
         return false;
       }
-      if (candidate?.version !== release.version) {
+      if (state.rejectedRelease?.sha256 === release.sha256) {
+        finish(state, 'rejected', {
+          installedVersion: installed,
+          availableVersion: release.version,
+          message: state.rejectedRelease.message,
+        });
+        return false;
+      }
+      state.rejectedRelease = undefined;
+      if (candidate?.release.sha256 !== release.sha256) {
         dispose();
         candidate = {
           release,
           version: release.version,
           directory: fs.mkdtempSync(path.join(directory(), '.download-')),
         };
-        save('downloading', {
+        save(state, 'downloading', {
           installedVersion: installed,
           availableVersion: release.version,
         });
-        const bytes = await download(
-          `${base}/download/v${release.version}/${release.archive}`,
+        const bytes = await readBody(
+          await request(
+            `${base}/download/v${release.version}/${release.archive}`,
+            fetchImpl,
+            cancellation.signal,
+          ),
           release.size,
-          fetchImpl,
         );
         candidate.source = await extractRelease(
           bytes,
@@ -235,6 +344,7 @@ function createUpdater({
           candidate.directory,
         );
       }
+      cancellation.signal.throwIfAborted();
       const runtime = path.join(
         candidate.source,
         `runtime/darwin-${process.arch}/node`,
@@ -246,26 +356,66 @@ function createUpdater({
       dispose();
       installed = result.version;
       refreshPending = true;
-      save('refreshing', { installedVersion: installed, refreshPending });
-      await refreshHost();
-      refreshPending = false;
-      save('current', { installedVersion: result.version });
-      return result.changed;
-    } catch (error) {
-      if (error.code === 'UPDATE_BUSY') {
-        save('waiting_for_idle', { availableVersion: candidate?.version });
-        return false;
-      }
-      dispose();
-      save('error', {
-        message: error.message,
+      save(state, 'refreshing', {
         installedVersion: installed,
         refreshPending,
       });
+      await refreshHost();
+      refreshPending = false;
+      finish(state, 'current', {
+        installedVersion: result.version,
+        refreshPending,
+      });
+      return result.changed;
+    } catch (error) {
+      if (error.code === 'UPDATE_BUSY') {
+        finish(state, 'waiting_for_idle', {
+          installedVersion: installed,
+          availableVersion: candidate?.version,
+        });
+        return false;
+      }
+      if (error.code === 'UPDATE_UNHEALTHY') {
+        state.rejectedRelease = {
+          version: candidate.version,
+          sha256: candidate.release.sha256,
+          message: error.message,
+        };
+      }
+      dispose();
+      if (cancellation.signal.aborted) throw error;
+      finish(
+        state,
+        error.code === 'UPDATE_UNHEALTHY' ? 'rejected' : 'error',
+        {
+          message: error.message,
+          installedVersion: installed,
+          refreshPending,
+        },
+        error.code === 'UPDATE_UNHEALTHY' ? undefined : error,
+      );
       throw error;
     }
   }
-  return { check, dispose };
+  return {
+    check,
+    dispose,
+    nextDelay,
+    cancel: () => cancellation.abort(),
+    defer: (error) =>
+      finish(
+        { ...readUpdateState(), checkedAt: new Date(clock()).toISOString() },
+        'error',
+        { message: error.message },
+        error,
+      ),
+    restartRequired: () =>
+      newer(
+        JSON.parse(fs.readFileSync(path.join(currentPath(), 'package.json')))
+          .version,
+        trusted.version,
+      ),
+  };
 }
 module.exports = {
   createUpdater,

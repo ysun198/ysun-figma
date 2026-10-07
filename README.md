@@ -6,7 +6,7 @@ Read, edit and export Figma files from Codex through the local, native Plugin AP
 
 Give Codex the [latest release ZIP](https://github.com/ysun198/ysun-figma/releases/latest) and ask it to install and connect. The macOS package includes its Node.js runtime. Codex can import, launch and pair the native plugin through available app automation; saved authorization reconnects automatically.
 
-Published releases arrive automatically, without an update button. A local receiver checks GitHub every five minutes, verifies the publisher's signature and activates healthy code while execution is idle. Authorization, operation records and designs stay local. Ordinary source pushes do not publish an update.
+Published releases arrive automatically, without an update button. A local receiver checks at startup and about hourly in the background, verifies the publisher's signature and activates healthy code while execution is idle. Recent checks are coalesced; network failures back off automatically. Authorization, operation records and designs stay local. Ordinary source pushes do not publish an update.
 
 Keep Figma Desktop and the native plugin running. Use your existing Codex conversation for commands, and open the sidebar workbench for name search, card/list views and live page previews. The preview preserves pan and zoom while native changes arrive. Editing, layer selection and prototype playback happen in Figma Desktop; the sidebar is a raster preview, not an embedded editor.
 

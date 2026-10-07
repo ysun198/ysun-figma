@@ -304,8 +304,14 @@ async function prepareManagedCompanion(source, options = {}) {
         if (fs.existsSync(current)) fs.renameSync(current, backup);
         fs.renameSync(next, current);
         installPlugin(current);
-        if (options.healthCheck)
-          await checkActivatedRuntime(runtime, requested.version);
+        if (options.healthCheck) {
+          try {
+            await checkActivatedRuntime(runtime, requested.version);
+          } catch (error) {
+            error.code = 'UPDATE_UNHEALTHY';
+            throw error;
+          }
+        }
         fs.unlinkSync(journal);
       } catch (error) {
         try {

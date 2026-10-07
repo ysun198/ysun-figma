@@ -49,49 +49,81 @@ async function ensureUpdateService() {
     await execFile('launchctl', ['print', target + '/' + label]);
   } catch {
     await execFile('launchctl', ['bootstrap', target, file]);
+    return;
   }
+  await execFile('launchctl', ['kill', 'SIGUSR1', target + '/' + label]);
 }
 async function receive({
   updater = require('./updates.cjs').createUpdater(),
-  intervalMs = 300000,
   isEnabled = require('./codex-refresh.cjs').hostEnabled,
+  signals = process,
 } = {}) {
-  const { updateStatus } = require('./updates.cjs');
   const folder = path.join(bridgeStateDirectory(), 'updates');
   privateDirectory(folder);
   for (const name of fs.readdirSync(folder))
     if (/^\.download-[\w]+$/.test(name))
       fs.rmSync(path.join(folder, name), { recursive: true, force: true });
   let stopped = false,
-    timer;
+    opening = true,
+    wake;
   const stop = () => {
     stopped = true;
-    clearTimeout(timer);
-    updater.dispose();
-    process.exit(0);
+    updater.cancel();
+    wake?.();
   };
-  process.once('SIGTERM', stop);
-  process.once('SIGINT', stop);
-  while (!stopped) {
-    try {
-      if (!(await isEnabled())) {
-        await execFile('launchctl', [
-          'bootout',
-          `gui/${process.getuid()}/${label}`,
-        ]);
-        break;
+  const onOpen = () => {
+    opening = true;
+    wake?.();
+  };
+  signals.once('SIGTERM', stop);
+  signals.once('SIGINT', stop);
+  signals.on('SIGUSR1', onOpen);
+  try {
+    while (!stopped) {
+      const delay = updater.nextDelay({ onOpen: opening });
+      opening = false;
+      if (delay > 0) {
+        await new Promise((resolve) => {
+          const timer = setTimeout(
+            () => {
+              wake = undefined;
+              resolve();
+            },
+            Math.min(delay, 2147483647),
+          ); // Node timers use a signed 32-bit delay.
+          wake = () => {
+            clearTimeout(timer);
+            wake = undefined;
+            resolve();
+          };
+        });
+        continue;
       }
-      if (await updater.check()) break;
-    } catch (error) {
-      console.error(new Date().toISOString() + ' ' + error.message);
+      let checked = false;
+      try {
+        if (!(await isEnabled())) {
+          await execFile('launchctl', [
+            'bootout',
+            `gui/${process.getuid()}/${label}`,
+          ]);
+          break;
+        }
+        checked = true;
+        if (!stopped && (await updater.check())) break;
+      } catch (error) {
+        if (!stopped) {
+          if (!checked) updater.defer(error);
+          console.error(new Date().toISOString() + ' ' + error.message);
+        }
+      }
+      if (updater.restartRequired()) break;
     }
-    const delay =
-      updateStatus()?.stage === 'waiting_for_idle' ? 30000 : intervalMs;
-    await new Promise((resolve) => {
-      timer = setTimeout(resolve, delay);
-    });
+  } finally {
+    signals.removeListener('SIGTERM', stop);
+    signals.removeListener('SIGINT', stop);
+    signals.removeListener('SIGUSR1', onOpen);
+    updater.dispose();
   }
-  updater.dispose();
 }
 if (require.main === module)
   receive().catch((error) => {

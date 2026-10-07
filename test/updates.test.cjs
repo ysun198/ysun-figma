@@ -2,6 +2,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const http = require('node:http');
+const { EventEmitter, once } = require('node:events');
 const { execFileSync } = require('node:child_process');
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -18,6 +20,7 @@ const {
   publicEntries,
   recoverInstallation,
 } = require('../scripts/installation.cjs');
+const { receive } = require('../scripts/update-service.cjs');
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'figma-update-'));
   const oldState = process.env.FIGMA_PLUGIN_STATE_DIR;
@@ -181,6 +184,420 @@ test('busy edits defer activation and reuse the same verified download', async (
   assert.equal(await updater.check(), true);
   assert.equal(downloads, 1);
 });
+test('a release withdrawn while edits are busy is never activated later', async (t) => {
+  const f = fixture(t);
+  await prepareManagedCompanion(f.source('1.0.0'));
+  let published = f.release('1.1.0'),
+    busy = true,
+    activations = 0;
+  const updater = createUpdater({
+    fetchImpl: async (url) =>
+      new Response(
+        url.endsWith('update.json')
+          ? JSON.stringify(published.envelope)
+          : published.bytes,
+      ),
+    activate: async (source) => {
+      if (busy) throw Object.assign(new Error('busy'), { code: 'UPDATE_BUSY' });
+      activations++;
+      return prepareManagedCompanion(source);
+    },
+    refreshHost: async () => {},
+  });
+  t.after(updater.dispose);
+  assert.equal(await updater.check(), false);
+  published = f.release('1.0.0');
+  busy = false;
+  assert.equal(await updater.check(), false);
+  assert.equal(activations, 0);
+  assert.equal(updateStatus().installedVersion, '1.0.0');
+  assert(
+    !fs
+      .readdirSync(path.join(process.env.FIGMA_PLUGIN_STATE_DIR, 'updates'))
+      .some((v) => v.startsWith('.download-')),
+  );
+});
+test('a superseded staged release is replaced with the newly signed version', async (t) => {
+  const f = fixture(t);
+  await prepareManagedCompanion(f.source('1.0.0'));
+  let published = f.release('1.1.0'),
+    busy = true;
+  const installed = [],
+    downloads = [];
+  const updater = createUpdater({
+    fetchImpl: async (url) => {
+      if (url.endsWith('update.json'))
+        return new Response(JSON.stringify(published.envelope));
+      downloads.push(url);
+      return new Response(published.bytes);
+    },
+    activate: async (source) => {
+      if (busy) throw Object.assign(new Error('busy'), { code: 'UPDATE_BUSY' });
+      const result = await prepareManagedCompanion(source);
+      installed.push(result.version);
+      return result;
+    },
+    refreshHost: async () => {},
+  });
+  t.after(updater.dispose);
+  await updater.check();
+  published = f.release('1.2.0');
+  busy = false;
+  assert.equal(await updater.check(), true);
+  assert.deepEqual(installed, ['1.2.0']);
+  assert.equal(downloads.length, 2);
+});
+test('conditional checks reuse a signed feed across receiver restarts', async (t) => {
+  const f = fixture(t);
+  await prepareManagedCompanion(f.source('1.0.0'));
+  const published = f.release('1.0.0');
+  let calls = 0;
+  const options = {
+    fetchImpl: async (url, request) => {
+      assert(url.endsWith('update.json'));
+      calls++;
+      if (calls === 1)
+        return new Response(JSON.stringify(published.envelope), {
+          headers: { ETag: '"release-1"' },
+        });
+      assert.equal(request.headers['If-None-Match'], '"release-1"');
+      return new Response(null, { status: 304 });
+    },
+  };
+  const first = createUpdater(options);
+  assert.equal(await first.check(), false);
+  first.dispose();
+  const restarted = createUpdater(options);
+  t.after(restarted.dispose);
+  assert.equal(await restarted.check(), false);
+  assert.equal(calls, 2);
+  assert.equal(updateStatus().feed, undefined);
+});
+test('a corrupted cached feed cannot become trusted through a 304 response', async (t) => {
+  const f = fixture(t);
+  await prepareManagedCompanion(f.source('1.0.0'));
+  const published = f.release('1.0.0');
+  const first = createUpdater({
+    fetchImpl: async () =>
+      new Response(JSON.stringify(published.envelope), {
+        headers: { ETag: '"release-1"' },
+      }),
+  });
+  await first.check();
+  first.dispose();
+  const file = path.join(
+    process.env.FIGMA_PLUGIN_STATE_DIR,
+    'updates/status.json',
+  );
+  const state = JSON.parse(fs.readFileSync(file));
+  assert(state.feed);
+  state.feed.envelope.payload = Buffer.from('{}').toString('base64');
+  fs.writeFileSync(file, JSON.stringify(state));
+  const restarted = createUpdater({
+    fetchImpl: async (url, request) => {
+      assert.equal(request.headers['If-None-Match'], undefined);
+      return new Response(null, { status: 304 });
+    },
+  });
+  t.after(restarted.dispose);
+  await assert.rejects(restarted.check(), /cached release/);
+  assert.equal(updateStatus().installedVersion, '1.0.0');
+});
+test('opening conversations coalesces checks and cannot defeat durable failure backoff', async (t) => {
+  const f = fixture(t);
+  await prepareManagedCompanion(f.source('1.0.0'));
+  let time = Date.UTC(2026, 0, 1),
+    offline = false;
+  const published = f.release('1.0.0');
+  const options = {
+    clock: () => time,
+    random: () => 0,
+    fetchImpl: async () => {
+      if (offline) throw new Error('offline');
+      return new Response(JSON.stringify(published.envelope));
+    },
+  };
+  const updater = createUpdater(options);
+  t.after(updater.dispose);
+  await updater.check();
+  assert.equal(updater.nextDelay(), 3600000);
+  time += 600000;
+  assert.equal(updater.nextDelay({ onOpen: true }), 3000000);
+  time += 300000;
+  assert.equal(updater.nextDelay({ onOpen: true }), 0);
+  offline = true;
+  await assert.rejects(updater.check(), /offline/);
+  assert.equal(updater.nextDelay({ onOpen: true }), 60000);
+  const restarted = createUpdater(options);
+  t.after(restarted.dispose);
+  assert.equal(restarted.nextDelay({ onOpen: true }), 60000);
+  time += 60000;
+  await assert.rejects(restarted.check(), /offline/);
+  assert.equal(restarted.nextDelay(), 120000);
+  time += 120000;
+  offline = false;
+  await restarted.check();
+  assert.equal(updateStatus().failures, 0);
+  assert.equal(restarted.nextDelay(), 3600000);
+});
+test('rate limits honor Retry-After seconds and HTTP dates even after restart', async (t) => {
+  const f = fixture(t);
+  await prepareManagedCompanion(f.source('1.0.0'));
+  let time = Date.UTC(2026, 0, 1),
+    retryAfter = '900';
+  const options = {
+    clock: () => time,
+    random: () => 0,
+    fetchImpl: async () =>
+      new Response('slow down', {
+        status: 429,
+        headers: { 'Retry-After': retryAfter },
+      }),
+  };
+  const updater = createUpdater(options);
+  t.after(updater.dispose);
+  await assert.rejects(updater.check(), /429/);
+  assert.equal(updater.nextDelay({ onOpen: true }), 900000);
+  time += 900000;
+  retryAfter = new Date(time + 3600000).toUTCString();
+  await assert.rejects(updater.check(), /429/);
+  const restarted = createUpdater(options);
+  t.after(restarted.dispose);
+  assert.equal(restarted.nextDelay({ onOpen: true }), 3600000);
+});
+test('a failed health probe quarantines that release while allowing the next published version', async (t) => {
+  const f = fixture(t);
+  await prepareManagedCompanion(f.source('1.0.0'));
+  let published = f.release('1.1.0'),
+    downloads = 0,
+    activations = 0;
+  const options = {
+    fetchImpl: async (url) => {
+      if (url.endsWith('update.json'))
+        return new Response(JSON.stringify(published.envelope));
+      downloads++;
+      return new Response(published.bytes);
+    },
+    activate: async (source) => {
+      activations++;
+      if (activations === 1)
+        throw Object.assign(new Error('new runtime failed'), {
+          code: 'UPDATE_UNHEALTHY',
+        });
+      return prepareManagedCompanion(source);
+    },
+    refreshHost: async () => {},
+  };
+  const updater = createUpdater(options);
+  await assert.rejects(updater.check(), /new runtime failed/);
+  updater.dispose();
+  const restarted = createUpdater(options);
+  t.after(restarted.dispose);
+  assert.equal(await restarted.check(), false);
+  assert.equal(downloads, 1);
+  assert.equal(activations, 1);
+  assert.equal(updateStatus().stage, 'rejected');
+  published = f.release('1.2.0');
+  assert.equal(await restarted.check(), true);
+  assert.equal(downloads, 2);
+  assert.equal(activations, 2);
+  assert.equal(updateStatus().installedVersion, '1.2.0');
+});
+test('real HTTP transport revalidates the feed without transferring another body', async (t) => {
+  const f = fixture(t);
+  await prepareManagedCompanion(f.source('1.0.0'));
+  const body = JSON.stringify(f.release('1.0.0').envelope);
+  let requests = 0,
+    bodies = 0;
+  const server = http.createServer((request, response) => {
+    requests++;
+    assert.equal(request.headers['cache-control'], 'no-cache');
+    response.setHeader('etag', '"published"');
+    if (request.headers['if-none-match'] === '"published"') {
+      response.writeHead(304);
+      response.end();
+    } else {
+      bodies++;
+      response.end(body);
+    }
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const options = {
+    fetchImpl: (url, request) =>
+      fetch(`http://127.0.0.1:${server.address().port}/update.json`, request),
+  };
+  const first = createUpdater(options);
+  await first.check();
+  first.dispose();
+  const restarted = createUpdater(options);
+  t.after(restarted.dispose);
+  await restarted.check();
+  assert.equal(requests, 2);
+  assert.equal(bodies, 1);
+});
+test('receiver coalesces simultaneous conversation openings and removes its signal listeners on stop', async (t) => {
+  const f = fixture(t);
+  await prepareManagedCompanion(f.source('1.0.0'));
+  const signals = new EventEmitter(),
+    checked = Promise.withResolvers(),
+    checkedAgain = Promise.withResolvers(),
+    published = f.release('1.0.0');
+  let requests = 0,
+    time = Date.UTC(2026, 0, 1);
+  const updater = createUpdater({
+    clock: () => time,
+    fetchImpl: async () => {
+      requests++;
+      if (requests === 2) checkedAgain.resolve();
+      return new Response(JSON.stringify(published.envelope));
+    },
+  });
+  const running = receive({
+    updater,
+    signals,
+    isEnabled: async () => {
+      checked.resolve();
+      return true;
+    },
+  });
+  t.after(() => {
+    signals.emit('SIGTERM');
+    return running;
+  });
+  await checked.promise;
+  for (let i = 0; i < 12; i++) signals.emit('SIGUSR1');
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(requests, 1);
+  time += 15 * 60000;
+  signals.emit('SIGUSR1');
+  await checkedAgain.promise;
+  assert.equal(requests, 2);
+  signals.emit('SIGTERM');
+  await running;
+  for (const signal of ['SIGTERM', 'SIGINT', 'SIGUSR1'])
+    assert.equal(signals.listenerCount(signal), 0);
+});
+test('host discovery failures also back off instead of spinning the receiver', async (t) => {
+  const f = fixture(t);
+  await prepareManagedCompanion(f.source('1.0.0'));
+  const published = f.release('1.0.0'),
+    signals = new EventEmitter(),
+    started = Promise.withResolvers();
+  let attempts = 0,
+    requests = 0;
+  const updater = createUpdater({
+    fetchImpl: async () => {
+      requests++;
+      return new Response(JSON.stringify(published.envelope));
+    },
+  });
+  const running = receive({
+    updater,
+    signals,
+    isEnabled: async () => {
+      attempts++;
+      started.resolve();
+      if (attempts === 1) throw new Error('host unavailable');
+      return true;
+    },
+  });
+  t.after(() => {
+    signals.emit('SIGTERM');
+    return running;
+  });
+  await started.promise;
+  for (let i = 0; i < 12; i++) signals.emit('SIGUSR1');
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(attempts, 1);
+  assert.equal(requests, 0);
+  assert.equal(updateStatus().stage, 'error');
+  signals.emit('SIGTERM');
+  await running;
+});
+test('stopping a download cancels network IO and removes staging without activating code', async (t) => {
+  const f = fixture(t);
+  await prepareManagedCompanion(f.source('1.0.0'));
+  const published = f.release('1.1.0'),
+    signals = new EventEmitter(),
+    downloading = Promise.withResolvers();
+  let activations = 0;
+  const updater = createUpdater({
+    fetchImpl: async (url, request) => {
+      if (url.endsWith('update.json'))
+        return new Response(JSON.stringify(published.envelope));
+      downloading.resolve();
+      return new Promise((resolve, reject) =>
+        request.signal.addEventListener(
+          'abort',
+          () => reject(request.signal.reason),
+          { once: true },
+        ),
+      );
+    },
+    activate: async () => {
+      activations++;
+    },
+  });
+  const running = receive({ updater, signals, isEnabled: async () => true });
+  t.after(() => {
+    signals.emit('SIGTERM');
+    return running;
+  });
+  await downloading.promise;
+  signals.emit('SIGTERM');
+  await running;
+  assert.equal(activations, 0);
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(currentPath(), 'package.json')))
+      .version,
+    '1.0.0',
+  );
+  assert(
+    !fs
+      .readdirSync(path.join(process.env.FIGMA_PLUGIN_STATE_DIR, 'updates'))
+      .some((v) => v.startsWith('.download-')),
+  );
+});
+test('stopping during activation lets the atomic transition finish before deleting staging', async (t) => {
+  const f = fixture(t);
+  await prepareManagedCompanion(f.source('1.0.0'));
+  const published = f.release('1.1.0'),
+    signals = new EventEmitter(),
+    activating = Promise.withResolvers(),
+    continueActivation = Promise.withResolvers();
+  let staged;
+  const updater = createUpdater({
+    fetchImpl: async (url) =>
+      new Response(
+        url.endsWith('update.json')
+          ? JSON.stringify(published.envelope)
+          : published.bytes,
+      ),
+    activate: async (source) => {
+      staged = source;
+      activating.resolve();
+      await continueActivation.promise;
+      assert(fs.existsSync(source));
+      return prepareManagedCompanion(source);
+    },
+    refreshHost: async () => {},
+  });
+  const running = receive({ updater, signals, isEnabled: async () => true });
+  t.after(() => {
+    signals.emit('SIGTERM');
+    continueActivation.resolve();
+    return running;
+  });
+  await activating.promise;
+  signals.emit('SIGTERM');
+  assert(fs.existsSync(staged));
+  continueActivation.resolve();
+  await running;
+  assert.equal(updateStatus().installedVersion, '1.1.0');
+  assert(!fs.existsSync(staged));
+});
 test('host refresh retries after activation, including before an offline check', async (t) => {
   const f = fixture(t);
   await prepareManagedCompanion(f.source('1.0.0'));
@@ -325,7 +742,9 @@ test('a failed new-runtime health probe restores working code and native entrypo
   );
   await assert.rejects(
     prepareManagedCompanion(source, { healthCheck: true }),
-    /invalid new runtime/,
+    (error) =>
+      error.code === 'UPDATE_UNHEALTHY' &&
+      /invalid new runtime/.test(error.message),
   );
   assert.equal(
     JSON.parse(fs.readFileSync(path.join(currentPath(), 'package.json')))
