@@ -42,7 +42,12 @@ module.exports = [
     languageOptions: { globals: { APP_VERSION: 'readonly' } },
   },
   {
-    files: ['src/core.js', 'src/account-reader.js', 'src/design-queries.js'],
+    files: [
+      'src/core.js',
+      'src/account-reader.js',
+      'src/design-queries.js',
+      'src/version.js',
+    ],
     languageOptions: { globals: { module: 'readonly' } },
   },
   {

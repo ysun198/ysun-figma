@@ -27,7 +27,13 @@ const file = (fileKey, extra = {}) => ({
   ...extra,
 });
 const result = (value) => ({ structuredContent: value, content: [] });
-function fixture(handle, initialView, initialSort, updateContext) {
+function fixture(
+  handle,
+  initialView,
+  initialSort,
+  updateContext,
+  appVersion = '0.24.0',
+) {
   const elements = new Map(),
     calls = [],
     contexts = [],
@@ -103,6 +109,7 @@ function fixture(handle, initialView, initialSort, updateContext) {
     }
     async connect() {}
     async readServerResource(params) {
+      this.resourceReads = (this.resourceReads || 0) + 1;
       assert.equal(params.uri, 'ui://figma-plugin/files');
       return this.resource;
     }
@@ -160,7 +167,7 @@ function fixture(handle, initialView, initialSort, updateContext) {
   };
   document.getElementById('notice');
   const ctx = vm.createContext({
-    APP_VERSION: 'test',
+    APP_VERSION: appVersion,
     require(name) {
       assert.equal(name, '@modelcontextprotocol/ext-apps');
       return { App, applyDocumentTheme() {}, applyHostStyleVariables() {} };
@@ -239,6 +246,47 @@ test('an already open workbench requests the current HTML and reconnects without
   assert.match(f.document.written, /new workbench/);
   assert.equal(f.ctx.visibleFiles().length, 1);
   assert.equal(f.calls.length, 1, 'updating UI never submits a native edit');
+});
+test('replayed older tool results cannot reload or overwrite an updated workbench', async () => {
+  const f = fixture(
+    async () =>
+      result({
+        version: '0.24.1',
+        files: [file('FileAlpha')],
+        catalog: { status: 'ready', accountId: 'current-account' },
+      }),
+    'list',
+    undefined,
+    undefined,
+    '0.24.1',
+  );
+  await tick();
+  f.elements.get('search').value = 'alpha';
+  f.elements.get('search').oninput();
+  const card = f.cards()[0],
+    contextCount = f.contexts.length;
+  f.app.resource = {
+    contents: [
+      { uri: 'ui://figma-plugin/files', text: '<html>current</html>' },
+    ],
+  };
+  for (const version of ['0.23.99', '0.24.0'])
+    f.app.ontoolresult(
+      result({
+        version,
+        files: [],
+        catalog: { status: 'empty', accountId: 'stale-account' },
+      }),
+    );
+  await tick();
+  assert.equal(f.app.resourceReads || 0, 0);
+  assert.equal(f.app.closed, undefined);
+  assert.equal(f.document.written, undefined);
+  assert.equal(f.cards()[0], card);
+  assert.equal(f.elements.get('search').value, 'alpha');
+  assert.equal(f.elements.get('gallery').dataset.view, 'list');
+  assert.equal(f.elements.get('notice').hidden, true);
+  assert.equal(f.contexts.length, contextCount);
 });
 test('a failed context delivery retries the unchanged context on the next poll', async () => {
   let attempts = 0;

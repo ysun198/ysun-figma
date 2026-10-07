@@ -1,6 +1,6 @@
 {
   "name": "figma-plugin-local",
-  "version": "0.24.1",
+  "version": "0.24.2",
   "private": true,
   "description": "ysun figma：在 Codex 中读取、编辑和导出 Figma 设计",
   "license": "MIT",
@@ -11,6 +11,7 @@
     "app.html",
     "THIRD_PARTY_NOTICES.md",
     "src/core.js",
+    "src/version.js",
     "src/account-reader.js",
     "scripts/bridge-client.cjs",
     "scripts/bridge-server.cjs",

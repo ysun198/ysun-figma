@@ -4,6 +4,7 @@ import {
   applyHostStyleVariables,
 } from '@modelcontextprotocol/ext-apps';
 import { createCanvasView } from './canvas-view.js';
+import { newer } from './version.js';
 const app = new App(
   { name: 'ysun-figma-files', version: APP_VERSION },
   { availableDisplayModes: ['inline', 'fullscreen'] },
@@ -311,12 +312,12 @@ function render(data, force = false) {
     data.version !== APP_VERSION &&
     /^\d+\.\d+\.\d+$/.test(data.version)
   ) {
-    if (!replacing)
-      void replaceWorkbench().catch((error) => {
-        replacing = false;
-        notice('工作台更新未完成：' + errorText(error), true);
-        scheduleWatch(1000);
-      });
+    if (!newer(data.version, APP_VERSION)) return;
+    void replaceWorkbench().catch((error) => {
+      replacing = false;
+      notice('工作台更新未完成：' + errorText(error), true);
+      scheduleWatch(1000);
+    });
     return;
   }
   snapshotEpoch++;
