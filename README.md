@@ -12,9 +12,7 @@
 帮我安装 ysun figma：https://github.com/ysun198/ysun-figma
 ```
 
-后续更新会自动安装。
-
-目前支持 macOS，需要 Figma 桌面端。免费账号可用，本地操作不消耗官方远程 MCP 额度；Figma 的文件权限和套餐限制仍然适用。
+目前仅支持 macOS，需要 Figma 桌面端。免费账号可用，本地操作不消耗官方远程 MCP 额度；Figma 的文件权限和套餐限制仍然适用。
 
 ## 开发
 

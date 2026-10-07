@@ -12,9 +12,7 @@ Copy this into Codex:
 Install ysun figma: https://github.com/ysun198/ysun-figma
 ```
 
-Future releases install automatically.
-
-Currently available for macOS and requires Figma Desktop. Free accounts are supported. Local operations do not consume the official remote MCP quota; Figma's file permissions and plan restrictions still apply.
+Currently supports macOS only and requires Figma Desktop. Free accounts are supported. Local operations do not consume the official remote MCP quota; Figma's file permissions and plan restrictions still apply.
 
 ## Develop
 
