@@ -2,32 +2,25 @@
 
 **简体中文** | [English](README.en.md)
 
-在 Codex 中通过本地原生 Plugin API 读取、编辑和导出 Figma 文件。本地执行不消耗官方远程 MCP 额度，文件权限和 Figma 套餐限制仍然适用。
+在 Codex 里读取、修改和导出 Figma 设计，侧边栏实时查看预览。
 
-## 使用
+把[这个仓库的链接](https://github.com/ysun198/ysun-figma)发给 Codex，说：“帮我安装 ysun figma，并连接 Figma。”后续更新会自动安装。
 
-目前支持 macOS。先装好 Codex 和 Figma 桌面端，并登录你的 Figma 账号。
-
-1. **安装插件**：下载[最新版本](https://github.com/ysun198/ysun-figma/releases/latest)中的 ZIP 文件，在 Codex 里说：“帮我安装刚下载的 ysun figma 插件，并连接 Figma。”
-2. **修改设计**：在 Figma 桌面端打开要修改的文件，在 Codex 对话里说出需求，比如：“用 ysun figma 把这个页面改成深色，再加一个登录弹窗。”设计会直接写入这个 Figma 文件。
-3. **查看结果**：在 Codex 侧边栏打开 ysun figma，选择这个文件。你一边聊天，预览会随设计修改自动更新；也可以直接在 Figma 桌面端查看。
-
-使用时保持 Figma 桌面端和其中的 ysun figma 插件运行。手动编辑和播放原型在 Figma 桌面端完成。后续发布的新版本会自动更新。
+目前支持 macOS，需要 Figma 桌面端。免费账号可用，本地操作不消耗官方远程 MCP 额度；Figma 的文件权限和套餐限制仍然适用。
 
 ## 开发
 
-需要 Node.js 24 或更新版本。发行包运行时不依赖 npm 安装。
+开发需要 Node.js 24 或更高版本。在仓库目录运行：
 
 ```sh
-npm ci
-npm test
-npm run check
-FIGMA_RELEASE_KEY_FILE=/absolute/private/key.pem npm run release
+npm ci           # 安装开发工具
+npm test         # 运行测试
+npm run check    # 检查代码格式、代码问题和构建结果
 ```
 
-`npm run format` 格式化源码。测试覆盖执行、恢复、身份、传输、界面和打包；宿主相关检查需要安装 Codex。发行包经过公开内容审计，包含适用于 Apple Silicon 和 Intel macOS 的官方 Node.js 二进制。Apple Silicon 已完成实机验收，Intel 实机尚未验收。
+界面和 Figma 内运行的代码在 `src/`，连接、安装和更新逻辑在 `scripts/`，给 Codex 的任务指引在 `skills/`。改完后重新运行测试和检查；`npm run format` 可以自动整理代码格式。
 
-维护者通过 GitHub Actions 的 **Publish release** 工作流选择发布。私有 `RELEASE_SIGNING_KEY` 必须与 `package.json` 中的公钥匹配；工作流完成签名和全部资源上传后，才向已安装的客户端开放更新。
+发布新版本时，先更新版本号并把修改提交到 GitHub，再运行 GitHub Actions 的 **Publish release** 工作流。它会完成检查、打包和发布；发布签名的配置见[安装与更新](docs/INSTALL.md#发布)。
 
 进一步了解[安装与更新](docs/INSTALL.md)、[架构](docs/ARCHITECTURE.md)、[隐私与访问](docs/PRIVACY.md)和[第三方声明](NOTICE.md)。
 
