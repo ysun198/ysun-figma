@@ -4,7 +4,7 @@
 
 **Tell Codex what you have in mind. Let it build your design in Figma.**
 
-Start with a message or a `/` command, or open the plugin in the Codex sidebar.
+Mention **ysun figma** in your conversation or select the plugin with `/`; you can also preview your designs in the Codex sidebar.
 
 Copy this into Codex:
 
