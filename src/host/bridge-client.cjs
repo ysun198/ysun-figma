@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 
 const { connectionPath } = require('./state.cjs');
-const { BRIDGE_PROTOCOL_VERSION } = require('../src/core.js');
+const { BRIDGE_PROTOCOL_VERSION } = require('../shared/core.js');
 
 function validateConnection(connection) {
   const url = new URL(connection.url);

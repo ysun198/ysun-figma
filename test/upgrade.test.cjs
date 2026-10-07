@@ -4,16 +4,19 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const test = require('node:test');
-const { readLedger } = require('../test-support/ledger.cjs');
+const { readLedger } = require('./helpers/ledger.cjs');
 const vm = require('node:vm');
-const { BRIDGE_RUNTIME_VERSION } = require('../src/core.js');
+const { BRIDGE_RUNTIME_VERSION } = require('../src/shared/core.js');
 const {
   createBridgeServer,
   SESSION_TTL_MS,
   CLIENT_LEASE_MS,
-} = require('../scripts/bridge-server.cjs');
-const { saveExports, uploadAssets } = require('../scripts/artifact-client.cjs');
-const { targetIdentity } = require('../scripts/targets.cjs');
+} = require('../src/host/bridge-server.cjs');
+const {
+  saveExports,
+  uploadAssets,
+} = require('../src/host/artifact-client.cjs');
+const { targetIdentity } = require('../src/host/targets.cjs');
 async function fixture(t, options = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'figma-upgrade-'));
   const databasePath = path.join(directory, 'operations.sqlite');
@@ -536,7 +539,7 @@ function ui() {
     fetch: async () => ({ ok: true, status: 204 }),
   });
   vm.runInContext(
-    fs.readFileSync(path.join(__dirname, '../src/ui.js'), 'utf8'),
+    fs.readFileSync(path.join(__dirname, '../src/figma/ui.js'), 'utf8'),
     context,
   );
   return { context, messages, elements, parent };
@@ -613,7 +616,10 @@ test('both UI and native host refuse closing before a result receipt is delivere
     formatBridgeError: (e) => e.message,
   });
   vm.runInContext(
-    fs.readFileSync(path.join(__dirname, '../src/native-runtime.js'), 'utf8'),
+    fs.readFileSync(
+      path.join(__dirname, '../src/figma/native-runtime.js'),
+      'utf8',
+    ),
     host,
   );
   const operation = figma.ui.onmessage({ type: 'RUN_JOB', kind: 'exec' });
@@ -654,7 +660,10 @@ test('native writes refresh the design revision even when dynamic-page documentc
     formatBridgeError: (e) => e.message,
   });
   vm.runInContext(
-    fs.readFileSync(path.join(__dirname, '../src/native-runtime.js'), 'utf8'),
+    fs.readFileSync(
+      path.join(__dirname, '../src/figma/native-runtime.js'),
+      'utf8',
+    ),
     host,
   );
   await figma.ui.onmessage({
@@ -770,7 +779,10 @@ test('manual page edits invalidate previews in dynamic mode without loading unre
     formatBridgeError: (error) => error.message,
   });
   vm.runInContext(
-    fs.readFileSync(path.join(__dirname, '../src/native-runtime.js'), 'utf8'),
+    fs.readFileSync(
+      path.join(__dirname, '../src/figma/native-runtime.js'),
+      'utf8',
+    ),
     context,
   );
   await new Promise((resolve) => setImmediate(resolve));
@@ -829,7 +841,10 @@ test('job observation skips existing root arrays and registers newly loaded empt
     ui: { postMessage: (message) => packets.push(message) },
   };
   vm.runInContext(
-    fs.readFileSync(path.join(__dirname, '../src/native-runtime.js'), 'utf8'),
+    fs.readFileSync(
+      path.join(__dirname, '../src/figma/native-runtime.js'),
+      'utf8',
+    ),
     vm.createContext({
       figma,
       __html__: '',

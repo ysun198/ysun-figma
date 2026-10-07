@@ -8,7 +8,7 @@
       "interface": {
         "displayName": "ysun figma",
         "shortDescription": "连接 Figma，读取、编辑和导出设计",
-        "longDescription": "独立开发的 Figma 工具，免费账号可用。在 Codex 中搜索账号文件、查看原生画布；通过本地插件读取、编辑和导出，不消耗官方远程 MCP 额度。",
+        "longDescription": "通过 Figma 桌面端直接读取、编辑和导出设计，本地操作不限次数，免费 Figma 账号也能无限使用，不消耗官方 MCP 额度。可搜索账号文件，并在 Codex 工作台实时预览设计。",
         "capabilities": ["Interactive", "Read", "Write"],
         "defaultPrompt": ["打开 ysun figma 并连接我的设计"],
         "composerIcon": "./assets/icon.svg",

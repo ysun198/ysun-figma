@@ -6,11 +6,11 @@ const http = require('node:http');
 const vm = require('node:vm');
 const crypto = require('node:crypto');
 const test = require('node:test');
-const { readLedger } = require('../test-support/ledger.cjs');
-const { fixture } = require('../test-support/figma.cjs');
-const { createBridgeServer } = require('../scripts/bridge-server.cjs');
-const { connectionPath, writePrivateJson } = require('../scripts/state.cjs');
-const mcp = require('../build/plugin/scripts/mcp.cjs');
+const { readLedger } = require('./helpers/ledger.cjs');
+const { fixture } = require('./helpers/figma.cjs');
+const { createBridgeServer } = require('../src/host/bridge-server.cjs');
+const { connectionPath, writePrivateJson } = require('../src/host/state.cjs');
+const mcp = require('../build/plugin/src/host/mcp.cjs');
 
 // Execute the shipped MCP, HTTP relay, browser UI and compiled native runtime.
 // Only the Figma API/DOM boundaries are doubles; this is not a rendering test.
@@ -105,7 +105,7 @@ async function connected(t) {
   });
   vm.runInContext(
     fs
-      .readFileSync(path.join(__dirname, '../src/ui.js'), 'utf8')
+      .readFileSync(path.join(__dirname, '../src/figma/ui.js'), 'utf8')
       .replace("'http://localhost:38491'", JSON.stringify(url)),
     ui,
   );

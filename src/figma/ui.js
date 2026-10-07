@@ -375,7 +375,7 @@ async function deliverReceipt() {
     } else readyStatus();
   } catch (error) {
     pending.sending = false;
-    pause(`Result retained for ${pending.id}. ${error.message}`);
+    pause(`操作结果已保留（${pending.id}），发送失败：${error.message}`);
     pending.reject(error);
   }
 }
@@ -393,9 +393,7 @@ function execute(job) {
     pending.timer = setTimeout(
       () => {
         if (direct.pending !== pending || pending.message) return;
-        pause(
-          `Still waiting for ${job.id}. Inspect its outcome; it will not be repeated.`,
-        );
+        pause(`仍在等待操作结果（${job.id}），请让 Codex 核对后继续。`);
         reject(new Error('Figma execution deadline exceeded'));
       },
       10 * 60 * 1000,
@@ -554,7 +552,7 @@ byId('disconnect').addEventListener('click', async () => {
     direct.grantToken = '';
     closePlugin();
   } catch (error) {
-    pause(`Could not revoke authorization: ${error.message}`);
+    pause(`未能撤销授权：${error.message}`);
   }
 });
 function trustedHostMessage(event) {

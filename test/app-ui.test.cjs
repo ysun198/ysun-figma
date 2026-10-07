@@ -6,9 +6,12 @@ const assert = require('node:assert/strict');
 const uiSource = require('esbuild').buildSync({
   stdin: {
     contents:
-      fs.readFileSync(path.join(__dirname, '../src/app-ui.js'), 'utf8') +
+      fs.readFileSync(
+        path.join(__dirname, '../src/workbench/app-ui.js'),
+        'utf8',
+      ) +
       '\nglobalThis.uiTest = { refresh, render, openFile, applyHostContext, visibleFiles, watch };',
-    resolveDir: path.join(__dirname, '../src'),
+    resolveDir: path.join(__dirname, '../src/workbench'),
   },
   bundle: true,
   write: false,

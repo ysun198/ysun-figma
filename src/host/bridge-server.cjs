@@ -13,7 +13,7 @@ const {
   BRIDGE_RUNTIME_VERSION,
   BRIDGE_PROTOCOL_VERSION,
   formatBridgeError,
-} = require('../src/core.js');
+} = require('../shared/core.js');
 const { createArtifacts, validName } = require('./artifacts.cjs');
 const { resolveTarget, targetIdentity } = require('./targets.cjs');
 const {
@@ -26,7 +26,7 @@ const {
 const { fileList } = require('./app.cjs');
 const PROTOCOL_VERSION = BRIDGE_PROTOCOL_VERSION;
 const GRANT_TTL_MS = 90 * 24 * 60 * 60 * 1000;
-const PACKAGE_VERSION = require('../package.json').version;
+const PACKAGE_VERSION = require('../../package.json').version;
 const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = 38491;
 const CLIENT_LEASE_MS = 45_000;
@@ -684,7 +684,11 @@ function createBridgeServer(options = {}) {
       const worker = require('node:child_process').spawn(
         process.execPath,
         [path.join(__dirname, 'catalog-sync.cjs')],
-        { cwd: path.join(__dirname, '..'), env: environment, stdio: 'ignore' },
+        {
+          cwd: path.join(__dirname, '../..'),
+          env: environment,
+          stdio: 'ignore',
+        },
       );
       catalogWorker = worker;
       const ended = () => {

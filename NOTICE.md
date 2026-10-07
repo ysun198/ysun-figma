@@ -4,7 +4,7 @@
 
 ## 界面图标
 
-`src/app.template.html` 和 `src/codex.css` 中的内联界面图标来自 [Lucide](https://github.com/lucide-icons/lucide/tree/1fae58d0a9c661a338036838caf3399b5507bab6)，固定提交为 `1fae58d0a9c661a338036838caf3399b5507bab6`。描边宽度随界面尺寸调整。发行内容不包含 Codex 应用代码或专有图标路径。
+`src/workbench/app.template.html` 和 `src/shared/codex.css` 中的内联界面图标来自 [Lucide](https://github.com/lucide-icons/lucide/tree/1fae58d0a9c661a338036838caf3399b5507bab6)，固定提交为 `1fae58d0a9c661a338036838caf3399b5507bab6`。描边宽度随界面尺寸调整。发行内容不包含 Codex 应用代码或专有图标路径。
 
 ISC License
 

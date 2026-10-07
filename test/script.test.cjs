@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { fixture } = require('../test-support/figma.cjs');
-const { summarizeStatus } = require('../scripts/bridge-server.cjs');
+const { fixture } = require('./helpers/figma.cjs');
+const { summarizeStatus } = require('../src/host/bridge-server.cjs');
 test('success and failure receipts disclose dropped logs and truncated messages', async () => {
   const f = fixture(),
     source =

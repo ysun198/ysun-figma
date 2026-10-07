@@ -7,12 +7,15 @@ const {
   auditRelease,
   inspectPublicFiles,
 } = require('../scripts/audit-release.cjs');
-const { installPlugin, bridgeStateDirectory } = require('../scripts/state.cjs');
-const { readLedger, seedLedger } = require('../test-support/ledger.cjs');
+const {
+  installPlugin,
+  bridgeStateDirectory,
+} = require('../src/host/state.cjs');
+const { readLedger, seedLedger } = require('./helpers/ledger.cjs');
 
 test('the single production package excludes runtime state, history and development tools', () => {
   const { files } = auditRelease();
-  assert(files.includes('scripts/launch-mcp.cjs'));
+  assert(files.includes('src/host/launch-mcp.cjs'));
   assert(files.includes('manifest.json'));
   assert(files.includes('docs/INSTALL.md'));
   assert(files.includes('LICENSE'));
@@ -20,9 +23,8 @@ test('the single production package excludes runtime state, history and developm
   assert(
     files.every(
       (file) =>
-        !/^\.(?:bridge|local|git)|^test|^designs|^scripts\/(?:release|audit-release)/.test(
-          file,
-        ),
+        !/^\.(?:bridge|local|git)|^test|^designs/.test(file) &&
+        (!file.startsWith('scripts/') || file === 'scripts/launch-mcp.sh'),
     ),
   );
 });

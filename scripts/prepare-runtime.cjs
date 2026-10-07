@@ -4,8 +4,8 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { execFileSync, execFile } = require('node:child_process');
 const { promisify } = require('node:util');
-const run = promisify(execFile),
-  version = '24.21.0';
+const run = promisify(execFile);
+const { version, sha256 } = require('../package.json').bundledNode;
 const root = path.join(__dirname, '..'),
   cache = path.join(root, 'build/node');
 const sha = (file) =>
@@ -13,24 +13,10 @@ const sha = (file) =>
 async function runtime(arch) {
   fs.mkdirSync(cache, { recursive: true });
   const source = `https://nodejs.org/download/release/v${version}/`,
-    name = `node-v${version}-darwin-${arch}.tar.gz`;
-  const { stdout } = await run('/usr/bin/curl', [
-    '--fail',
-    '--silent',
-    '--show-error',
-    '--location',
-    '--max-time',
-    '30',
-    '--retry',
-    '2',
-    source + 'SHASUMS256.txt',
-  ]);
-  const checksum = stdout
-    .split('\n')
-    .find((line) => line.endsWith('  ' + name))
-    ?.split(' ')[0];
+    name = `node-v${version}-darwin-${arch}.tar.gz`,
+    checksum = sha256['darwin-' + arch];
   if (!/^[a-f0-9]{64}$/.test(checksum || ''))
-    throw new Error('Official Node checksum is missing.');
+    throw new Error('Bundled Node checksum is missing.');
   const archive = path.join(cache, name);
   if (!fs.existsSync(archive) || sha(archive) !== checksum) {
     const partial = archive + '.download';

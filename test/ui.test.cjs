@@ -53,7 +53,7 @@ test(
       },
     });
     vm.runInContext(
-      fs.readFileSync(path.join(__dirname, '../src/ui.js'), 'utf8'),
+      fs.readFileSync(path.join(__dirname, '../src/figma/ui.js'), 'utf8'),
       context,
     );
     assert.match(vm.runInContext('direct.clientId', context), /^[a-f0-9]{32}$/);
@@ -185,7 +185,7 @@ test('an uncertain receipt retains its identity and cannot be cleared by re-pair
     },
   });
   vm.runInContext(
-    fs.readFileSync(path.join(__dirname, '../src/ui.js'), 'utf8'),
+    fs.readFileSync(path.join(__dirname, '../src/figma/ui.js'), 'utf8'),
     context,
   );
   vm.runInContext(

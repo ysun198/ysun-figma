@@ -4,7 +4,7 @@ const path = require('node:path');
 function buildApp(directory) {
   const { buildSync } = require('esbuild');
   const template = fs.readFileSync(
-    path.join(directory, 'src/app.template.html'),
+    path.join(directory, 'src/workbench/app.template.html'),
     'utf8',
   );
   if (template.split('<!-- APP_SCRIPT -->').length !== 2)
@@ -12,7 +12,7 @@ function buildApp(directory) {
   if (template.split('/* CODEX_STYLES */').length !== 2)
     throw new Error('App must contain one shared style insertion point');
   const result = buildSync({
-    entryPoints: [path.join(directory, 'src/app-ui.js')],
+    entryPoints: [path.join(directory, 'src/workbench/app-ui.js')],
     bundle: true,
     write: false,
     metafile: true,
@@ -43,8 +43,8 @@ function buildApp(directory) {
   }
   const notices = [
     fs.readFileSync(path.join(directory, 'NOTICE.md'), 'utf8').trim(),
-    '## Bundled MCP Apps dependencies',
-    'The following build-time dependencies are included in app.html. No network or npm installation is required at runtime.',
+    '## MCP Apps 打包依赖',
+    '以下依赖已打包进 app.html，运行时无需下载或安装 npm 包。许可证文本保留原文。',
   ];
   for (const name of [...packages].sort()) {
     const root = path.join(directory, 'node_modules', name);
@@ -61,7 +61,7 @@ function buildApp(directory) {
   return {
     'app.html': template
       .replace('/* CODEX_STYLES */', () =>
-        fs.readFileSync(path.join(directory, 'src/codex.css'), 'utf8'),
+        fs.readFileSync(path.join(directory, 'src/shared/codex.css'), 'utf8'),
       )
       .replace(
         '<!-- APP_SCRIPT -->',

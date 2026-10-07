@@ -4,11 +4,11 @@ const fs = require('node:fs'),
   path = require('node:path');
 const test = require('node:test');
 test('the emitted authenticated browser worker compiles, including its diagnostic reporter', () => {
-  const program = require('../scripts/catalog-sync.cjs').browserProgram();
+  const program = require('../src/host/catalog-sync.cjs').browserProgram();
   new Function('return (async()=>{' + program + '})();');
 });
-const { createCatalog, normalizeFile } = require('../scripts/catalog.cjs');
-const { readAccountView } = require('../src/account-reader.js');
+const { createCatalog, normalizeFile } = require('../src/host/catalog.cjs');
+const { readAccountView } = require('../src/host/account-reader.js');
 const file = (fileKey = 'FileAlpha12', name = 'Same name') => ({
   fileKey,
   name,
@@ -478,7 +478,7 @@ test('stopping the companion stops its owned account worker and marks an interru
     });
     return worker;
   });
-  const { createBridgeServer } = require('../scripts/bridge-server.cjs'),
+  const { createBridgeServer } = require('../src/host/bridge-server.cjs'),
     bridge = createBridgeServer({ port: 0 });
   const { url } = await bridge.start();
   t.after(() => bridge.stop());
@@ -532,8 +532,8 @@ test('paged catalog updates finalize by exact key set without one oversized meta
   assert.equal(catalog.view().status, 'ready');
 });
 test('account catalog routes remain admin-only, even for a paired native plugin', async (t) => {
-  const { createBridgeServer } = require('../scripts/bridge-server.cjs');
-  const { BRIDGE_RUNTIME_VERSION } = require('../src/core.js');
+  const { createBridgeServer } = require('../src/host/bridge-server.cjs');
+  const { BRIDGE_RUNTIME_VERSION } = require('../src/shared/core.js');
   const bridge = createBridgeServer({ port: 0 }),
     { url } = await bridge.start();
   t.after(() => bridge.stop());
@@ -610,7 +610,7 @@ test('a failed sync can retry after cooldown; it is not permanently suppressed a
       stdio: 'ignore',
     });
   });
-  const { createBridgeServer } = require('../scripts/bridge-server.cjs'),
+  const { createBridgeServer } = require('../src/host/bridge-server.cjs'),
     bridge = createBridgeServer({ port: 0, catalogPath: filename }),
     { url } = await bridge.start();
   t.after(() => bridge.stop());

@@ -1,7 +1,7 @@
 const { DatabaseSync } = require('node:sqlite');
 const path = require('node:path');
-const { createExecution } = require('../scripts/execution.cjs');
-const { createArtifacts } = require('../scripts/artifacts.cjs');
+const { createExecution } = require('../../src/host/execution.cjs');
+const { createArtifacts } = require('../../src/host/artifacts.cjs');
 
 function seedLedger(file, jobs) {
   createExecution({

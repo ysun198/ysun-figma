@@ -7,9 +7,9 @@ const {
   verify,
   currentPath,
   prepareManagedCompanion,
-} = require('../scripts/installation.cjs');
-const { installRuntime } = require('../scripts/state.cjs');
-const { readLedger, seedLedger } = require('../test-support/ledger.cjs');
+} = require('../src/host/installation.cjs');
+const { installRuntime } = require('../src/host/state.cjs');
+const { readLedger, seedLedger } = require('./helpers/ledger.cjs');
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'figma-install-')),
     state = path.join(root, 'state'),
@@ -207,7 +207,7 @@ test('concurrent Codex launches converge on the newest package and reclaim a dea
         [
           '-e',
           script,
-          path.resolve(__dirname, '../scripts/installation.cjs'),
+          path.resolve(__dirname, '../src/host/installation.cjs'),
           source,
         ],
         { stdio: ['ignore', 'ignore', 'pipe'] },

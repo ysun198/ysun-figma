@@ -18,7 +18,7 @@ test(
       );
     t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
     const plugin = path.join(directory, 'current');
-    for (const relative of require('../scripts/installation.cjs').publicEntries(
+    for (const relative of require('../src/host/installation.cjs').publicEntries(
       root,
     )) {
       const target = path.join(plugin, relative);

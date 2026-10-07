@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { newer } = require('../src/version.js');
+const { newer } = require('../shared/version.js');
 const { promisify } = require('node:util');
 const execFile = promisify(require('node:child_process').execFile);
 const {

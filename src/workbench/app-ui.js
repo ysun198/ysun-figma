@@ -4,7 +4,7 @@ import {
   applyHostStyleVariables,
 } from '@modelcontextprotocol/ext-apps';
 import { createCanvasView } from './canvas-view.js';
-import { newer } from './version.js';
+import { newer } from '../shared/version.js';
 const app = new App(
   { name: 'ysun-figma-files', version: APP_VERSION },
   { availableDisplayModes: ['inline', 'fullscreen'] },

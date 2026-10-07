@@ -18,7 +18,7 @@ const {
   matchingClients,
 } = require('./targets.cjs');
 const app = require('./app.cjs');
-const version = require('../package.json').version;
+const version = require('../../package.json').version;
 const object = (properties = {}, required = []) => ({
   type: 'object',
   properties,
@@ -154,11 +154,10 @@ function toolError(error, input = {}) {
                       ? 'CONNECTION_UNAVAILABLE'
                       : 'FIGMA_OPERATION_FAILED';
   const messages = {
-    FIGMA_NOT_CONNECTED: 'Figma 文件尚未连接，让 Codex 完成连接即可。',
-    FILE_AMBIGUOUS: '已连接多个 Figma 文件，请先选择要使用的文件。',
-    OUTCOME_NEEDS_REVIEW: '上次操作的结果需要检查，Codex 会核对后继续。',
-    PLUGIN_UPDATE_REQUIRED:
-      'ysun figma需要重新打开，Codex 会完成更新并恢复连接。',
+    FIGMA_NOT_CONNECTED: '目标 Figma 文件尚未连接。',
+    FILE_AMBIGUOUS: '存在多个可能的 Figma 实例，需要明确目标文件和客户端。',
+    OUTCOME_NEEDS_REVIEW: '上次操作的结果尚未确认，需要先核对设计。',
+    PLUGIN_UPDATE_REQUIRED: 'Figma 中的 ysun figma 需要更新并重新打开。',
     CONNECTION_UNAVAILABLE: '连接暂时不可用，可以重试或让 Codex 恢复连接。',
     FIGMA_OPERATION_FAILED: '操作未完成，请查看原始错误和执行回执。',
     ARTIFACT_DELIVERY_FAILED: '预览或文件交付失败，原始 Figma 执行回执已保留。',
@@ -1001,7 +1000,7 @@ function serve(input = process.stdin, output = process.stdout) {
     let observed;
     try {
       observed = JSON.parse(
-        fs.readFileSync(path.join(__dirname, '../package.json'), 'utf8'),
+        fs.readFileSync(path.join(__dirname, '../../package.json'), 'utf8'),
       ).version;
     } catch (error) {
       if (error.code === 'ENOENT') return runtime;
@@ -1010,7 +1009,7 @@ function serve(input = process.stdin, output = process.stdout) {
     if (observed === runtime.version) return runtime;
     // Managed promotion replaces the one current package atomically. Keep the
     // host's stdio transport alive and discard only this package's module cache.
-    const root = path.resolve(__dirname, '..') + path.sep;
+    const root = path.resolve(__dirname, '../..') + path.sep;
     for (const id of Object.keys(require.cache))
       if (id.startsWith(root)) delete require.cache[id];
     runtime = require(__filename);

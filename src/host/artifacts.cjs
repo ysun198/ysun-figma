@@ -3,7 +3,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { privateDirectory } = require('./state.cjs');
 const MAX_BINARY_BYTES = 32 * 1024 * 1024;
-const { validArtifactName: validName } = require('../src/core.js');
+const { validArtifactName: validName } = require('../shared/core.js');
 function createArtifacts(directory) {
   function location(group, name) {
     if (!validName(group) || !validName(name))

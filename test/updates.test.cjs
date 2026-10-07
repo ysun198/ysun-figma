@@ -12,15 +12,15 @@ const {
   verifyRelease,
   archiveEntries,
   updateStatus,
-} = require('../scripts/updates.cjs');
+} = require('../src/host/updates.cjs');
 const { signRelease } = require('../scripts/release.cjs');
 const {
   prepareManagedCompanion,
   currentPath,
   publicEntries,
   recoverInstallation,
-} = require('../scripts/installation.cjs');
-const { receive } = require('../scripts/update-service.cjs');
+} = require('../src/host/installation.cjs');
+const { receive } = require('../src/host/update-service.cjs');
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'figma-update-'));
   const oldState = process.env.FIGMA_PLUGIN_STATE_DIR;
@@ -727,17 +727,17 @@ test('a failed new-runtime health probe restores working code and native entrypo
   const source = f.source('1.1.0');
   const pkg = JSON.parse(fs.readFileSync(path.join(source, 'package.json')));
   pkg.distributionFiles.push(
-    'scripts/companion.cjs',
-    'scripts/bridge-client.cjs',
+    'src/host/companion.cjs',
+    'src/host/bridge-client.cjs',
   );
   fs.writeFileSync(path.join(source, 'package.json'), JSON.stringify(pkg));
-  fs.mkdirSync(path.join(source, 'scripts'));
+  fs.mkdirSync(path.join(source, 'src/host'), { recursive: true });
   fs.writeFileSync(
-    path.join(source, 'scripts/companion.cjs'),
+    path.join(source, 'src/host/companion.cjs'),
     "exports.ensureCompanion=async()=>{throw new Error('invalid new runtime');};",
   );
   fs.writeFileSync(
-    path.join(source, 'scripts/bridge-client.cjs'),
+    path.join(source, 'src/host/bridge-client.cjs'),
     'exports.bridgeRequest=async()=>({});',
   );
   await assert.rejects(

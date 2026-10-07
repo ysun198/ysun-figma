@@ -10,7 +10,7 @@ function signRelease(artifact, pkg, privateKey) {
   const release = {
     product: pkg.name,
     version: pkg.version,
-    repository: require('./updates.cjs').repository(pkg),
+    repository: require('../src/host/updates.cjs').repository(pkg),
     archive: path.basename(artifact),
     size: bytes.length,
     sha256: crypto.createHash('sha256').update(bytes).digest('hex'),

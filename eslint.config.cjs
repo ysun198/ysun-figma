@@ -5,9 +5,9 @@ module.exports = [
   {
     files: [
       'src/**/*.js',
+      'src/**/*.cjs',
       'scripts/**/*.cjs',
       'test/**/*.cjs',
-      'test-support/**/*.cjs',
       'eslint.config.cjs',
     ],
     rules: {
@@ -21,49 +21,49 @@ module.exports = [
   },
   {
     files: [
+      'src/host/**/*.cjs',
       'scripts/**/*.cjs',
       'test/**/*.cjs',
-      'test-support/**/*.cjs',
       'eslint.config.cjs',
     ],
     languageOptions: { globals: globals.node },
   },
   {
     files: [
-      'src/app-ui.js',
-      'src/canvas-view.js',
-      'src/ui.js',
-      'src/account-reader.js',
+      'src/workbench/app-ui.js',
+      'src/workbench/canvas-view.js',
+      'src/figma/ui.js',
+      'src/host/account-reader.js',
     ],
     languageOptions: { globals: globals.browser },
   },
   {
-    files: ['src/app-ui.js'],
+    files: ['src/workbench/app-ui.js'],
     languageOptions: { globals: { APP_VERSION: 'readonly' } },
   },
   {
     files: [
-      'src/core.js',
-      'src/account-reader.js',
-      'src/design-queries.js',
-      'src/version.js',
+      'src/shared/core.js',
+      'src/host/account-reader.js',
+      'src/figma/design-queries.js',
+      'src/shared/version.js',
     ],
     languageOptions: { globals: { module: 'readonly' } },
   },
   {
     // These four files are concatenated, in order, into one native Figma script.
     files: [
-      'src/core.js',
-      'src/design-queries.js',
-      'src/script-runtime.js',
-      'src/native-runtime.js',
+      'src/shared/core.js',
+      'src/figma/design-queries.js',
+      'src/figma/script-runtime.js',
+      'src/figma/native-runtime.js',
     ],
     languageOptions: {
       sourceType: 'script',
     },
   },
   {
-    files: ['src/script-runtime.js'],
+    files: ['src/figma/script-runtime.js'],
     languageOptions: {
       globals: {
         figma: 'readonly',
@@ -74,7 +74,7 @@ module.exports = [
     },
   },
   {
-    files: ['src/native-runtime.js'],
+    files: ['src/figma/native-runtime.js'],
     languageOptions: {
       globals: {
         figma: 'readonly',

@@ -1,9 +1,9 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { createDesignQueries } = require('../src/design-queries.js');
-const { parseFigmaUrl, resolveTarget } = require('../scripts/targets.cjs');
-const { validate, tools } = require('../scripts/mcp.cjs');
-const { fixture: nativeFixture } = require('../test-support/figma.cjs');
+const { createDesignQueries } = require('../src/figma/design-queries.js');
+const { parseFigmaUrl, resolveTarget } = require('../src/host/targets.cjs');
+const { validate, tools } = require('../src/host/mcp.cjs');
+const { fixture: nativeFixture } = require('./helpers/figma.cjs');
 function fixture() {
   const nodes = new Map(),
     exports = [];

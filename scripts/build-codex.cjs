@@ -34,7 +34,12 @@ function filesUnder(directory, prefix = '') {
 }
 function auditCodexBundle(directory) {
   const plugin = path.join(directory, 'plugin');
-  const publicFiles = require('./installation.cjs').publicEntries(plugin);
+  const { bundledNode } = JSON.parse(
+    fs.readFileSync(path.join(plugin, 'package.json')),
+  );
+  const publicFiles = require('../src/host/installation.cjs').publicEntries(
+    plugin,
+  );
   inspectPublicFiles(plugin, publicFiles);
   const catalog = '.agents/plugins/marketplace.json';
   if (
@@ -51,6 +56,9 @@ function auditCodexBundle(directory) {
     );
     if (
       provenance.architecture !== architecture ||
+      provenance.version !== bundledNode.version ||
+      provenance.archiveSHA256 !==
+        bundledNode.sha256['darwin-' + architecture] ||
       !/^https:\/\/nodejs\.org\/download\/release\/v[\d.]+\/node-v[\d.]+-darwin-(arm64|x64)\.tar\.gz$/.test(
         provenance.source,
       ) ||

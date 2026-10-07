@@ -57,7 +57,7 @@ test('parallel Codex refreshes initialize every transport with the real bundled-
     prepareManagedCompanion,
     verify,
     currentPath,
-  } = require('../scripts/installation.cjs');
+  } = require('../src/host/installation.cjs');
   await prepareManagedCompanion(source);
   const original = verify(currentPath()),
     env = { ...process.env };
@@ -65,7 +65,7 @@ test('parallel Codex refreshes initialize every transport with the real bundled-
     new Promise((resolve, reject) => {
       const child = spawn(
         runtime,
-        [path.join(source, 'scripts/launch-mcp.cjs')],
+        [path.join(source, 'src/host/launch-mcp.cjs')],
         {
           env,
           stdio: ['pipe', 'pipe', 'pipe'],
@@ -140,7 +140,7 @@ test('a running managed MCP survives host cache deletion and serves activated UI
   const {
     publicEntries,
     prepareManagedCompanion,
-  } = require('../scripts/installation.cjs');
+  } = require('../src/host/installation.cjs');
   function copyPackage(destination, version) {
     for (const file of publicEntries(root)) {
       const target = path.join(destination, file);
@@ -171,7 +171,7 @@ test('a running managed MCP survives host cache deletion and serves activated UI
   const {
     createBridgeServer,
     PROTOCOL_VERSION,
-  } = require('../scripts/bridge-server.cjs');
+  } = require('../src/host/bridge-server.cjs');
   const server = createBridgeServer({ port: 0 });
   const connection = await server.start();
   fs.writeFileSync(
@@ -189,7 +189,7 @@ test('a running managed MCP survives host cache deletion and serves activated UI
       code: server.createPairing().code,
       clientId: 'cache-native-fixture',
       fileName: 'Design',
-      runtimeVersion: require('../src/core.js').BRIDGE_RUNTIME_VERSION,
+      runtimeVersion: require('../src/shared/core.js').BRIDGE_RUNTIME_VERSION,
       nativeBuild: 'a'.repeat(64),
     }),
   });
@@ -198,7 +198,7 @@ test('a running managed MCP survives host cache deletion and serves activated UI
   delete env.FIGMA_PLUGIN_BUNDLED_NODE;
   const child = spawn(
     process.execPath,
-    [path.join(cache, 'scripts/launch-mcp.cjs')],
+    [path.join(cache, 'src/host/launch-mcp.cjs')],
     { env, stdio: ['pipe', 'pipe', 'pipe'] },
   );
   let buffer = '',
@@ -347,14 +347,14 @@ test('a stale host package starts the verified current MCP without downgrading c
     prepareManagedCompanion,
     verify,
     currentPath,
-  } = require('../scripts/installation.cjs');
+  } = require('../src/host/installation.cjs');
   await prepareManagedCompanion(newer);
   const before = verify(currentPath());
   const env = { ...process.env };
   delete env.FIGMA_PLUGIN_BUNDLED_NODE;
   const child = spawn(
     process.execPath,
-    [path.join(cached, 'scripts/launch-mcp.cjs')],
+    [path.join(cached, 'src/host/launch-mcp.cjs')],
     { env, stdio: ['pipe', 'pipe', 'pipe'] },
   );
   let stderr = '',

@@ -1,17 +1,17 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
-const { publicEntries } = require('./installation.cjs');
+const { publicEntries } = require('../src/host/installation.cjs');
 const root = path.join(__dirname, '..');
 const output = path.join(root, 'build/plugin');
 
 function generatedFiles(directory = root) {
   const pkg = JSON.parse(fs.readFileSync(path.join(directory, 'package.json')));
   const nativeSource = [
-    'core.js',
-    'design-queries.js',
-    'script-runtime.js',
-    'native-runtime.js',
+    'shared/core.js',
+    'figma/design-queries.js',
+    'figma/script-runtime.js',
+    'figma/native-runtime.js',
   ]
     .map((name) => fs.readFileSync(path.join(directory, 'src', name), 'utf8'))
     .join('\n');
@@ -24,7 +24,7 @@ function generatedFiles(directory = root) {
     ';\n' +
     nativeSource;
   const template = fs.readFileSync(
-    path.join(directory, 'src/ui.template.html'),
+    path.join(directory, 'src/figma/ui.template.html'),
     'utf8',
   );
   if (template.split('<!-- BRIDGE_SCRIPT -->').length !== 2)
@@ -33,13 +33,13 @@ function generatedFiles(directory = root) {
     throw new Error('UI must contain one shared style insertion point');
   const ui = template
     .replace('/* CODEX_STYLES */', () =>
-      fs.readFileSync(path.join(directory, 'src/codex.css'), 'utf8'),
+      fs.readFileSync(path.join(directory, 'src/shared/codex.css'), 'utf8'),
     )
     .replace(
       '<!-- BRIDGE_SCRIPT -->',
       () =>
         '<script>\n' +
-        fs.readFileSync(path.join(directory, 'src/ui.js'), 'utf8') +
+        fs.readFileSync(path.join(directory, 'src/figma/ui.js'), 'utf8') +
         '\n</script>',
     );
   const metadata = JSON.parse(

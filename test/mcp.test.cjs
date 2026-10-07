@@ -6,7 +6,7 @@ const test = require('node:test');
 function isolatedRuntime(t, overrides) {
   const saved = new Map();
   for (const [name, patch] of Object.entries(overrides)) {
-    const id = require.resolve('../scripts/' + name + '.cjs');
+    const id = require.resolve('../src/host/' + name + '.cjs');
     const original = require(id);
     saved.set(id, require.cache[id]);
     require.cache[id] = {
@@ -14,7 +14,7 @@ function isolatedRuntime(t, overrides) {
       exports: { ...original, ...patch },
     };
   }
-  const id = require.resolve('../scripts/mcp.cjs');
+  const id = require.resolve('../src/host/mcp.cjs');
   saved.set(id, require.cache[id]);
   delete require.cache[id];
   const runtime = require(id);
@@ -26,9 +26,9 @@ function isolatedRuntime(t, overrides) {
   return runtime;
 }
 test('submission rejects an instance changed while assets were being uploaded', async (t) => {
-  const { createBridgeServer } = require('../scripts/bridge-server.cjs');
-  const { BRIDGE_RUNTIME_VERSION } = require('../src/core.js');
-  const { bridgeRequest } = require('../scripts/bridge-client.cjs');
+  const { createBridgeServer } = require('../src/host/bridge-server.cjs');
+  const { BRIDGE_RUNTIME_VERSION } = require('../src/shared/core.js');
+  const { bridgeRequest } = require('../src/host/bridge-client.cjs');
   const bridge = createBridgeServer({ port: 0 });
   const { url } = await bridge.start();
   t.after(() => bridge.stop());
@@ -264,7 +264,7 @@ test('file opening leaves duplicate native sessions for the agent to disambiguat
   const value = api.toolError(error);
   assert.equal(value.code, 'FILE_AMBIGUOUS');
   assert.equal(value.clients.length, 2);
-  const { fileList } = require('../scripts/app.cjs');
+  const { fileList } = require('../src/host/app.cjs');
   const data = fileList(
     { clients },
     {
@@ -284,7 +284,7 @@ test('file opening leaves duplicate native sessions for the agent to disambiguat
 test('stdio MCP negotiates, lists tools and reports invalid calls without stdout noise or startup dependencies', async (t) => {
   const child = spawn(
     process.execPath,
-    [path.join(__dirname, '../build/plugin/scripts/mcp.cjs')],
+    [path.join(__dirname, '../build/plugin/src/host/mcp.cjs')],
     { stdio: ['pipe', 'pipe', 'pipe'] },
   );
   t.after(() => child.kill());
@@ -426,7 +426,7 @@ test('stdio MCP negotiates, lists tools and reports invalid calls without stdout
   assert.equal(result.error.code, -32002);
 });
 test('app file data excludes grants, disconnected files, operation receipts and filesystem state', () => {
-  const { fileList } = require('../scripts/app.cjs');
+  const { fileList } = require('../src/host/app.cjs');
   const state = {
     version: 'test',
     adminToken: 'private',
@@ -470,8 +470,8 @@ test('compatible native builds need no update or new pairing; explicit additiona
   const {
     createBridgeServer,
     PROTOCOL_VERSION,
-  } = require('../scripts/bridge-server.cjs');
-  const { BRIDGE_RUNTIME_VERSION } = require('../src/core.js');
+  } = require('../src/host/bridge-server.cjs');
+  const { BRIDGE_RUNTIME_VERSION } = require('../src/shared/core.js');
   const state = fs.mkdtempSync(path.join(os.tmpdir(), 'figma-connect-reuse-')),
     before = process.env.FIGMA_PLUGIN_STATE_DIR;
   process.env.FIGMA_PLUGIN_STATE_DIR = state;
@@ -504,7 +504,7 @@ test('compatible native builds need no update or new pairing; explicit additiona
     }),
   });
   assert.equal(response.status, 200);
-  const { callTool } = require('../scripts/mcp.cjs');
+  const { callTool } = require('../src/host/mcp.cjs');
   const reused = await callTool('figma_connect', {});
   assert.equal(reused.state, 'connected');
   assert.equal(reused.code, undefined);
@@ -517,7 +517,7 @@ test('compatible native builds need no update or new pairing; explicit additiona
   assert.equal(status.clients[0].nativeBuild, 'a'.repeat(64));
 });
 test('tool errors give the view a recovery message while retaining original operation IDs for the agent', () => {
-  const { toolError } = require('../scripts/mcp.cjs');
+  const { toolError } = require('../src/host/mcp.cjs');
   assert.equal(
     toolError(new Error('No matching connected Figma file.')).code,
     'FIGMA_NOT_CONNECTED',
@@ -538,7 +538,7 @@ test('tool errors give the view a recovery message while retaining original oper
   assert.equal(unknown.receipt.job.id, 'original-write');
 });
 test('desktop launcher uses exact native URLs, also opens home, and surfaces failures', async () => {
-  const { launchDesktop } = require('../scripts/mcp.cjs');
+  const { launchDesktop } = require('../src/host/mcp.cjs');
   const calls = [];
   const run = async (...args) => {
     calls.push(args);

@@ -4,11 +4,11 @@ const { spawn } = require('node:child_process');
 const { currentPath, prepareManagedCompanion } = require('./installation.cjs');
 
 async function launch() {
-  const source = path.resolve(__dirname, '..');
+  const source = path.resolve(__dirname, '../..');
   const prepared = await prepareManagedCompanion(source);
   const child = spawn(
     prepared.runtime,
-    [path.join(currentPath(), 'scripts/mcp.cjs')],
+    [path.join(currentPath(), 'src/host/mcp.cjs')],
     {
       stdio: ['pipe', 'pipe', 'pipe'],
     },
@@ -31,7 +31,7 @@ async function launch() {
     process.exitCode = code ?? (signal ? 1 : 0);
   });
   // Never hold MCP discovery behind a network check or launchd registration.
-  void require(path.join(currentPath(), 'scripts/update-service.cjs'))
+  void require(path.join(currentPath(), 'src/host/update-service.cjs'))
     .ensureUpdateService()
     .catch((error) => console.error('Automatic updates: ' + error.message));
 }

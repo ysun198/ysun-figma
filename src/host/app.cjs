@@ -7,8 +7,8 @@ const mimeType = 'text/html;profile=mcp-app';
 // One self-themed SVG serves image and mask consumers. Image colors follow
 // Codex's secondary foreground; opaque artwork keeps host mask tinting intact.
 const iconPath =
-  require('../plugin.json').extensions['com.openai'].interface.composerIcon;
-const svg = fs.readFileSync(path.join(__dirname, '..', iconPath), 'utf8');
+  require('../../plugin.json').extensions['com.openai'].interface.composerIcon;
+const svg = fs.readFileSync(path.join(__dirname, '../..', iconPath), 'utf8');
 const icons = [
   {
     src: 'data:image/svg+xml;base64,' + Buffer.from(svg).toString('base64'),
@@ -29,7 +29,7 @@ function readResource(requested) {
       {
         ...resource,
         uri: requested,
-        text: fs.readFileSync(path.join(__dirname, '../app.html'), 'utf8'),
+        text: fs.readFileSync(path.join(__dirname, '../../app.html'), 'utf8'),
         _meta: {
           ui: {
             csp: {

@@ -76,10 +76,12 @@ for (const match of fs
   new vm.Script(match[1], { filename: 'app.html#script' });
 }
 
-for (const relativePath of fs
-  .readdirSync(path.join(root, 'scripts'))
-  .filter((name) => name.endsWith('.cjs'))
-  .map((name) => 'scripts/' + name)) {
+for (const relativePath of ['src', 'scripts'].flatMap((directory) =>
+  fs
+    .readdirSync(path.join(root, directory), { recursive: true })
+    .filter((name) => name.endsWith('.cjs'))
+    .map((name) => directory + '/' + name),
+)) {
   const source = fs.readFileSync(path.join(root, relativePath), 'utf8');
   new vm.Script(source, { filename: relativePath });
 }

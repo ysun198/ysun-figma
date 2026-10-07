@@ -6,7 +6,7 @@ const { bridgeStateDirectory, privateDirectory } = require('./state.cjs');
 const {
   BRIDGE_PROTOCOL_VERSION,
   BRIDGE_RUNTIME_VERSION,
-} = require('../src/core.js');
+} = require('../shared/core.js');
 async function running() {
   let connection;
   try {

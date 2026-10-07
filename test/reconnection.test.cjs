@@ -52,7 +52,7 @@ function ui(handler, globals = {}) {
     ...globals,
   });
   vm.runInContext(
-    fs.readFileSync(path.join(__dirname, '../src/ui.js'), 'utf8'),
+    fs.readFileSync(path.join(__dirname, '../src/figma/ui.js'), 'utf8'),
     context,
   );
   vm.runInContext(

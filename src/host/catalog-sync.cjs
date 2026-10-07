@@ -6,8 +6,8 @@ const os = require('node:os');
 const { spawn } = require('node:child_process');
 const { bridgeStateDirectory } = require('./state.cjs');
 const { bridgeRequest, readConnection } = require('./bridge-client.cjs');
-const { readAccountView } = require('../src/account-reader.js');
-const root = path.join(__dirname, '..');
+const { readAccountView } = require('./account-reader.js');
+const root = path.join(__dirname, '../..');
 async function syncAccount(
   taskSpace,
   {

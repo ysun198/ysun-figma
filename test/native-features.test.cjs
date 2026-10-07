@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { createDesignQueries } = require('../src/design-queries.js');
-const { fixture } = require('../test-support/figma.cjs');
+const { createDesignQueries } = require('../src/figma/design-queries.js');
+const { fixture } = require('./helpers/figma.cjs');
 
 function graph() {
   const nodes = new Map(),

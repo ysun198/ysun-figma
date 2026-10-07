@@ -1,6 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { publicEntries } = require('./installation.cjs');
+const { publicEntries } = require('../src/host/installation.cjs');
 const root = path.join(__dirname, '../build/plugin');
 
 const patterns = [

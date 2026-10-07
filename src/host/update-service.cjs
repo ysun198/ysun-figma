@@ -30,7 +30,7 @@ async function ensureUpdateService() {
   fs.mkdirSync(agents, { recursive: true });
   privateDirectory(path.join(state, 'updates'));
   const file = path.join(agents, label + '.plist');
-  const bootstrap = `(${recoverInstallation.toString()})(${JSON.stringify(state)});require(${JSON.stringify(path.join(currentPath(), 'scripts/update-service.cjs'))}).receive().catch(e=>{console.error(e.message);process.exitCode=1;});`;
+  const bootstrap = `(${recoverInstallation.toString()})(${JSON.stringify(state)});require(${JSON.stringify(path.join(currentPath(), 'src/host/update-service.cjs'))}).receive().catch(e=>{console.error(e.message);process.exitCode=1;});`;
   const content = `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>
 <key>Label</key><string>${label}</string>
 <key>ProgramArguments</key><array><string>${xml(runtime)}</string><string>-e</string><string>${xml(bootstrap)}</string></array>

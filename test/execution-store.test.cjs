@@ -5,10 +5,10 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { DatabaseSync } = require('node:sqlite');
 const test = require('node:test');
-const { createExecution } = require('../scripts/execution.cjs');
-const { createArtifacts } = require('../scripts/artifacts.cjs');
-const { targetIdentity } = require('../scripts/targets.cjs');
-const { readLedger } = require('../test-support/ledger.cjs');
+const { createExecution } = require('../src/host/execution.cjs');
+const { createArtifacts } = require('../src/host/artifacts.cjs');
+const { targetIdentity } = require('../src/host/targets.cjs');
+const { readLedger } = require('./helpers/ledger.cjs');
 
 const client = {
   id: 'kernel-client-1',
@@ -185,8 +185,8 @@ test('archiving and new admission are atomic; failed admission cannot retire an 
 });
 test('an abrupt process death recovers committed receipts and marks running writes unknown without replay', (t) => {
   const f = fixture(t);
-  const program = `const {createExecution}=require(${JSON.stringify(require.resolve('../scripts/execution.cjs'))});
-    const {createArtifacts}=require(${JSON.stringify(require.resolve('../scripts/artifacts.cjs'))});
+  const program = `const {createExecution}=require(${JSON.stringify(require.resolve('../src/host/execution.cjs'))});
+    const {createArtifacts}=require(${JSON.stringify(require.resolve('../src/host/artifacts.cjs'))});
     const directory=${JSON.stringify(f.artifactDirectory)}, client=${JSON.stringify(client)};
     const e=createExecution({databasePath:${JSON.stringify(f.databasePath)},artifacts:createArtifacts(directory)});
     e.submit(${JSON.stringify(input('crash-completed-operation'))},[client]); e.claim(${JSON.stringify(targetIdentity(client))});
@@ -221,7 +221,7 @@ test('an abrupt process death recovers committed receipts and marks running writ
       assert.equal(fs.statSync(f.databasePath + suffix).mode & 0o777, 0o600);
 });
 test('same-file writes block the preview of every connected instance while other files stay available', () => {
-  const { fileList } = require('../scripts/app.cjs');
+  const { fileList } = require('../src/host/app.cjs');
   const another = {
     ...client,
     id: 'kernel-client-2',

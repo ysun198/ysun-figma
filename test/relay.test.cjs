@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { readLedger, seedLedger } = require('../test-support/ledger.cjs');
+const { readLedger, seedLedger } = require('./helpers/ledger.cjs');
 const http = require('node:http');
 const { DatabaseSync } = require('node:sqlite');
 const { randomUUID } = require('node:crypto');
@@ -13,9 +13,9 @@ const {
   SESSION_TTL_MS,
   PAIRING_TTL_MS,
   MAX_RUN_MS,
-} = require('../scripts/bridge-server.cjs');
-const { BRIDGE_RUNTIME_VERSION } = require('../src/core.js');
-const { targetIdentity } = require('../scripts/targets.cjs');
+} = require('../src/host/bridge-server.cjs');
+const { BRIDGE_RUNTIME_VERSION } = require('../src/shared/core.js');
+const { targetIdentity } = require('../src/host/targets.cjs');
 async function setup(t, options = {}) {
   const bridge = createBridgeServer({ port: 0, ...options });
   const { url } = await bridge.start();
@@ -736,7 +736,7 @@ test('native script jobs are authenticated, targeted, hashed and keep source/ass
   const databasePath = path.join(directory, 'operations.sqlite');
   const api = await setup(t, { databasePath }),
     client = await api.pair();
-  const { uploadAssets } = require('../scripts/artifact-client.cjs');
+  const { uploadAssets } = require('../src/host/artifact-client.cjs');
   const source = path.join(directory, 'image.bin');
   fs.writeFileSync(source, Buffer.from([0, 1]));
   const assets = await uploadAssets(

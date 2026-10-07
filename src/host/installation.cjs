@@ -11,7 +11,7 @@ const {
   installPlugin,
 } = require('./state.cjs');
 const { readConnection, bridgeRequest } = require('./bridge-client.cjs');
-const product = require('../package.json').name;
+const product = require('../../package.json').name;
 const directory = () => path.join(bridgeStateDirectory(), 'companion');
 const currentPath = () => path.join(directory(), 'current');
 const hash = (file) =>
@@ -344,8 +344,8 @@ async function checkActivatedRuntime(runtime, expectedVersion) {
   const { spawn } = require('node:child_process');
   // Probe in the newly installed Node/package, not modules retained by the
   // receiver. Only successful startup against the real ledger commits it.
-  const source = `const {ensureCompanion}=require(${JSON.stringify(path.join(currentPath(), 'scripts/companion.cjs'))});
-const {bridgeRequest}=require(${JSON.stringify(path.join(currentPath(), 'scripts/bridge-client.cjs'))});
+  const source = `const {ensureCompanion}=require(${JSON.stringify(path.join(currentPath(), 'src/host/companion.cjs'))});
+const {bridgeRequest}=require(${JSON.stringify(path.join(currentPath(), 'src/host/bridge-client.cjs'))});
 ensureCompanion().then(c=>bridgeRequest(c,'/v1/status?summary=1')).then(s=>{if(s.version!==${JSON.stringify(expectedVersion)})throw new Error('Activated version did not start');}).catch(e=>{console.error(e.message);process.exitCode=1;});`;
   await new Promise((resolve, reject) => {
     const child = spawn(runtime, ['-e', source], {
