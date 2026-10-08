@@ -45,6 +45,8 @@ codex plugin add figma-plugin-local@figma-local --json
 
 首次发布前，在仓库的 Actions secrets 中配置 `RELEASE_SIGNING_KEY`，其公钥必须与 `package.json` 中的 `updates.publicKey` 一致。私钥保存在仓库之外。
 
-更新版本号，例如运行 `npm version patch --no-git-tag-version`，提交并推送修改，再到 GitHub Actions 运行 **Publish release**。工作流会运行测试和检查，生成、签署并发布安装包。
+更新版本号，例如运行 `npm version patch --no-git-tag-version`，将修改合入 `main`，再到 GitHub Actions 选择 `main` 运行 **Publish release**。工作流只从默认分支发布，运行测试和检查，生成、签署并发布安装包。
+
+发行包先完整上传到草稿，再正式公开。新发行版公开后，安装包和版本标签由 GitHub 的不可变发布保护锁定；需要修正时发布新版本，不覆盖原包。标题和发布说明仍可编辑。
 
 只需在本地生成发行包时，运行 `FIGMA_RELEASE_KEY_FILE=/absolute/private/key.pem npm run release`。它不会发布到 GitHub。宿主集成测试需要本机安装 Codex。
