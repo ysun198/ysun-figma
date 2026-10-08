@@ -23,7 +23,7 @@ codex plugin add figma-plugin-local@figma-local --json
 
 用 `figma_status` 核对目标文件和客户端。云文件绑定必须来自实际打开的文件 URL，不能按标题匹配。安装、运行插件和连接由 Codex 借助原生应用自动化完成；自动化不可用时，说明还缺少哪一步。
 
-目前仅支持 macOS，需要 Figma 桌面端。账号目录复用桌面端自己的登录会话；不再依赖 ego、Chrome 或其他外部浏览器，也不读取钥匙串或复制 Cookie。缺少 Node.js 时由 Codex 完成安装。Node.js 24 官方运行时要求 [macOS 13.5 或更高版本](https://github.com/nodejs/node/blob/v24.21.0/BUILDING.md#platform-list)。
+目前仅支持 macOS，需要 Figma 桌面端。账号目录复用桌面端自己的登录会话，无需另装浏览器，也不读取钥匙串或复制 Cookie。缺少 Node.js 时由 Codex 完成安装。Node.js 24 官方运行时要求 [macOS 13.5 或更高版本](https://github.com/nodejs/node/blob/v24.21.0/BUILDING.md#platform-list)。
 
 首次连接由 Codex 通过 `figma_file(action="launch")` 启动 Figma。若 Figma 已由 Dock 等方式启动，返回 `desktop_restart_required`：Codex 先检查并保存待同步设计，再正常退出 Figma，通过同一工具重新打开，复用原有账号登录。不可强制退出有未同步修改的编辑器。之后桌面端保持运行，插件更新、Codex 关闭或连接进程退出都不会退出 Figma。Figma 完全退出后，再从插件启动即可恢复；从 Dock 单独启动的进程仍需安全重连。
 
