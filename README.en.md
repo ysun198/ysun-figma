@@ -19,3 +19,14 @@ Keep Codex Desktop and Figma Desktop updated to the latest versions.
 Contact the author at [981118963@qq.com](mailto:981118963@qq.com) with issues or suggestions, or submit a PR. Learn more about [installation and updates](docs/INSTALL.md), [architecture](docs/ARCHITECTURE.md), [privacy and access](docs/PRIVACY.md) and [third-party notices](NOTICE.md).
 
 MIT licensed. Independently developed; not affiliated with Figma or OpenAI.
+
+<details>
+<summary>Support the author</summary>
+
+If this plugin helped you, feel free to buy the author a coffee.
+
+**WeChat（微信）**
+
+<img src="https://raw.githubusercontent.com/ysun198/ysun-figma/main/docs/assets/wechat-sponsor.png" alt="WeChat payment QR code" width="240" />
+
+</details>
