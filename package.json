@@ -1,6 +1,6 @@
 {
   "name": "figma-plugin-local",
-  "version": "0.26.0",
+  "version": "0.27.1",
   "private": true,
   "description": "ysun figma：在 Codex 中读取、编辑和导出 Figma 设计",
   "license": "MIT",
@@ -19,6 +19,7 @@
     "plugin-runtime.js",
     "plugin.json",
     "scripts/launch-mcp.sh",
+    "scripts/run-node.sh",
     "skills/",
     "src/host/account-reader.js",
     "src/host/app.cjs",
@@ -29,6 +30,7 @@
     "src/host/catalog-sync.cjs",
     "src/host/catalog.cjs",
     "src/host/codex-refresh.cjs",
+    "src/host/desktop.cjs",
     "src/host/companion.cjs",
     "src/host/execution.cjs",
     "src/host/installation.cjs",
@@ -54,13 +56,6 @@
   },
   "engines": {
     "node": ">=24"
-  },
-  "bundledNode": {
-    "version": "24.21.0",
-    "sha256": {
-      "darwin-arm64": "bed7eea5325e1108f32ce5228ddd6a5f0f08a499ee42aa7442aea583702f6057",
-      "darwin-x64": "1462cb3b3046b815cf8ea436d3da450ec1a9f11dac7e5a46b0ada5305d7e8097"
-    }
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

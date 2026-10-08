@@ -57,6 +57,7 @@ function createCatalog(filename) {
     status: 'empty',
     syncedAt: null,
     lastAttemptAt: null,
+    error: null,
   };
   if (filename && fs.existsSync(filename)) {
     const saved = JSON.parse(fs.readFileSync(filename, 'utf8'));
@@ -66,7 +67,9 @@ function createCatalog(filename) {
       !Array.isArray(saved.bindings)
     )
       throw new Error('unsupported account catalog');
-    state = { ...state, ...saved, files: saved.files.map(normalizeFile) };
+    for (const key of Object.keys(state))
+      if (Object.hasOwn(saved, key)) state[key] = saved[key];
+    state.files = saved.files.map(normalizeFile);
     if (state.status === 'syncing') state.status = 'interrupted';
   }
   function save() {
@@ -82,7 +85,8 @@ function createCatalog(filename) {
       'ready',
       'incomplete',
       'login_required',
-      'browser_required',
+      'desktop_required',
+      'desktop_restart_required',
       'interrupted',
     ];
     if (!statuses.includes(input.status))
@@ -142,11 +146,6 @@ function createCatalog(filename) {
       next.lastAttemptAt = new Date().toISOString();
       next.coverage = [];
     }
-    if (
-      input.browserSpace === null ||
-      (Number.isSafeInteger(input.browserSpace) && input.browserSpace > 0)
-    )
-      next.browserSpace = input.browserSpace;
     if (typeof input.accountName === 'string')
       next.accountName = input.accountName.slice(0, 1000);
     if (Array.isArray(input.coverage))

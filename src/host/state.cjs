@@ -4,20 +4,6 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const nativeFiles = ['manifest.json', 'plugin-runtime.js', 'ui.html'];
 
-function hashFile(file) {
-  const descriptor = fs.openSync(file, 'r'),
-    digest = crypto.createHash('sha256'),
-    block = Buffer.alloc(64 * 1024);
-  try {
-    let size;
-    while ((size = fs.readSync(descriptor, block, 0, block.length, null)))
-      digest.update(block.subarray(0, size));
-    return digest.digest('hex');
-  } finally {
-    fs.closeSync(descriptor);
-  }
-}
-
 function bridgeStateDirectory() {
   const override = process.env.FIGMA_PLUGIN_STATE_DIR;
   if (override && !path.isAbsolute(override))
@@ -72,43 +58,6 @@ function installPlugin(sourceRoot) {
   return path.join(directory, 'manifest.json');
 }
 
-function installedRuntime(source = process.env.FIGMA_PLUGIN_BUNDLED_NODE) {
-  if (!source) return process.execPath;
-  if (!path.isAbsolute(source) || !fs.statSync(source).isFile())
-    throw new Error('Invalid bundled runtime.');
-  const root = path.join(bridgeStateDirectory(), 'runtime');
-  const target = path.join(root, 'node'),
-    marker = path.join(root, 'runtime.json');
-  if (!fs.existsSync(target)) return null;
-  const actual = hashFile(target);
-  if (
-    !fs.existsSync(marker) ||
-    JSON.parse(fs.readFileSync(marker)).sha256 !== actual
-  )
-    throw new Error('An unrelated or modified local runtime was preserved.');
-  return (source === target ? actual : hashFile(source)) === actual
-    ? target
-    : null;
-}
-
-function installRuntime(source = process.env.FIGMA_PLUGIN_BUNDLED_NODE) {
-  const ready = installedRuntime(source);
-  if (ready) return ready;
-  const root = path.join(bridgeStateDirectory(), 'runtime');
-  privateDirectory(root);
-  const target = path.join(root, 'node'),
-    marker = path.join(root, 'runtime.json');
-  const staging = target + '.new-' + process.pid;
-  try {
-    fs.copyFileSync(source, staging);
-    fs.chmodSync(staging, 0o700);
-    fs.renameSync(staging, target);
-    writePrivateJson(marker, { sha256: hashFile(target) });
-  } finally {
-    fs.rmSync(staging, { force: true });
-  }
-  return target;
-}
 module.exports = {
   bridgeStateDirectory,
   connectionPath,
@@ -116,6 +65,4 @@ module.exports = {
   writePrivateJson,
   pluginInstalled,
   installPlugin,
-  installedRuntime,
-  installRuntime,
 };

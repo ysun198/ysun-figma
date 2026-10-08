@@ -56,4 +56,4 @@ SOFTWARE.
 
 ## 打包依赖
 
-构建将实际打包进 MCP App 的依赖许可证收集到 `THIRD_PARTY_NOTICES.md`。发行包同时包含官方 Node.js 运行时的许可证和来源信息。
+构建将实际打包进 MCP App 的依赖许可证收集到 `THIRD_PARTY_NOTICES.md`。

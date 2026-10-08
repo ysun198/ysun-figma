@@ -3,12 +3,8 @@ const fs = require('node:fs'),
   os = require('node:os'),
   path = require('node:path');
 const test = require('node:test');
-test('the emitted authenticated browser worker compiles, including its diagnostic reporter', () => {
-  const program = require('../src/host/catalog-sync.cjs').browserProgram();
-  new Function('return (async()=>{' + program + '})();');
-});
 const { createCatalog, normalizeFile } = require('../src/host/catalog.cjs');
-const { readAccountView } = require('../src/host/account-reader.js');
+const { createAccountReader } = require('../src/host/account-reader.js');
 const file = (fileKey = 'FileAlpha12', name = 'Same name') => ({
   fileKey,
   name,
@@ -64,133 +60,6 @@ test('catalog retains Figma creation and view timestamps, while missing or inval
   });
   for (const field of Object.keys(times)) assert.equal(absent[field], null);
 });
-function directoryFixture(name, data, args = {}) {
-  const current = { status: 'loaded', data },
-    subscription = {
-      viewDef: { name },
-      context: { viewArgs: args },
-      subscriptions: [{}],
-    };
-  const session = {
-    viewSubscriptions: new Map([['active', subscription]]),
-    getViewResultByViewNameAndArgs: () => current,
-  };
-  const context = require('node:vm').createContext({
-    window: {
-      INITIAL_OPTIONS: { user_data: { id: '123', name: 'Fixture' } },
-      LIVEGRAPH: { client: { session } },
-    },
-    location: { pathname: '/files/fixture', search: '' },
-  });
-  const read = async (next = false, source) =>
-    JSON.parse(
-      JSON.stringify(
-        await require('node:vm').runInContext(
-          '(' +
-            readAccountView.toString() +
-            ')(' +
-            JSON.stringify({ loadNext: next, source }) +
-            ')',
-          context,
-        ),
-      ),
-    );
-  return { read, current, subscription, session, context };
-}
-test('a requested directory cannot complete from a stale loaded subscription during navigation', async () => {
-  const f = directoryFixture('FileBrowserRecentResourcesGlobalView', {
-    currentUser: {
-      recentResources: pages([
-        {
-          userRecentResourceFile: {
-            file: { key: 'OldFile123', name: 'Old recent file' },
-          },
-        },
-      ]),
-    },
-  });
-  const current = { status: 'loading', data: { folderItems: pages([]) } };
-  const subscription = {
-    viewDef: { name: 'FileBrowserDraftsPageV2View' },
-    context: { viewArgs: {} },
-    subscriptions: [{}],
-  };
-  f.session.viewSubscriptions.set('drafts', subscription);
-  f.session.getViewResultByViewNameAndArgs = (name) =>
-    name === subscription.viewDef.name ? current : f.current;
-  const source = { kind: 'drafts', route: '/files/fixture' };
-  assert.equal((await f.read(false, source)).ready, false);
-  current.status = 'loaded';
-  const result = await f.read(false, source);
-  assert.equal(result.ready, true);
-  assert.deepEqual(result.files, []);
-  assert.equal(result.itemCount, 0);
-  assert.equal(
-    (await f.read(false, { ...source, route: '/files/new-route' })).ready,
-    false,
-  );
-});
-test('shared file and folder subscriptions do not borrow each other or unrelated loading state', async () => {
-  const f = directoryFixture(
-    'SharedWithYouResources',
-    { sharedWithYouResourcesV2: pages([]) },
-    { resourceTypes: ['folder'] },
-  );
-  const shared = {
-    status: 'loading',
-    data: {
-      sharedWithYouResourcesV2: pages([
-        {
-          sharedWithYouFile: {
-            file: { key: 'Shared12345', name: 'Shared file' },
-          },
-        },
-      ]),
-    },
-  };
-  const subscription = {
-    viewDef: { name: 'SharedWithYouResources' },
-    context: {
-      viewArgs: { resourceTypes: ['file', 'file_repo', 'prototype'] },
-    },
-    subscriptions: [{}],
-  };
-  f.session.viewSubscriptions.set('files', subscription);
-  f.session.getViewResultByViewNameAndArgs = (_, args) =>
-    args === subscription.context.viewArgs ? shared : f.current;
-  assert.equal((await f.read(false, { kind: 'shared_files' })).ready, false);
-  const folders = await f.read(false, { kind: 'shared_folders' });
-  assert.equal(folders.ready, true);
-  assert.deepEqual(folders.files, []);
-  shared.status = 'loaded';
-  assert.deepEqual(
-    (await f.read(false, { kind: 'shared_files' })).files.map(
-      (file) => file.fileKey,
-    ),
-    ['Shared12345'],
-  );
-  assert.deepEqual((await f.read(false, { kind: 'shared_folders' })).files, []);
-});
-test('folder reads require the exact parent and primary directory, not only a child-folder subscription', async () => {
-  const f = directoryFixture(
-    'FileBrowserFolderPageV2View',
-    { folderItems: pages([]) },
-    { folderId: '456' },
-  );
-  assert.equal(
-    (await f.read(false, { kind: 'folder', folderId: '123' })).ready,
-    false,
-  );
-  assert.equal(
-    (await f.read(false, { kind: 'folder', folderId: '456' })).ready,
-    true,
-  );
-  f.subscription.viewDef.name = 'FileBrowserFolderPageChildFoldersView';
-  assert.equal(
-    (await f.read(false, { kind: 'folder', folderId: '456' })).ready,
-    false,
-  );
-});
 function pages(items, more = false, next = () => {}) {
   return Object.assign(items, {
     hasNextPage: () => more,
@@ -201,11 +70,95 @@ function pages(items, more = false, next = () => {}) {
     },
   });
 }
-test('directory arrays provide exact timestamps and end cursors without React or DOM state', async () => {
+function directoryFixture(t, data, args = {}) {
+  const current = { status: 'loaded', data },
+    calls = [],
+    cancellations = [];
+  let observer;
+  const client = {
+    viewRegistry: {
+      get: () => ({ args: Object.keys(args).map((name) => ({ name })) }),
+    },
+    subscribe(ref, requested, callback) {
+      calls.push({ ref, args: requested });
+      observer = callback;
+      callback(current);
+      return () => cancellations.push(ref._name);
+    },
+  };
+  let expiry;
+  const context = require('node:vm').createContext({
+    window: {
+      INITIAL_OPTIONS: { user_data: { id: '123', name: 'Fixture' } },
+      LIVEGRAPH: { client },
+    },
+    setTimeout: (callback) => {
+      expiry = callback;
+      return 1;
+    },
+    clearTimeout: () => {},
+    fetch: async () => ({
+      ok: true,
+      json: async () => ({
+        meta: {
+          plans: [
+            {
+              plan_id: '456',
+              plan_type: 'team',
+              has_drafts: true,
+              draft_folder_id: '789',
+            },
+          ],
+        },
+      }),
+    }),
+    AbortSignal,
+  });
+  const reader = require('node:vm').runInContext(
+    '(' + createAccountReader.toString() + ')()',
+    context,
+  );
+  t.after(() => reader.close());
+  reader.open('FileBrowserDraftsPageV2View', args);
+  return {
+    reader,
+    read: (next) => JSON.parse(JSON.stringify(reader.read(next))),
+    current,
+    calls,
+    cancellations,
+    context,
+    publish: () => observer(current),
+    expire: () => expiry(),
+  };
+}
+test('owned directory subscriptions ignore navigation filters, use live argument definitions and clean up only their own views', (t) => {
+  const f = directoryFixture(
+    t,
+    { folderItems: pages([]) },
+    { compositeParentResourceId: 'folder:456' },
+  );
+  assert.equal(f.read().ready, true);
+  assert.deepEqual(f.calls[0].ref._argKeys, ['compositeParentResourceId']);
+  assert.equal(
+    f.calls[0].ref._hash,
+    undefined,
+    'no stale Figma build hash is captured',
+  );
+  f.reader.open('FileBrowserFolderPageV2View', {
+    compositeParentResourceId: 'folder:789',
+  });
+  assert.deepEqual(f.cancellations, ['FileBrowserDraftsPageV2View']);
+  f.reader.close();
+  assert.deepEqual(f.cancellations, [
+    'FileBrowserDraftsPageV2View',
+    'FileBrowserFolderPageV2View',
+  ]);
+});
+test('Figma timestamps and original relation metadata remain exact; missing timestamps stay unknown', (t) => {
   const fileData = {
     key: 'FileAlpha12',
-    editorType: 'design',
     name: 'Example',
+    editorType: 'design',
     createdAt: new Date('2024-01-01'),
     updatedAt: new Date('2024-02-01'),
   };
@@ -213,24 +166,18 @@ test('directory arrays provide exact timestamps and end cursors without React or
     folderItemFile: { file: fileData },
     touchedAt: '2024-03-01T00:00:00.123456Z',
   };
-  const f = directoryFixture('FileBrowserDraftsPageV2View', {
-    folderItems: pages([item]),
-    project: { activeProjectResourceConnections: [] },
-  });
-  let view = await f.read(),
-    data = view.files[0];
-  assert.equal(view.ready, true);
-  assert.equal(view.hasNextPage, false);
+  const f = directoryFixture(t, { folderItems: pages([item]) });
+  let data = f.read().files[0];
   assert.equal(data.updatedAt, '2024-03-01T00:00:00.123Z');
   assert.equal(data.createdAt, '2024-01-01T00:00:00.000Z');
   assert.equal(data.lastViewedAt, null);
   delete item.touchedAt;
   delete fileData.createdAt;
-  data = (await f.read()).files[0];
+  data = f.read().files[0];
   assert.equal(data.updatedAt, null);
-  assert.equal(data.createdAt, null, 'metadata updatedAt is not a substitute');
+  assert.equal(data.createdAt, null);
   fileData.touchedAt = '2024-03-02T00:00:00Z';
-  const recent = directoryFixture('FileBrowserRecentResourcesGlobalView', {
+  f.current.data = {
     currentUser: {
       recentResources: pages([
         {
@@ -239,78 +186,53 @@ test('directory arrays provide exact timestamps and end cursors without React or
         },
       ]),
     },
-  });
-  data = (await recent.read()).files[0];
+  };
+  data = f.read().files[0];
   assert.equal(data.lastViewedAt, '2024-04-01T00:00:00.000Z');
   assert.equal(data.updatedAt, '2024-03-02T00:00:00.000Z');
 });
-test('pagination loads the real next page and treats loaded empty directories as complete', async () => {
+test('pagination uses Figma end cursors, including next-page loading and complete empty directories', (t) => {
   let calls = 0;
   const items = pages([], true, () => {
     calls++;
     items.push({
-      folderItemFile: {
-        file: { key: 'FileAlpha12', name: 'Next page', editorType: 'design' },
-      },
+      folderItemFile: { file: { key: 'FileAlpha12', name: 'Next page' } },
     });
   });
-  const f = directoryFixture('FileBrowserFolderPageV2View', {
-    folderItems: items,
-  });
-  assert.equal((await f.read()).hasNextPage, true);
-  assert.equal(calls, 0);
-  assert.equal((await f.read(true)).fetching, true);
+  const f = directoryFixture(t, { folderItems: items });
+  assert.equal(f.read().hasNextPage, true);
+  assert.equal(f.read(true).fetching, true);
   assert.equal(calls, 1);
-  const end = await f.read();
+  const end = f.read();
   assert.equal(end.hasNextPage, false);
-  assert.equal(end.files.length, 1);
   assert.equal(end.itemCount, 1);
-  const empty = await directoryFixture('SharedWithYouResources', {
-    sharedWithYouResourcesV2: pages([]),
-  }).read();
-  assert.equal(empty.ready, true);
-  assert.equal(empty.hasNextPage, false);
-  assert.equal(empty.files.length, 0);
+  f.current.data = { sharedWithYouResourcesV2: pages([]) };
+  assert.deepEqual(f.read().files, []);
+  assert.equal(f.read().ready, true);
 });
-test('loading, inactive, filtered and changed directory schemas cannot claim account completeness', async () => {
-  const f = directoryFixture('FileBrowserDraftsPageV2View', {
-    folderItems: pages([]),
-  });
+test('loading, request failures and changed schemas cannot report a complete directory', (t) => {
+  const f = directoryFixture(t, { folderItems: pages([]) });
   f.current.status = 'loading';
-  assert.equal((await f.read()).ready, false);
+  assert.equal(f.read().ready, false);
   f.current.status = 'loaded';
-  f.subscription.subscriptions = [];
-  assert.equal((await f.read()).ready, false);
-  await assert.rejects(
-    directoryFixture('FileBrowserDraftsPageV2View', { folderItems: [] }).read(),
-    /pagination_schema_changed/,
-  );
-  await assert.rejects(
-    directoryFixture('FileBrowserDraftsPageV2View', { changed: 42 }).read(),
-    /directory_schema_changed/,
-  );
-  await assert.rejects(
-    directoryFixture(
-      'SharedWithYouResources',
-      { sharedWithYouResourcesV2: pages([]) },
-      { fileType: 'design' },
-    ).read(),
-    /filtered/,
-  );
+  f.current.errors = [new Error('permission denied')];
+  assert.throws(() => f.read(), /request_failed/);
+  delete f.current.errors;
+  f.current.data = { folderItems: [] };
+  assert.throws(() => f.read(), /pagination_schema_changed/);
+  f.current.data = { unknown: 42 };
+  assert.throws(() => f.read(), /directory_schema_changed/);
+  f.current.data = {
+    folderItems: pages([
+      { folderItemFile: { file: { key: 'bad', name: 'Invalid' } } },
+    ]),
+  };
+  assert.throws(() => f.read(), /file_schema_changed/);
 });
-test('shared files and child folders use actual Figma relations while deleted items are omitted', async () => {
-  const f = directoryFixture('SharedWithYouResources', {
+test('shared relations, folders and organization teams omit deleted resources', (t) => {
+  const f = directoryFixture(t, {
     sharedWithYouResourcesV2: pages([
-      {
-        sharedWithYouFile: {
-          file: {
-            key: 'FileAlpha12',
-            name: 'Shared',
-            editorType: 'design',
-            touchedAt: '2024-03-01T00:00:00Z',
-          },
-        },
-      },
+      { sharedWithYouFile: { file: { key: 'FileAlpha12', name: 'Shared' } } },
       {
         sharedWithYouFile: {
           file: { key: 'FileBravo12', name: 'Deleted', deletedAt: new Date() },
@@ -319,11 +241,36 @@ test('shared files and child folders use actual Figma relations while deleted it
       { sharedWithYouFolder: { folder: { id: '456', path: 'Folder title' } } },
     ]),
   });
-  const view = await f.read();
-  assert.equal(view.files.length, 1);
-  assert.equal(view.files[0].name, 'Shared');
-  assert.equal(view.files[0].lastViewedAt, null);
-  assert.deepEqual(view.folders, [{ id: '456', name: 'Folder title' }]);
+  assert.equal(f.read().files.length, 1);
+  assert.deepEqual(f.read().folders, [{ id: '456', name: 'Folder title' }]);
+  f.current.data = {
+    orgJoinedTeams: pages([
+      { team: { id: '789' } },
+      { team: { id: '900', deletedAt: new Date() } },
+    ]),
+  };
+  assert.deepEqual(f.read().teams, ['789']);
+});
+test('account changes and abandoned readers release subscriptions before any further metadata is read', (t) => {
+  const f = directoryFixture(t, { folderItems: pages([]) });
+  f.context.window.INITIAL_OPTIONS.user_data.id = '456';
+  assert.throws(() => f.read(), /account_changed/);
+  assert.equal(f.cancellations.length, 1);
+  const abandoned = directoryFixture(t, { folderItems: pages([]) });
+  abandoned.expire();
+  assert.throws(() => abandoned.read(), /reader_closed/);
+  assert.equal(abandoned.cancellations.length, 1);
+});
+test('plan discovery uses actual identifiers and rejects incomplete API responses', async (t) => {
+  const f = directoryFixture(t, { folderItems: pages([]) });
+  assert.deepEqual(JSON.parse(JSON.stringify(await f.reader.plans())), [
+    { id: '456', type: 'team', draftFolderId: '789' },
+  ]);
+  f.context.fetch = async () => ({
+    ok: true,
+    json: async () => ({ meta: {} }),
+  });
+  await assert.rejects(f.reader.plans(), /plan_directory_empty/);
 });
 test('partial sync cannot remove old files; complete sync and account changes replace the directory', () => {
   const catalog = createCatalog();
@@ -348,14 +295,13 @@ test('partial sync cannot remove old files; complete sync and account changes re
   assert.equal(catalog.view().files.length, 0);
   assert.equal(catalog.view().bindings.length, 0);
 });
-test('a new refresh clears old coverage, and completed browser cleanup removes the stale recovery handle', () => {
+test('a new refresh clears old coverage and retains files until successful completion', () => {
   const catalog = createCatalog();
   catalog.update({
     status: 'ready',
     accountId: '123',
     files: [file()],
     coverage: [{ route: '/old', complete: true, fileCount: 1 }],
-    browserSpace: 68,
   });
   let value = catalog.update({ status: 'syncing' });
   assert.deepEqual(value.coverage, []);
@@ -368,9 +314,7 @@ test('a new refresh clears old coverage, and completed browser cleanup removes t
   value = catalog.update({
     status: 'ready',
     fileKeys: ['FileAlpha12'],
-    browserSpace: null,
   });
-  assert.equal(value.browserSpace, null);
   assert.equal(value.coverage[0].route, '/new');
 });
 test('same-name files require an exact document, client and verified cloud URL; reconnect never falls back to title', () => {
@@ -628,4 +572,188 @@ test('a failed sync can retry after cooldown; it is not permanently suppressed a
   });
   assert.equal((await again.json()).status, 'syncing');
   assert.equal(count, 1);
+});
+
+test('large directory results cross the pipe in bounded batches without dropping a final page', (t) => {
+  const items = pages(
+    Array.from({ length: 1201 }, (_, i) => ({
+      folderItemFile: { file: { key: 'FileKey' + i, name: 'File ' + i } },
+    })),
+  );
+  const f = directoryFixture(t, { folderItems: items });
+  let offset = 0;
+  const keys = new Set(),
+    sizes = [];
+  do {
+    const view = JSON.parse(JSON.stringify(f.reader.read(false, offset)));
+    view.files.forEach((file) => keys.add(file.fileKey));
+    sizes.push(view.files.length);
+    offset = view.nextOffset;
+  } while (offset < items.length);
+  assert.deepEqual(sizes, [500, 500, 201]);
+  assert.equal(keys.size, 1201);
+});
+
+test('full account scan follows exact nested folder IDs, preserves recent times and finalizes only after every source', async () => {
+  const { syncAccount } = require('../src/host/catalog-sync.cjs');
+  const catalog = createCatalog(),
+    calls = [];
+  let name, args;
+  const reader = {
+    identity: async () => ({ accountId: '123', accountName: 'Fixture' }),
+    plans: async () => [{ id: '789', type: 'team', draftFolderId: '456' }],
+    open: async (n, a) => {
+      name = n;
+      args = a;
+      calls.push({ name, args });
+    },
+    read: async () => {
+      let files = [],
+        folders = [];
+      if (name === 'FileBrowserRecentResourcesGlobalView')
+        files = [{ ...file(), lastViewedAt: '2024-01-01T00:00:00Z' }];
+      if (
+        name === 'FileBrowserFolderPageV2View' &&
+        args.compositeParentResourceId === 'folder:456'
+      )
+        files = [file()];
+      if (name === 'FileBrowserTeamPageFolderItemsView')
+        folders = [{ id: '999', name: 'Same name' }];
+      if (
+        name === 'FileBrowserFolderPageChildFoldersView' &&
+        args.compositeParentResourceId === 'folder:999'
+      )
+        folders = [{ id: '1000', name: 'Same name' }];
+      if (
+        name === 'FileBrowserFolderPageV2View' &&
+        args.compositeParentResourceId === 'folder:1000'
+      )
+        files = [file('FileBravo12')];
+      if (
+        name === 'SharedWithYouResources' &&
+        args.resourceTypes[0] === 'folder'
+      )
+        folders = [{ id: '999', name: 'Same name' }];
+      return {
+        accountId: '123',
+        ready: true,
+        files,
+        folders,
+        teams: [],
+        hasNextPage: false,
+        fetching: false,
+        itemCount: files.length + folders.length,
+        nextOffset: files.length + folders.length,
+      };
+    },
+  };
+  const result = await syncAccount(reader, {
+    report: async (input) => catalog.update(input),
+  });
+  assert.equal(result.fileCount, 2);
+  assert.equal(catalog.view().status, 'ready');
+  assert.equal(catalog.view().files[0].lastViewedAt, '2024-01-01T00:00:00Z');
+  assert.equal(
+    calls.filter(
+      (call) =>
+        call.name === 'FileBrowserFolderPageV2View' &&
+        call.args.compositeParentResourceId === 'folder:999',
+    ).length,
+    1,
+  );
+  assert(
+    calls.some((call) => call.args.compositeParentResourceId === 'folder:1000'),
+  );
+  assert(catalog.view().coverage.every((source) => source.complete));
+});
+
+function desktopTargets(accounts, authenticated = accounts.map(() => true)) {
+  const attached = new Set();
+  let closed = false,
+    readers = 0;
+  return {
+    attached,
+    closed: () => closed,
+    readers: () => readers,
+    async connect() {
+      return {
+        close() {
+          closed = true;
+        },
+        async call(method, params, sessionId) {
+          if (method === 'Target.getTargets')
+            return {
+              targetInfos: accounts.map((accountId, i) => ({
+                targetId: String(i),
+                type: 'page',
+                title: 'Figma',
+                url: i
+                  ? 'https://www.figma.com/files/feed'
+                  : 'https://www.figma.com/files/team/456/drafts',
+              })),
+            };
+          if (method === 'Target.attachToTarget') {
+            attached.add(params.targetId);
+            return { sessionId: params.targetId };
+          }
+          if (method === 'Target.detachFromTarget') {
+            attached.delete(params.sessionId);
+            return {};
+          }
+          if (method === 'Runtime.evaluate') {
+            if (params.returnByValue)
+              return {
+                result: {
+                  value: {
+                    ready: true,
+                    accountId: accounts[Number(sessionId)],
+                    authenticated: authenticated[Number(sessionId)],
+                  },
+                },
+              };
+            readers++;
+            return { result: { objectId: sessionId } };
+          }
+          if (method === 'Runtime.callFunctionOn')
+            return {
+              result: { value: { accountId: accounts[Number(sessionId)] } },
+            };
+          if (method === 'Runtime.releaseObject') return {};
+          throw new Error('Unexpected CDP call ' + method);
+        },
+      };
+    },
+  };
+}
+test('Desktop Feed and directory renderers of one authenticated account are one source and release all owned sessions', async () => {
+  const { desktopReader } = require('../src/host/catalog-sync.cjs');
+  const targets = desktopTargets(['123', '123']);
+  const reader = await desktopReader({ connect: () => targets.connect() });
+  assert.equal((await reader.identity()).accountId, '123');
+  assert.equal(targets.readers(), 1);
+  assert.equal(targets.attached.size, 1);
+  await reader.close();
+  assert.equal(targets.attached.size, 0);
+  assert(targets.closed());
+});
+test('different authenticated Desktop accounts are never selected by title or target order', async () => {
+  const { desktopReader } = require('../src/host/catalog-sync.cjs');
+  const targets = desktopTargets(['123', '789']);
+  await assert.rejects(
+    desktopReader({ connect: () => targets.connect() }),
+    /ambiguous_desktop_account/,
+  );
+  assert.equal(targets.readers(), 0);
+  assert.equal(targets.attached.size, 0);
+  assert(targets.closed());
+});
+test('Desktop directory reads use the authenticated connection instead of a disconnected preload of the same account', async () => {
+  const { desktopReader } = require('../src/host/catalog-sync.cjs');
+  const targets = desktopTargets(['123', '123'], [false, true]);
+  const reader = await desktopReader({ connect: () => targets.connect() });
+  assert.equal((await reader.identity()).accountId, '123');
+  assert.deepEqual([...targets.attached], ['1']);
+  await reader.close();
+  assert.equal(targets.attached.size, 0);
+  assert(targets.closed());
 });

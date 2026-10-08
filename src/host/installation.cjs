@@ -6,8 +6,6 @@ const {
   privateDirectory,
   writePrivateJson,
   pluginInstalled,
-  installedRuntime,
-  installRuntime,
   installPlugin,
 } = require('./state.cjs');
 const { readConnection, bridgeRequest } = require('./bridge-client.cjs');
@@ -53,10 +51,6 @@ function recoverInstallation(state) {
         path.join(current, name),
         path.join(state, 'plugin', name),
       );
-  }
-  if (fs.existsSync(path.join(staging, 'runtime'))) {
-    fs.rmSync(path.join(state, 'runtime'), { recursive: true, force: true });
-    fs.renameSync(path.join(staging, 'runtime'), path.join(state, 'runtime'));
   }
   fs.unlinkSync(journal);
   fs.rmSync(staging, { recursive: true, force: true });
@@ -176,16 +170,6 @@ function reusableReceipt(current, requested) {
     throw new Error('This version has different contents. Use a new version');
   return active;
 }
-function runtimeSource(
-  active,
-  requested,
-  source = process.env.FIGMA_PLUGIN_BUNDLED_NODE,
-) {
-  // A resumed host must not downgrade the current runtime with an older bundle.
-  return source && active.version !== requested.version
-    ? path.join(bridgeStateDirectory(), 'runtime/node')
-    : source;
-}
 async function prepareManagedCompanion(source, options = {}) {
   recoverInstallation(bridgeStateDirectory());
   const requested = receiptFor(source),
@@ -219,19 +203,17 @@ async function prepareManagedCompanion(source, options = {}) {
   while (true) {
     const active = lockOwner();
     if (!active) {
-      // Normal starts only read verified files. Hashing a bundled Node under
-      // the installation lock serializes every Codex conversation on refresh.
+      // Normal starts only read verified files, without serializing every
+      // Codex conversation on the installation lock.
       const before = generation();
       let ready;
       try {
         const receipt = reusableReceipt(current, requested);
-        if (receipt && pluginInstalled(current)) {
-          const runtime = installedRuntime(
-            runtimeSource(receipt, requested, options.runtimeSource),
-          );
-          if (runtime)
-            ready = { version: receipt.version, changed: false, runtime };
-        }
+        if (receipt && pluginInstalled(current))
+          ready = {
+            version: receipt.version,
+            changed: false,
+          };
       } catch (error) {
         if (lockOwner() || generation() !== before) continue;
         throw error;
@@ -270,9 +252,6 @@ async function prepareManagedCompanion(source, options = {}) {
       return {
         version: active.version,
         changed: false,
-        runtime: installRuntime(
-          runtimeSource(active, requested, options.runtimeSource),
-        ),
       };
     }
     const staging = fs.mkdtempSync(path.join(directory(), '.install-'));
@@ -291,22 +270,15 @@ async function prepareManagedCompanion(source, options = {}) {
       writePrivateJson(path.join(next, '.installation.json'), requested);
       verify(next);
       await stopForMaintenance();
-      const runtimeDirectory = path.join(bridgeStateDirectory(), 'runtime');
-      if (options.healthCheck && fs.existsSync(runtimeDirectory))
-        fs.cpSync(runtimeDirectory, path.join(staging, 'runtime'), {
-          recursive: true,
-        });
       const journal = path.join(directory(), '.activation.json');
       writePrivateJson(journal, { staging });
-      let runtime;
       try {
-        runtime = installRuntime(options.runtimeSource);
         if (fs.existsSync(current)) fs.renameSync(current, backup);
         fs.renameSync(next, current);
         installPlugin(current);
         if (options.healthCheck) {
           try {
-            await checkActivatedRuntime(runtime, requested.version);
+            await checkActivatedRuntime(requested.version);
           } catch (error) {
             error.code = 'UPDATE_UNHEALTHY';
             throw error;
@@ -322,17 +294,10 @@ async function prepareManagedCompanion(source, options = {}) {
           fs.renameSync(backup, current);
           installPlugin(current);
         }
-        if (
-          options.healthCheck &&
-          fs.existsSync(path.join(staging, 'runtime'))
-        ) {
-          fs.rmSync(runtimeDirectory, { recursive: true, force: true });
-          fs.renameSync(path.join(staging, 'runtime'), runtimeDirectory);
-        }
         fs.rmSync(journal, { force: true });
         throw error;
       }
-      return { version: requested.version, changed: true, runtime };
+      return { version: requested.version, changed: true };
     } finally {
       fs.rmSync(staging, { recursive: true, force: true });
     }
@@ -340,18 +305,22 @@ async function prepareManagedCompanion(source, options = {}) {
     if (fs.readlinkSync(lock) === owner) fs.unlinkSync(lock);
   }
 }
-async function checkActivatedRuntime(runtime, expectedVersion) {
+async function checkActivatedRuntime(expectedVersion) {
   const { spawn } = require('node:child_process');
-  // Probe in the newly installed Node/package, not modules retained by the
+  // Probe the activated package through the shared launcher, not modules retained by the
   // receiver. Only successful startup against the real ledger commits it.
   const source = `const {ensureCompanion}=require(${JSON.stringify(path.join(currentPath(), 'src/host/companion.cjs'))});
 const {bridgeRequest}=require(${JSON.stringify(path.join(currentPath(), 'src/host/bridge-client.cjs'))});
 ensureCompanion().then(c=>bridgeRequest(c,'/v1/status?summary=1')).then(s=>{if(s.version!==${JSON.stringify(expectedVersion)})throw new Error('Activated version did not start');}).catch(e=>{console.error(e.message);process.exitCode=1;});`;
   await new Promise((resolve, reject) => {
-    const child = spawn(runtime, ['-e', source], {
-      stdio: ['ignore', 'ignore', 'pipe'],
-      env: { ...process.env, FIGMA_PLUGIN_ACTIVATION_PROBE: '1' },
-    });
+    const child = spawn(
+      '/bin/sh',
+      [path.join(currentPath(), 'scripts/run-node.sh'), '-e', source],
+      {
+        stdio: ['ignore', 'ignore', 'pipe'],
+        env: { ...process.env, FIGMA_PLUGIN_ACTIVATION_PROBE: '1' },
+      },
+    );
     let stderr = '';
     child.stderr.on('data', (chunk) => {
       stderr += chunk.toString().slice(0, 4096);

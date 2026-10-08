@@ -632,6 +632,15 @@ function createBridgeServer(options = {}) {
       );
       return send(res, 200, value === NO_VALUE ? snapshot() : value);
     }
+    if (req.method === 'POST' && url.pathname === '/v1/desktop') {
+      requireAdmin();
+      const { fileKey } = await readJson(req);
+      return send(
+        res,
+        200,
+        await require('./desktop.cjs').launchDesktop(fileKey),
+      );
+    }
     if (url.pathname === '/v1/catalog') {
       requireAdmin();
       if (req.method === 'GET') return send(res, 200, catalog.view());
@@ -665,9 +674,8 @@ function createBridgeServer(options = {}) {
       if (
         catalogWorker ||
         (!force &&
-          (Date.now() - Date.parse(state.lastAttemptAt || state.syncedAt) <
-            5 * 60 * 1000 ||
-            ['login_required', 'browser_required'].includes(state.status)))
+          Date.now() - Date.parse(state.lastAttemptAt || state.syncedAt) <
+            (state.status === 'ready' ? 5 * 60 * 1000 : 30000))
       )
         return send(res, 200, state);
       catalog.update({ status: 'syncing' });
@@ -677,13 +685,13 @@ function createBridgeServer(options = {}) {
         ...(options.catalogPath
           ? { FIGMA_PLUGIN_STATE_DIR: path.dirname(options.catalogPath) }
           : {}),
-        ...(state.browserSpace && state.status !== 'ready'
-          ? { YSUN_FIGMA_BROWSER_SPACE: String(state.browserSpace) }
-          : {}),
       };
       const worker = require('node:child_process').spawn(
-        process.execPath,
-        [path.join(__dirname, 'catalog-sync.cjs')],
+        '/bin/sh',
+        [
+          path.join(__dirname, '../../scripts/run-node.sh'),
+          path.join(__dirname, 'catalog-sync.cjs'),
+        ],
         {
           cwd: path.join(__dirname, '../..'),
           env: environment,

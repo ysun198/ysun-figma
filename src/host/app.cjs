@@ -94,7 +94,6 @@ function fileList(state, catalog = { files: [], status: 'empty' }) {
       syncedAt: catalog.syncedAt || null,
       lastAttemptAt: catalog.lastAttemptAt || null,
       error: catalog.error || null,
-      browserSpace: catalog.browserSpace || null,
       coverage: catalog.coverage || [],
       coverageComplete: catalog.status === 'ready',
       fileCount: catalog.files?.length || 0,

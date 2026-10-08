@@ -4,7 +4,13 @@
 
 ## 首次接入
 
-由 Codex 下载最新已发布版本的 ZIP，核对随包提供的 `SHA256SUMS`，解压到稳定目录，再注册插件：
+Codex 先检查 Node.js 24 或更高版本，优先复用已有运行时。插件会检查指定的 `FIGMA_PLUGIN_NODE`、PATH、Homebrew 常见路径和 `~/.canvas-bridge/node/bin/node`；不假定每台安装 Codex 的电脑都已安装 Node.js。
+
+缺少运行时时，由 Codex 从 [Node.js 官方发布目录](https://nodejs.org/download/release/latest-v24.x/)下载适合当前 Mac 架构的 Node.js 24 LTS，核对官方 `SHASUMS256.txt` 和二进制代码签名，将 `bin/node` 和许可证放入 `~/.canvas-bridge/node/`。无需管理员权限，也无需为运行插件安装 npm 开发依赖。使用其他稳定路径时，在 MCP 环境中指定 `FIGMA_PLUGIN_NODE`。
+
+未安装 Figma 桌面端时，插件返回 `desktop_required`，工作台提示让 Codex 安装。Codex 从 [Figma 官网](https://www.figma.com/downloads/)下载当前稳定版，核验代码签名后安装；可放在 `~/Applications/Figma.app`，无需管理员密码。首次使用 Figma 的用户仍需完成 Figma 自己的登录，已登录的账号直接复用。安装和登录完成后继续连接，无需重装插件。
+
+然后下载最新已发布版本的 ZIP，核对随包提供的 `SHA256SUMS`，解压到稳定目录，再注册插件：
 
 ```sh
 codex plugin marketplace add /absolute/extracted/directory --json
@@ -17,7 +23,13 @@ codex plugin add figma-plugin-local@figma-local --json
 
 用 `figma_status` 核对目标文件和客户端。云文件绑定必须来自实际打开的文件 URL，不能按标题匹配。安装、运行插件和连接由 Codex 借助原生应用自动化完成；自动化不可用时，说明还缺少哪一步。
 
-目前仅支持 macOS，需要已登录的 Figma 桌面端。原生 Plugin API 在已打开的文件和运行中的插件内执行；账号目录发现还需要已登录的 ego-browser。发行包自带 Node.js，无需用户另行安装。Apple Silicon 已完成实机验收；Intel 包含对应运行时，尚未完成实机验收。
+目前仅支持 macOS，需要 Figma 桌面端。账号目录复用桌面端自己的登录会话；不再依赖 ego、Chrome 或其他外部浏览器，也不读取钥匙串或复制 Cookie。缺少 Node.js 时由 Codex 完成安装。Node.js 24 官方运行时要求 [macOS 13.5 或更高版本](https://github.com/nodejs/node/blob/v24.21.0/BUILDING.md#platform-list)。
+
+首次连接由 Codex 通过 `figma_file(action="launch")` 启动 Figma。若 Figma 已由 Dock 等方式启动，返回 `desktop_restart_required`：Codex 先检查并保存待同步设计，再正常退出 Figma，通过同一工具重新打开，复用原有账号登录。不可强制退出有未同步修改的编辑器。之后桌面端保持运行，插件更新、Codex 关闭或连接进程退出都不会退出 Figma。Figma 完全退出后，再从插件启动即可恢复；从 Dock 单独启动的进程仍需安全重连。
+
+桌面端的账号目录通过 Figma Home 当前内部目录接口读取，并非公开的账号全量 REST API。版本变化或组织权限可能使同步不可用；它不改变原生插件的读写授权，已连接文件仍可编辑和实时预览。
+
+请将 Codex 桌面端和 Figma 桌面端更新至最新版本。2026-10-08 核对的实机环境为 Apple Silicon、macOS 27.0.1、Codex 26.1002.51308（内置 CLI 0.162.0-alpha.2）、Figma 126.9.13，插件版本为 0.27.1。旧版桌面端尚未建立兼容测试矩阵，因此不声明最低支持版本。Intel 尚未完成实机验收。
 
 ## 自动更新
 

@@ -266,7 +266,13 @@ function draw() {
         ? '正在同步文件…'
         : catalog.status === 'ready'
           ? '暂无文件'
-          : '暂时无法读取文件';
+          : catalog.status === 'desktop_restart_required'
+            ? '请让 Codex 重新连接 Figma 桌面端'
+            : catalog.status === 'desktop_required'
+              ? '请让 Codex 安装 Figma 桌面端'
+              : catalog.status === 'login_required'
+                ? '请在 Figma 桌面端登录'
+                : '暂时无法读取文件';
   $('connect').hidden =
     !initialized ||
     files.length > 0 ||

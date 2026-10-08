@@ -169,9 +169,6 @@ async function extractRelease(bytes, release, destination) {
     '.agents/plugins/marketplace.json',
     ...publicEntries(source).map((file) => 'plugin/' + file),
   ];
-  for (const architecture of ['arm64', 'x64'])
-    for (const file of ['node', 'LICENSE', 'PROVENANCE.json'])
-      expected.push(`plugin/runtime/darwin-${architecture}/${file}`);
   if (JSON.stringify(entries) !== JSON.stringify(expected.sort()))
     throw new Error('Unexpected files in update archive');
   return source;
@@ -345,12 +342,7 @@ function createUpdater({
         );
       }
       cancellation.signal.throwIfAborted();
-      const runtime = path.join(
-        candidate.source,
-        `runtime/darwin-${process.arch}/node`,
-      );
       const result = await activate(candidate.source, {
-        runtimeSource: runtime,
         healthCheck: true,
       });
       dispose();

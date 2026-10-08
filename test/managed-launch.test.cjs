@@ -3,36 +3,17 @@ const fs = require('node:fs');
 process.env.FIGMA_PLUGIN_DISABLE_UPDATES = '1';
 const os = require('node:os');
 const path = require('node:path');
-const { spawn, execFileSync } = require('node:child_process');
+const { spawn } = require('node:child_process');
 const test = require('node:test');
 
-test('parallel Codex refreshes initialize every transport with the real bundled-sized runtime', async (t) => {
+test('twelve parallel Codex refreshes initialize through the shell launcher using a shared Node runtime', async (t) => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'figma-refresh-')),
     state = path.join(temp, 'state'),
     source = require('../scripts/build.cjs').output,
     previousState = process.env.FIGMA_PLUGIN_STATE_DIR,
-    previousRuntime = process.env.FIGMA_PLUGIN_BUNDLED_NODE;
-  let runtime = process.execPath;
-  if (
-    process.platform === 'darwin' &&
-    execFileSync('/usr/bin/lipo', ['-archs', runtime], { encoding: 'utf8' })
-      .trim()
-      .split(/\s+/).length > 1
-  ) {
-    // Distribution ships one architecture, not a universal developer binary.
-    // Keep the real executable and integrity checks without doubling every read.
-    runtime = path.join(temp, 'node');
-    execFileSync('/usr/bin/lipo', [
-      process.execPath,
-      '-thin',
-      process.arch === 'x64' ? 'x86_64' : process.arch,
-      '-output',
-      runtime,
-    ]);
-    fs.chmodSync(runtime, 0o700);
-  }
+    previousRuntime = process.env.FIGMA_PLUGIN_NODE;
   process.env.FIGMA_PLUGIN_STATE_DIR = state;
-  process.env.FIGMA_PLUGIN_BUNDLED_NODE = runtime;
+  process.env.FIGMA_PLUGIN_NODE = process.execPath;
   const children = [];
   t.after(async () => {
     await Promise.all(
@@ -48,9 +29,8 @@ test('parallel Codex refreshes initialize every transport with the real bundled-
     );
     if (previousState === undefined) delete process.env.FIGMA_PLUGIN_STATE_DIR;
     else process.env.FIGMA_PLUGIN_STATE_DIR = previousState;
-    if (previousRuntime === undefined)
-      delete process.env.FIGMA_PLUGIN_BUNDLED_NODE;
-    else process.env.FIGMA_PLUGIN_BUNDLED_NODE = previousRuntime;
+    if (previousRuntime === undefined) delete process.env.FIGMA_PLUGIN_NODE;
+    else process.env.FIGMA_PLUGIN_NODE = previousRuntime;
     fs.rmSync(temp, { recursive: true, force: true });
   });
   const {
@@ -64,8 +44,8 @@ test('parallel Codex refreshes initialize every transport with the real bundled-
   const start = () =>
     new Promise((resolve, reject) => {
       const child = spawn(
-        runtime,
-        [path.join(source, 'src/host/launch-mcp.cjs')],
+        '/bin/sh',
+        [path.join(source, 'scripts/launch-mcp.sh')],
         {
           env,
           stdio: ['pipe', 'pipe', 'pipe'],
@@ -195,7 +175,7 @@ test('a running managed MCP survives host cache deletion and serves activated UI
   });
   assert.equal(paired.status, 200);
   const env = { ...process.env };
-  delete env.FIGMA_PLUGIN_BUNDLED_NODE;
+  delete env.FIGMA_PLUGIN_NODE;
   const child = spawn(
     process.execPath,
     [path.join(cache, 'src/host/launch-mcp.cjs')],
@@ -351,7 +331,7 @@ test('a stale host package starts the verified current MCP without downgrading c
   await prepareManagedCompanion(newer);
   const before = verify(currentPath());
   const env = { ...process.env };
-  delete env.FIGMA_PLUGIN_BUNDLED_NODE;
+  delete env.FIGMA_PLUGIN_NODE;
   const child = spawn(
     process.execPath,
     [path.join(cached, 'src/host/launch-mcp.cjs')],

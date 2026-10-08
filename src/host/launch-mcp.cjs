@@ -5,10 +5,13 @@ const { currentPath, prepareManagedCompanion } = require('./installation.cjs');
 
 async function launch() {
   const source = path.resolve(__dirname, '../..');
-  const prepared = await prepareManagedCompanion(source);
+  await prepareManagedCompanion(source);
   const child = spawn(
-    prepared.runtime,
-    [path.join(currentPath(), 'src/host/mcp.cjs')],
+    '/bin/sh',
+    [
+      path.join(currentPath(), 'scripts/run-node.sh'),
+      path.join(currentPath(), 'src/host/mcp.cjs'),
+    ],
     {
       stdio: ['pipe', 'pipe', 'pipe'],
     },

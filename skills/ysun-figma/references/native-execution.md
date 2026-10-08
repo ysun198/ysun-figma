@@ -8,14 +8,14 @@ Supply one stable `operationId` per intended edit/import. A repeated ID with the
 
 ## Helpers
 
-| Helper | Behavior |
-|---|---|
-| `bridge.set(node, properties)` | Set `layoutMode`, resize for width/height, then assign remaining properties. Native getters/setters still enforce their rules. |
-| `bridge.autoLayout("VERTICAL" or "HORIZONTAL", properties)` | Create a frame with automatic axes; explicit properties may override them. |
-| `await bridge.loadFonts(textNode)` | Load actual native `getRangeAllFontNames` values, including mixed glyph runs and font axes. Also accepts a native text sublayer or its owning sticky/shape/connector. |
-| `await bridge.screenshot(node, {maxDimension:1600})` | Native bounded PNG export. `figma_run`/`figma_job` attach small preview images. |
-| `bridge.assetText("icon.svg")` | Decode a transferred UTF-8 text asset, up to 1 MiB. |
-| `bridge.exportFile(name, Uint8Array, mimeType)` | Export exact bytes; unique filename of 1–120 Unicode letters/numbers, spaces, dots, underscores or hyphens, starting with a letter/number, 32 MiB total per job. Save with `figma_export`, which refuses overwriting. |
+| Helper                                                      | Behavior                                                                                                                                                                                                              |
+| ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bridge.set(node, properties)`                              | Set `layoutMode`, resize for width/height, then assign remaining properties. Native getters/setters still enforce their rules.                                                                                        |
+| `bridge.autoLayout("VERTICAL" or "HORIZONTAL", properties)` | Create a frame with automatic axes; explicit properties may override them.                                                                                                                                            |
+| `await bridge.loadFonts(textNode)`                          | Load actual native `getRangeAllFontNames` values, including mixed glyph runs and font axes. Also accepts a native text sublayer or its owning sticky/shape/connector.                                                 |
+| `await bridge.screenshot(node, {maxDimension:1600})`        | Native bounded PNG export. `figma_run`/`figma_job` attach small preview images.                                                                                                                                       |
+| `bridge.assetText("icon.svg")`                              | Decode a transferred UTF-8 text asset, up to 1 MiB.                                                                                                                                                                   |
+| `bridge.exportFile(name, Uint8Array, mimeType)`             | Export exact bytes; unique filename of 1–120 Unicode letters/numbers, spaces, dots, underscores or hyphens, starting with a letter/number, 32 MiB total per job. Save with `figma_export`, which refuses overwriting. |
 
 `bridge.assets` holds transferred bytes. Pass returned node/variable/collection IDs from the actual receipt into the next operation's `args`. `bridge.documentId` and `documentRevision` support expiring query cursors. Structured results cap at 4 MiB; inspect narrower subtrees rather than returning the whole account file. `logLimits` discloses dropped entries and truncated messages; absence from a truncated log is not proof that an action never occurred.
 
@@ -31,6 +31,7 @@ Public queries report `sparse`, `truncated`, `issues`, `issueCount` and `issuesT
 
 - Official remote conveniences (`node.query`, `node.set`, `node.screenshot`, `figma.createAutoLayout`, `figma.util`) are absent locally. Use the local tools/helpers or exact public native methods. There is no automatic remote page reset; preserve the user's active page, selection and viewport.
 - Load existing text fonts before changing characters/style. For mixed fonts use the helper; do not overwrite the font just to make an edit work. For new text or a text style, load the chosen actual available font before assigning `fontName`, including `TextStyle.fontName`.
+- Loading a font or `hasMissingFont=false` does not establish glyph coverage. When changing the text's language, verify the native rendering/export; successful `characters` assignment alone is insufficient. If the text disappears, inspect its render bounds and compare the actual desktop rendering before diagnosing the preview. Change the font only when the native rendering requires it, using an actual available face appropriate to the design.
 - Append to the final parent before positioning. Set parent layout first. Resize fixed dimensions before setting HUG/FILL; FILL requires an auto-layout parent. `bridge.set` does not supply a missing parent.
 - Paints and effects are immutable value arrays: clone, bind/change and reassign. Use actual variables/modes; never silently create a second token source.
 - An instance's main component may be a variant. Read `componentPropertyDefinitions` on its parent `COMPONENT_SET`; local context returns `component.propertyOwner`. Property names include their native IDs; use returned names rather than guessing.
@@ -46,4 +47,4 @@ If a host cache path disappears after an upgrade, read figma_status.apiReference
 
 ## Closed host transport
 
-Locate `FIGMA_PLUGIN_STATE_DIR` or the default `~/.canvas-bridge`, then use its `runtime/node` to call `companion/current/src/host/mcp.cjs`'s existing `callTool(name, arguments)` export. Read inputs from a JSON file instead of interpolating user content into shell source. Inspect the original operation ID through that same export before submitting again; keep its ID and payload. Inspect the same job/status/targeting fields and use `figma_export` for previews. Host rejection before submission is distinct from a native execution failure. This path uses the same grants and receipts, not another executor, and does not prove the host tool list has recovered. A closed host UI still needs supported host reload and actual sidebar acceptance.
+Locate `FIGMA_PLUGIN_STATE_DIR` or the default `~/.canvas-bridge`, then use `companion/current/scripts/run-node.sh` to call `companion/current/src/host/mcp.cjs`'s existing `callTool(name, arguments)` export. Read inputs from a JSON file instead of interpolating user content into shell source. Inspect the original operation ID through that same export before submitting again; keep its ID and payload. Inspect the same job/status/targeting fields and use `figma_export` for previews. Host rejection before submission is distinct from a native execution failure. This path uses the same grants and receipts, not another executor, and does not prove the host tool list has recovered. A closed host UI still needs supported host reload and actual sidebar acceptance.

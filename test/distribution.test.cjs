@@ -24,7 +24,8 @@ test('the single production package excludes runtime state, history and developm
     files.every(
       (file) =>
         !/^\.(?:bridge|local|git)|^test|^designs/.test(file) &&
-        (!file.startsWith('scripts/') || file === 'scripts/launch-mcp.sh'),
+        (!file.startsWith('scripts/') ||
+          ['scripts/launch-mcp.sh', 'scripts/run-node.sh'].includes(file)),
     ),
   );
 });

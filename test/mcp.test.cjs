@@ -270,7 +270,6 @@ test('file opening leaves duplicate native sessions for the agent to disambiguat
     {
       files: [{ fileKey: 'CloudFile1', name: 'File' }],
       status: 'incomplete',
-      browserSpace: 12,
       error: 'folder_navigation_changed',
       coverage: [{ route: '/drafts', complete: true }],
     },
@@ -278,7 +277,6 @@ test('file opening leaves duplicate native sessions for the agent to disambiguat
   assert.equal(data.files[0].clientId, null);
   assert.equal(data.files[0].sessions.length, 2);
   assert.equal(data.catalog.error, 'folder_navigation_changed');
-  assert.equal(data.catalog.browserSpace, 12);
   assert.equal(data.catalog.coverage.length, 1);
 });
 test('stdio MCP negotiates, lists tools and reports invalid calls without stdout noise or startup dependencies', async (t) => {
@@ -538,38 +536,56 @@ test('tool errors give the view a recovery message while retaining original oper
   assert.equal(unknown.receipt.job.id, 'original-write');
 });
 test('desktop launcher uses exact native URLs, also opens home, and surfaces failures', async () => {
-  const { launchDesktop } = require('../src/host/mcp.cjs');
+  const { launchDesktop } = require('../src/host/desktop.cjs');
   const calls = [];
   const run = async (...args) => {
     calls.push(args);
   };
   assert.equal(
-    (await launchDesktop('CloudFile12', run, 'darwin')).state,
+    (
+      await launchDesktop('CloudFile12', {
+        execute: run,
+        connect: async () => {},
+        platform: 'darwin',
+      })
+    ).state,
     'opened',
   );
   assert.deepEqual(calls[0], [
-    'open',
+    '/usr/bin/open',
     ['-a', 'Figma', 'figma://file/CloudFile12'],
     { timeout: 10000 },
   ]);
-  await launchDesktop(undefined, run, 'darwin');
+  await launchDesktop(undefined, {
+    execute: run,
+    connect: async () => {},
+    platform: 'darwin',
+  });
   assert.deepEqual(calls[1][1], ['-a', 'Figma']);
   await assert.rejects(
-    launchDesktop('../../private', run, 'darwin'),
+    launchDesktop('../../private', {
+      execute: run,
+      connect: async () => {},
+      platform: 'darwin',
+    }),
     /Invalid/,
   );
   await assert.rejects(
-    launchDesktop(undefined, run, 'linux'),
+    launchDesktop(undefined, {
+      execute: run,
+      connect: async () => {},
+      platform: 'linux',
+    }),
     /requires macOS/,
   );
   await assert.rejects(
-    launchDesktop(
-      undefined,
-      async () => {
+    launchDesktop(undefined, {
+      execute: async () => {
         throw new Error('App not installed');
       },
-      'darwin',
-    ),
+      connect: async () => {},
+      platform: 'darwin',
+    }),
     /not installed/,
   );
 });

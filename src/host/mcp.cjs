@@ -264,7 +264,7 @@ const tools = [
   ],
   [
     'figma_file',
-    'Manage the account directory and Figma Desktop. launch always brings Figma Desktop forward, optionally at an exact fileKey, without pairing or changing the document. sync refreshes account files through the logged-in Figma browser without official MCP quotas. open accepts an exact fileKey from Figma, including a newly created file not yet in the directory; it reuses its connection or opens it for agent-managed native connection; bind only after verifying the actual file URL and current native instance. Never bind by title or present incomplete pagination as the whole account.',
+    'Manage the account directory and Figma Desktop. launch always brings Figma Desktop forward, optionally at an exact fileKey, without pairing or changing the document. sync refreshes account files through the signed-in Figma Desktop session without official MCP quotas. open accepts an exact fileKey from Figma, including a newly created file not yet in the directory; it reuses its connection or opens it for agent-managed native connection; bind only after verifying the actual file URL and current native instance. Never bind by title or present incomplete pagination as the whole account.',
     object(
       {
         action: { type: 'string', enum: ['sync', 'open', 'bind', 'launch'] },
@@ -640,20 +640,6 @@ function validate(value, schema, label = 'arguments') {
       throw new Error(`invalid ${label}`);
   }
 }
-async function launchDesktop(
-  key,
-  run = require('node:util').promisify(require('node:child_process').execFile),
-  platform = process.platform,
-) {
-  if (platform !== 'darwin')
-    throw new Error('Figma Desktop launch currently requires macOS.');
-  if (key && !/^[A-Za-z0-9]{6,100}$/.test(key))
-    throw new Error('Invalid Figma file key.');
-  await run('open', ['-a', 'Figma', ...(key ? [`figma://file/${key}`] : [])], {
-    timeout: 10000,
-  });
-  return { state: 'opened', fileKey: key || null };
-}
 async function withPreviews(connection, record, signal, explicit = false) {
   if (record.job.status !== 'succeeded') return record;
   explicit ||=
@@ -752,11 +738,16 @@ async function callTool(name, input, signal) {
       (input.clientId || input.fileKey)
     )
       throw new Error('choose all history or one connected file');
-    if (name === 'figma_file' && input.action === 'launch' && !input.fileKey)
-      return launchDesktop();
     const connection = await ensureCompanion();
     const request = (route, options) =>
       bridgeRequest(connection, route, { ...options, signal });
+    const launchDesktop = (fileKey) =>
+      request('/v1/desktop', {
+        method: 'POST',
+        body: JSON.stringify({ fileKey }),
+      });
+    if (name === 'figma_file' && input.action === 'launch' && !input.fileKey)
+      return launchDesktop();
     if (name === 'figma_status')
       return {
         updates: require('./updates.cjs').updateStatus(),
@@ -780,6 +771,7 @@ async function callTool(name, input, signal) {
       return request('/v1/app');
     }
     if (name === 'figma_watch') {
+      await request('/v1/catalog/sync', { method: 'POST', body: '{}' });
       return request(
         '/v1/app?' +
           new URLSearchParams({
@@ -790,14 +782,13 @@ async function callTool(name, input, signal) {
     }
     if (name === 'figma_file') {
       if (input.action === 'sync') {
-        const catalog = await request('/v1/catalog/sync', {
+        await request('/v1/catalog/sync', {
           method: 'POST',
           body: '{"force":true}',
         });
         return {
           ...(await request('/v1/app')),
-          browserSpace: catalog.browserSpace || null,
-          next: 'The account sync runs automatically. If login_required, resume this existing browser space and complete ordinary Figma sign-in with the available browser tool, then sync again. Do not ask the user to paste file links or tokens. Preserve login/permission boundaries.',
+          next: 'Account sync reuses Figma Desktop login. If desktop_required, install Desktop from Figma official Downloads, verify its code signature and launch it; use the files skill for installation. If desktop_restart_required, safely save pending changes, quit Figma normally with app automation and launch it through figma_file(action="launch"), then sync. Never force quit an editor with unsynced changes. If login_required, complete ordinary sign-in in Figma Desktop; no separate browser login, cookie copying or Keychain password is required. Preserve login/permission boundaries.',
         };
       }
       if (input.action === 'bind') {
@@ -1182,6 +1173,5 @@ module.exports = {
   app,
   version,
   images,
-  launchDesktop,
 };
 if (require.main === module) serve();

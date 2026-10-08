@@ -8,7 +8,6 @@ const {
   currentPath,
   prepareManagedCompanion,
 } = require('../src/host/installation.cjs');
-const { installRuntime } = require('../src/host/state.cjs');
 const { readLedger, seedLedger } = require('./helpers/ledger.cjs');
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'figma-install-')),
@@ -78,7 +77,6 @@ test('updates retain one current package, replace obsolete code and preserve pri
   assert.deepEqual(await prepareManagedCompanion(first), {
     version: '1.1.0',
     changed: false,
-    runtime: process.execPath,
   });
   assert.equal(
     fs.readFileSync(path.join(currentPath(), 'ui.html'), 'utf8'),
@@ -115,43 +113,15 @@ test('unrecorded installation files are preserved instead of being silently dele
   await assert.rejects(prepareManagedCompanion(f.source('1.1.0')), /modified/);
   assert.equal(fs.readFileSync(extra, 'utf8'), 'unrecorded user file');
 });
-test('bundled runtime is private, skips identical bytes and preserves modified local code', (t) => {
+test('an unchanged verified installation starts without an exclusive lock, runtime copies or file rewrites', async (t) => {
   const f = fixture(t),
-    before = process.env.FIGMA_PLUGIN_BUNDLED_NODE,
-    source = path.join(f.root, 'bundled-node');
-  process.env.FIGMA_PLUGIN_BUNDLED_NODE = source;
-  t.after(() => {
-    if (before === undefined) delete process.env.FIGMA_PLUGIN_BUNDLED_NODE;
-    else process.env.FIGMA_PLUGIN_BUNDLED_NODE = before;
-  });
-  fs.writeFileSync(source, 'verified runtime');
-  const target = installRuntime(),
-    time = fs.statSync(target).mtimeMs;
-  assert.equal(installRuntime(), target);
-  assert.equal(fs.statSync(target).mtimeMs, time);
-  assert.equal(fs.statSync(target).mode & 0o777, 0o700);
-  fs.writeFileSync(target, 'user replacement');
-  assert.throws(() => installRuntime(), /modified/);
-});
-test('an unchanged verified installation starts without an exclusive lock or file rewrites', async (t) => {
-  const f = fixture(t),
-    source = f.source('1.0.0'),
-    before = process.env.FIGMA_PLUGIN_BUNDLED_NODE,
-    runtime = path.join(f.root, 'bundled-node');
-  fs.writeFileSync(runtime, 'verified runtime');
-  process.env.FIGMA_PLUGIN_BUNDLED_NODE = runtime;
-  t.after(() => {
-    if (before === undefined) delete process.env.FIGMA_PLUGIN_BUNDLED_NODE;
-    else process.env.FIGMA_PLUGIN_BUNDLED_NODE = before;
-  });
+    source = f.source('1.0.0');
   await prepareManagedCompanion(source);
   const files = [
     path.join(currentPath(), '.installation.json'),
     ...['manifest.json', 'plugin-runtime.js', 'ui.html'].map((name) =>
       path.join(f.state, 'plugin', name),
     ),
-    path.join(f.state, 'runtime/node'),
-    path.join(f.state, 'runtime/runtime.json'),
   ];
   const original = files.map((file) => fs.statSync(file).mtimeMs),
     lock = t.mock.method(fs, 'symlinkSync');
@@ -162,37 +132,10 @@ test('an unchanged verified installation starts without an exclusive lock or fil
     files.map((file) => fs.statSync(file).mtimeMs),
     original,
   );
+  assert(!fs.existsSync(path.join(f.state, 'node')));
   assert.deepEqual(fs.readdirSync(path.join(f.state, 'companion')), [
     'current',
   ]);
-});
-test('a stale package cannot replace the current bundled runtime', async (t) => {
-  const f = fixture(t),
-    before = process.env.FIGMA_PLUGIN_BUNDLED_NODE;
-  t.after(() => {
-    if (before === undefined) delete process.env.FIGMA_PLUGIN_BUNDLED_NODE;
-    else process.env.FIGMA_PLUGIN_BUNDLED_NODE = before;
-  });
-  const older = f.source('1.0.0'),
-    newer = f.source('1.1.0'),
-    newestRuntime = path.join(f.root, 'newest-node');
-  fs.writeFileSync(newestRuntime, 'newest verified runtime');
-  process.env.FIGMA_PLUGIN_BUNDLED_NODE = newestRuntime;
-  await prepareManagedCompanion(newer);
-  const target = path.join(f.state, 'runtime/node'),
-    bytes = fs.readFileSync(target);
-  const olderRuntime = path.join(f.root, 'older-node');
-  fs.writeFileSync(olderRuntime, 'older runtime');
-  process.env.FIGMA_PLUGIN_BUNDLED_NODE = olderRuntime;
-  assert.deepEqual(await prepareManagedCompanion(older), {
-    version: '1.1.0',
-    changed: false,
-    runtime: target,
-  });
-  assert.deepEqual(fs.readFileSync(target), bytes);
-  fs.writeFileSync(target, 'user replacement');
-  await assert.rejects(prepareManagedCompanion(older), /modified/);
-  assert.equal(fs.readFileSync(target, 'utf8'), 'user replacement');
 });
 test('concurrent Codex launches converge on the newest package and reclaim a dead installation owner', async (t) => {
   const f = fixture(t),

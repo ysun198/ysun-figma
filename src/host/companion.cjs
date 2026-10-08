@@ -65,13 +65,17 @@ async function startCompanion() {
     'a',
     0o600,
   );
-  const runtime = process.env.FIGMA_PLUGIN_BUNDLED_NODE
-    ? path.join(bridgeStateDirectory(), 'runtime/node')
-    : process.execPath;
-  const child = spawn(runtime, [path.join(__dirname, 'bridge-server.cjs')], {
-    detached: true,
-    stdio: ['ignore', log, log],
-  });
+  const child = spawn(
+    '/bin/sh',
+    [
+      path.join(__dirname, '../../scripts/run-node.sh'),
+      path.join(__dirname, 'bridge-server.cjs'),
+    ],
+    {
+      detached: true,
+      stdio: ['ignore', log, log],
+    },
+  );
   fs.closeSync(log);
   child.unref();
   let failure;

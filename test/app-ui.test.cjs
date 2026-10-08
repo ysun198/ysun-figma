@@ -219,7 +219,6 @@ test('catalog recovery reports facts without impersonating a user or starting an
       files: [],
       catalog: {
         status: 'login_required',
-        browserSpace: 12,
         error: 'login_required',
       },
     }),
@@ -228,6 +227,20 @@ test('catalog recovery reports facts without impersonating a user or starting an
   await f.ctx.refresh();
   assert.equal(f.messages.length, 0);
   assert.equal(f.contexts.at(-1).catalog.status, 'login_required');
+});
+test('a missing desktop app has an actionable installation state without inventing files or sending a chat', async () => {
+  const f = fixture(async () =>
+    result({ files: [], catalog: { status: 'desktop_required' } }),
+  );
+  await tick();
+  await f.ctx.refresh();
+  assert.equal(
+    f.elements.get('empty-text').textContent,
+    '请让 Codex 安装 Figma 桌面端',
+  );
+  assert.equal(f.contexts.at(-1).catalog.status, 'desktop_required');
+  assert.equal(f.cards().length, 0);
+  assert.equal(f.messages.length, 0);
 });
 test('an already open workbench requests the current HTML and reconnects without a user reload', async () => {
   const f = fixture(async () => result({ files: [file('FileAlpha')] }));

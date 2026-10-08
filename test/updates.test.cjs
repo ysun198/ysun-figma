@@ -29,6 +29,7 @@ function fixture(t) {
   const pkg = {
     name: 'figma-plugin-local',
     version: '1.0.0',
+    engines: { node: '>=24' },
     repository: { url: 'https://github.com/example/figma.git' },
     updates: {
       publicKey: publicKey.export({ type: 'spki', format: 'pem' }).toString(),
@@ -38,6 +39,7 @@ function fixture(t) {
       'plugin-runtime.js',
       'ui.html',
       'skills/',
+      'scripts/run-node.sh',
     ],
   };
   function source(version) {
@@ -48,6 +50,11 @@ function fixture(t) {
       JSON.stringify({ ...pkg, version }),
     );
     fs.writeFileSync(path.join(folder, 'README.md'), 'public');
+    fs.mkdirSync(path.join(folder, 'scripts'), { recursive: true });
+    fs.copyFileSync(
+      path.join(__dirname, '../scripts/run-node.sh'),
+      path.join(folder, 'scripts/run-node.sh'),
+    );
     for (const name of ['manifest.json', 'plugin-runtime.js', 'ui.html'])
       fs.writeFileSync(path.join(folder, name), version);
     fs.writeFileSync(path.join(folder, 'skills/router/SKILL.md'), version);
@@ -67,16 +74,6 @@ function fixture(t) {
       '.agents/plugins/marketplace.json',
       ...publicEntries(plugin).map((v) => 'plugin/' + v),
     ];
-    for (const arch of ['arm64', 'x64']) {
-      fs.mkdirSync(path.join(plugin, 'runtime/darwin-' + arch), {
-        recursive: true,
-      });
-      for (const name of ['node', 'LICENSE', 'PROVENANCE.json']) {
-        const relative = 'plugin/runtime/darwin-' + arch + '/' + name;
-        fs.writeFileSync(path.join(bundle, relative), 'test runtime');
-        files.push(relative);
-      }
-    }
     const archive = path.join(root, 'ysun-figma-' + version + '.zip');
     execFileSync('zip', ['-q', '-X', archive, ...files], { cwd: bundle });
     return {
@@ -695,15 +692,16 @@ test('ZIP inspection rejects traversal and symlinks before extraction', (t) => {
   traversal.write('../', entry + 46);
   assert.throws(() => archiveEntries(traversal), /Unsafe/);
 });
-test('an interrupted activation restores the last working package and runtime on restart', async (t) => {
+test('an interrupted activation restores the last working package without modifying the external runtime', async (t) => {
   const f = fixture(t);
   await prepareManagedCompanion(f.source('1.0.0'));
   const state = process.env.FIGMA_PLUGIN_STATE_DIR,
     staging = path.join(state, 'companion/.install-crash');
   fs.mkdirSync(staging);
   fs.renameSync(currentPath(), path.join(staging, 'replaced'));
-  fs.mkdirSync(path.join(staging, 'runtime'));
-  fs.writeFileSync(path.join(staging, 'runtime/node'), 'working');
+  const runtime = path.join(state, 'node/bin/node');
+  fs.mkdirSync(path.dirname(runtime), { recursive: true });
+  fs.writeFileSync(runtime, 'external dependency');
   fs.writeFileSync(
     path.join(state, 'companion/.activation.json'),
     JSON.stringify({ staging }),
@@ -714,14 +712,11 @@ test('an interrupted activation restores the last working package and runtime on
       .version,
     '1.0.0',
   );
-  assert.equal(
-    fs.readFileSync(path.join(state, 'runtime/node'), 'utf8'),
-    'working',
-  );
+  assert.equal(fs.readFileSync(runtime, 'utf8'), 'external dependency');
   assert(!fs.existsSync(staging));
   assert(!fs.existsSync(path.join(state, 'companion/.activation.json')));
 });
-test('a failed new-runtime health probe restores working code and native entrypoints', async (t) => {
+test('a failed activated-package health probe restores working code and native entrypoints', async (t) => {
   const f = fixture(t);
   await prepareManagedCompanion(f.source('1.0.0'));
   const source = f.source('1.1.0');
