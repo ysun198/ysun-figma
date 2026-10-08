@@ -16,6 +16,6 @@
 
 请将 Codex 桌面端和 Figma 桌面端更新至最新版本。
 
-欢迎联系作者反馈问题和建议，或提交 PR。进一步了解[安装与更新](docs/INSTALL.md)、[架构](docs/ARCHITECTURE.md)、[隐私与访问](docs/PRIVACY.md)和[第三方声明](NOTICE.md)。
+欢迎通过 [981118963@qq.com](mailto:981118963@qq.com) 联系作者反馈问题和建议，或提交 PR。进一步了解[安装与更新](docs/INSTALL.md)、[架构](docs/ARCHITECTURE.md)、[隐私与访问](docs/PRIVACY.md)和[第三方声明](NOTICE.md)。
 
 采用 MIT 许可证。独立开发，与 Figma 或 OpenAI 无隶属关系。

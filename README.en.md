@@ -16,6 +16,6 @@ The plugin currently supports macOS only and requires Figma Desktop. It reads an
 
 Keep Codex Desktop and Figma Desktop updated to the latest versions.
 
-Contact the author with issues or suggestions, or submit a PR. Learn more about [installation and updates](docs/INSTALL.md), [architecture](docs/ARCHITECTURE.md), [privacy and access](docs/PRIVACY.md) and [third-party notices](NOTICE.md).
+Contact the author at [981118963@qq.com](mailto:981118963@qq.com) with issues or suggestions, or submit a PR. Learn more about [installation and updates](docs/INSTALL.md), [architecture](docs/ARCHITECTURE.md), [privacy and access](docs/PRIVACY.md) and [third-party notices](NOTICE.md).
 
 MIT licensed. Independently developed; not affiliated with Figma or OpenAI.
