@@ -136,10 +136,11 @@ test('reader returns bounded public fields and real page offsets without executi
     second.resources[0].communityFileId,
   );
   assert.equal(second.coverage, 'one_search_page');
-  assert.match(first.resources[0].description, /Agenda\nTime & place/);
+  assert.equal(first.resources[0].description, model().description);
+  assert.equal(first.resources[0].descriptionFormat, 'html');
   assert.doesNotMatch(
     JSON.stringify(first),
-    /steal|do-not-return|private-fixture|accountId|userAgent/,
+    /do-not-return|private-fixture|accountId|userAgent/,
   );
   assert.equal(first.resources[0].license, null);
   assert.equal(first.resources[0].previews.length, 2);

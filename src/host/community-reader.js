@@ -95,27 +95,8 @@ function createCommunityReader() {
   }
   const text = (value, max = 2000) => {
     if (typeof value !== 'string') return null;
-    return value
-      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
-      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '')
-      .replace(/<\/(?:p|li|div|h[1-6])>|<br\s*\/?>/gi, '\n')
-      .replace(/<[^>]*>/g, '')
-      .replace(
-        /&(?:nbsp|amp|lt|gt|quot|#39);/g,
-        (s) =>
-          ({
-            '&nbsp;': ' ',
-            '&amp;': '&',
-            '&lt;': '<',
-            '&gt;': '>',
-            '&quot;': '"',
-            '&#39;': "'",
-          })[s],
-      )
-      .replace(/[ \t]+/g, ' ')
-      .replace(/\n\s*\n/g, '\n')
-      .trim()
-      .slice(0, max);
+    // Literal source data in JSON/MCP text, never sanitized markup for a DOM.
+    return value.trim().slice(0, max);
   };
   function imageUrl(value) {
     if (typeof value !== 'string' || value.length > 4000) return null;
@@ -191,6 +172,7 @@ function createCommunityReader() {
       communityFileId: m.content_id,
       name: text(m.name, 1000),
       description: text(m.description, 8000),
+      descriptionFormat: 'html',
       descriptionTruncated:
         typeof m.description === 'string' && m.description.length > 8000,
       url: 'https://www.figma.com/community/file/' + m.content_id,
