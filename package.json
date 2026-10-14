@@ -1,6 +1,6 @@
 {
   "name": "figma-plugin-local",
-  "version": "0.27.1",
+  "version": "0.28.0",
   "private": true,
   "description": "ysun figma：在 Codex 中读取、编辑和导出 Figma 设计",
   "license": "MIT",
@@ -29,6 +29,8 @@
     "src/host/bridge-server.cjs",
     "src/host/catalog-sync.cjs",
     "src/host/catalog.cjs",
+    "src/host/community-reader.js",
+    "src/host/community.cjs",
     "src/host/codex-refresh.cjs",
     "src/host/desktop.cjs",
     "src/host/companion.cjs",

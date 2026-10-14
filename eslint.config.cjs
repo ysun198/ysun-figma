@@ -34,6 +34,7 @@ module.exports = [
       'src/workbench/canvas-view.js',
       'src/figma/ui.js',
       'src/host/account-reader.js',
+      'src/host/community-reader.js',
     ],
     languageOptions: { globals: globals.browser },
   },
@@ -45,6 +46,7 @@ module.exports = [
     files: [
       'src/shared/core.js',
       'src/host/account-reader.js',
+      'src/host/community-reader.js',
       'src/figma/design-queries.js',
       'src/shared/version.js',
     ],

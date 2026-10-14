@@ -641,6 +641,13 @@ function createBridgeServer(options = {}) {
         await require('./desktop.cjs').launchDesktop(fileKey),
       );
     }
+    if (req.method === 'POST' && url.pathname === '/v1/community') {
+      requireAdmin();
+      const research =
+        options.communityResearch ||
+        require('./community.cjs').researchCommunity;
+      return send(res, 200, await research(await readJson(req)));
+    }
     if (url.pathname === '/v1/catalog') {
       requireAdmin();
       if (req.method === 'GET') return send(res, 200, catalog.view());

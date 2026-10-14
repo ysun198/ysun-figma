@@ -339,7 +339,7 @@ test('stdio MCP negotiates, lists tools and reports invalid calls without stdout
   assert.match(decoded, /@media\(prefers-color-scheme:dark\)/);
   child.stdin.write('{"jsonrpc":"2.0","method":"notifications/initialized"}\n');
   result = await call({ id: 3, method: 'tools/list' });
-  assert.equal(result.result.tools.length, 22);
+  assert.equal(result.result.tools.length, 23);
   for (const name of ['figma_canvas', 'figma_watch']) {
     const tool = result.result.tools.find((tool) => tool.name === name);
     assert.deepEqual(tool._meta.ui.visibility, ['app']);
@@ -587,5 +587,50 @@ test('desktop launcher uses exact native URLs, also opens home, and surfaces fai
       platform: 'darwin',
     }),
     /not installed/,
+  );
+});
+test('Community research is read-only and routes without document status, pairing or edit jobs', async (t) => {
+  const calls = [];
+  const api = isolatedRuntime(t, {
+    companion: { ensureCompanion: async () => ({}) },
+    'bridge-client': {
+      bridgeRequest: async (_connection, route, options) => {
+        calls.push({ route, options });
+        return {
+          source: { kind: 'figma-community' },
+          resource: { communityFileId: '1475930096803673913' },
+          image: { data: 'aW1hZ2U=', mimeType: 'image/png' },
+        };
+      },
+    },
+  });
+  const definition = api.tools.find((x) => x.name === 'figma_community');
+  assert.equal(definition.annotations.readOnlyHint, true);
+  const value = await api.callTool('figma_community', {
+    action: 'preview',
+    communityFileId: '1475930096803673913',
+  });
+  assert.deepEqual(
+    calls.map((x) => x.route),
+    ['/v1/community'],
+  );
+  assert.equal(value.image, undefined);
+  assert.deepEqual(value[api.images], [
+    { type: 'image', data: 'aW1hZ2U=', mimeType: 'image/png' },
+  ]);
+  assert.doesNotMatch(JSON.stringify(value), /aW1hZ2U=/);
+});
+test('invalid Community requests fail before starting the companion', async (t) => {
+  const api = isolatedRuntime(t, {
+    companion: {
+      ensureCompanion: async () => assert.fail('must reject before connection'),
+    },
+  });
+  await assert.rejects(
+    api.callTool('figma_community', {
+      action: 'search',
+      query: 'poster',
+      communityFileId: '1475930096803673913',
+    }),
   );
 });

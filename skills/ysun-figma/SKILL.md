@@ -1,6 +1,6 @@
 ---
 name: ysun-figma
-description: Read, edit and export Figma through ysun figma with automatic local connection and recovery. Route file, design, prototype, FigJam, Slides, design-system, motion and design-to-code tasks to the corresponding native workflow.
+description: Read, edit and export Figma, and research public Community templates without GUI automation, through ysun figma. Route file, design, prototype, FigJam, Slides, design-system, motion and design-to-code tasks to the corresponding native workflow.
 ---
 
 # ysun figma
@@ -8,6 +8,8 @@ description: Read, edit and export Figma through ysun figma with automatic local
 Use this plugin's local tools and Figma Desktop's native Plugin API. No paid MCP tier or REST token is required. Local operations have no monthly plugin quota; Figma permissions, plan-specific features and transfer/service limits still apply.
 
 For an ordinary command/design task, stay in the current Codex conversation; show the resulting editable design in Figma Desktop. Use `figma_open` only when the user requests the interface/design browser. The sidebar opens the same workbench and supplies exact file context through the host's existing composer; do not create another chat UI.
+
+For public Community template/inspiration research, use `figma_community` and read [Community research](references/community.md). It searches and reads details/previews directly through the existing Desktop session without GUI automation, native file pairing, an edit job or an official remote MCP quota. Community file IDs are not cloud fileKeys. Public metadata and covers do not establish editable structure, reuse rights or design quality; inspect relevant previews and preserve creator/source attribution.
 
 Read `figma_status`, reuse the exact connected client and saved authorization. When the file is known, filter by its exact fileKey/clientId. Default job details cover connected files; global counts retain disconnected history. Use scope=all only to investigate that history, and figma_job for the original receipt. Use [files](../ysun-figma-files/SKILL.md) for new/existing file opening, native connection, verified binding, account sync or recovery. Handle routine installation and native automation yourself; expose only a concrete remaining login, permission or automation blocker. Never bind by title or copied document identity.
 

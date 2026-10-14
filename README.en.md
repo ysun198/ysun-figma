@@ -12,6 +12,8 @@ Mention **ysun figma** in your conversation or select the plugin with `/`; you c
 
 The plugin currently supports macOS only and requires Figma Desktop. It reads and writes designs directly through the desktop app, with unlimited local operations. Free Figma accounts also have unlimited use of the plugin, without consuming the official MCP quota.
 
+You can also ask Codex to research Figma Community templates directly: search, paginate, read details and inspect image previews without GUI automation.
+
 ## How to install
 
 Copy this into Codex:

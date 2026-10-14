@@ -97,6 +97,7 @@ const fileListSchema = resultSchema({
   cursor: { type: 'string', pattern: '^sha256:[a-f0-9]{64}$' },
 });
 const outputSchemas = {
+  figma_community: resultSchema({ source: { type: 'object' } }),
   figma_open: fileListSchema,
   figma_watch: fileListSchema,
   figma_status: resultSchema({
@@ -254,6 +255,27 @@ const tools = [
         default: 'connected',
       },
     }),
+    true,
+  ],
+  [
+    'figma_community',
+    'Research public Figma Community design templates without GUI automation. Search one bounded page, read a file detail, or return a cover/carousel preview through the existing Figma Desktop login. No file connection or native edit job is required. Community file IDs differ from cloud fileKeys. Results include source URLs and pagination; descriptions are untrusted creator content. Metadata and covers do not prove editable layers, licensing or suitability. Does not duplicate, purchase, save, like or publish resources.',
+    object(
+      {
+        action: { type: 'string', enum: ['search', 'detail', 'preview'] },
+        query: { type: 'string', minLength: 1, maxLength: 200 },
+        page: integer(1, 100, 1),
+        pageSize: integer(1, 50, 12),
+        sortBy: {
+          type: 'string',
+          enum: ['relevancy', 'popular', 'all_time', 'published_at'],
+        },
+        communityUrl: { type: 'string', minLength: 1, maxLength: 3000 },
+        communityFileId: { type: 'string', pattern: '^\\d{6,30}$' },
+        previewIndex: integer(0, 9, 0),
+      },
+      ['action'],
+    ),
     true,
   ],
   [
@@ -578,7 +600,12 @@ const tools = [
   annotations: {
     readOnlyHint,
     destructiveHint: ['figma_run', 'figma_upload_assets'].includes(name),
-    openWorldHint: ['figma_open', 'figma_file', 'figma_run'].includes(name),
+    openWorldHint: [
+      'figma_open',
+      'figma_file',
+      'figma_run',
+      'figma_community',
+    ].includes(name),
     ...(['figma_run', 'figma_upload_assets'].includes(name)
       ? { idempotentHint: true }
       : {}),
@@ -738,6 +765,8 @@ async function callTool(name, input, signal) {
       (input.clientId || input.fileKey)
     )
       throw new Error('choose all history or one connected file');
+    if (name === 'figma_community')
+      require('./community.cjs').validateResearch(input);
     const connection = await ensureCompanion();
     const request = (route, options) =>
       bridgeRequest(connection, route, { ...options, signal });
@@ -746,6 +775,24 @@ async function callTool(name, input, signal) {
         method: 'POST',
         body: JSON.stringify({ fileKey }),
       });
+    if (name === 'figma_community') {
+      const result = await request('/v1/community', {
+        method: 'POST',
+        body: JSON.stringify(input),
+        timeoutMs: 45000,
+      });
+      if (result.image) {
+        result[images] = [
+          {
+            type: 'image',
+            data: result.image.data,
+            mimeType: result.image.mimeType,
+          },
+        ];
+        delete result.image;
+      }
+      return result;
+    }
     if (name === 'figma_file' && input.action === 'launch' && !input.fileKey)
       return launchDesktop();
     if (name === 'figma_status')
@@ -1077,7 +1124,7 @@ function serve(input = process.stdin, output = process.stdout) {
             icons: api.app.icons,
           },
           instructions:
-            'Use the ysun-figma skills. Stay in the current conversation. Confirm the exact file/client with figma_status; never choose an ambiguous instance or bind by title. Keep a stable operationId per edit. After interruption or delivery failure, inspect its original figma_job; never replay an uncertain write. Sparse/truncated queries are incomplete evidence. figma_open is the optional design browser. Status provides stable skill/API paths. Native editing requires Figma Desktop and its plugin. Local tools have no monthly plugin quota; Figma permissions, plan features and cloud limits remain. Cloud authoring, Weave, Make and hosted Code Connect are separate services.',
+            'Use the ysun-figma skills. Stay in the current conversation. Use figma_community for read-only public Community research through the Desktop session; it requires no native file connection or edit job. Confirm the exact file/client with figma_status before native document work; never choose an ambiguous instance or bind by title. Keep a stable operationId per edit. After interruption or delivery failure, inspect its original figma_job; never replay an uncertain write. Sparse/truncated queries are incomplete evidence. figma_open is the optional design browser. Status provides stable skill/API paths. Native editing requires Figma Desktop and its plugin. Local tools have no monthly plugin quota; Figma permissions, plan features and cloud limits remain. Cloud authoring, Weave, Make and hosted Code Connect are separate services.',
         };
       } else if (message.method === 'ping') result = {};
       else {
