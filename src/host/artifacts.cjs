@@ -10,9 +10,9 @@ function createArtifacts(directory) {
       throw Object.assign(new Error('invalid artifact name'), {
         statusCode: 400,
       });
-    const folder = path.join(directory, path.basename(group));
+    const folder = path.join(directory, group);
     privateDirectory(folder);
-    return path.join(folder, path.basename(name));
+    return path.join(folder, name);
   }
   function describe(group, name) {
     const file = location(group, name);
@@ -86,17 +86,14 @@ function createArtifacts(directory) {
   }
   function remove(group) {
     if (validName(group))
-      fs.rmSync(path.join(directory, path.basename(group)), {
-        recursive: true,
-        force: true,
-      });
+      fs.rmSync(path.join(directory, group), { recursive: true, force: true });
   }
   function cleanupAssets(now, retained) {
     const folder = path.join(directory, 'assets');
     let next = Infinity;
     if (!fs.existsSync(folder)) return next;
     for (const name of fs.readdirSync(folder)) {
-      const file = path.join(folder, path.basename(name)),
+      const file = path.join(folder, name),
         stat = fs.lstatSync(file);
       if (!stat.isFile() || retained.has(name)) continue;
       const expires = stat.mtimeMs + 24 * 60 * 60 * 1000;
