@@ -11,18 +11,29 @@ const {
 } = require('../src/host/api-reference.cjs');
 const directory = path.resolve(__dirname, '../skills/ysun-figma/references');
 const sourceFile = path.join(directory, 'API-SOURCE.json');
+const repository = 'https://github.com/figma/plugin-typings';
+const referenceFile = 'plugin-api.d.ts';
+const licenseFile = 'PLUGIN-API-LICENSE';
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
-function checkLocal() {
+function readSource() {
   const source = JSON.parse(fs.readFileSync(sourceFile, 'utf8'));
-  const types = fs.readFileSync(path.join(directory, source.file), 'utf8');
+  assert.equal(source.repository, repository, 'Unexpected API repository');
+  assert.equal(source.file, referenceFile, 'Unexpected API reference file');
+  assert.equal(source.licenseFile, licenseFile, 'Unexpected API license file');
+  return source;
+}
+
+function checkLocal() {
+  const source = readSource();
+  const types = fs.readFileSync(path.join(directory, referenceFile), 'utf8');
   const declarations = types.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, '');
   assert.equal(
     hash(types),
     source.sha256,
     'API reference differs from its pinned hash',
   );
-  assert.ok(fs.existsSync(path.join(directory, source.licenseFile)));
+  assert.ok(fs.existsSync(path.join(directory, licenseFile)));
   for (const [file] of Object.values(topics))
     assert.ok(
       fs.existsSync(path.resolve(directory, file)),
@@ -49,7 +60,7 @@ function checkLocal() {
     for (const symbol of api.split(',').map((value) => value.trim())) {
       assert.ok(
         tools.has(symbol) ||
-          new RegExp('\\b' + symbol + '\\b').test(declarations),
+          new RegExp('\\b' + RegExp.escape(symbol) + '\\b').test(declarations),
         'Unknown indexed API/tool: ' + symbol,
       );
       symbols.add(symbol);
@@ -71,17 +82,21 @@ function checkLocal() {
 }
 
 async function refresh(update = false) {
-  const current = JSON.parse(fs.readFileSync(sourceFile, 'utf8'));
+  const current = readSource();
   // Public git transport avoids authenticated API quotas; no token or runtime dependency.
   const commit = execFileSync(
     'git',
-    ['ls-remote', current.repository + '.git', 'HEAD'],
+    ['ls-remote', repository + '.git', 'HEAD'],
     { encoding: 'utf8', timeout: 30000 },
   ).split(/\s/)[0];
   assert.match(commit, /^[a-f0-9]{40}$/);
+  const revision = encodeURIComponent(commit);
   const documentationUrl = 'https://developers.figma.com/docs/plugins/updates/';
   async function get(url) {
-    const response = await fetch(url, { signal: AbortSignal.timeout(20000) });
+    const response = await fetch(url, {
+      redirect: 'error',
+      signal: AbortSignal.timeout(20000),
+    });
     if (!response.ok)
       throw new Error(
         'Official reference HTTP ' + response.status + ': ' + url,
@@ -90,10 +105,10 @@ async function refresh(update = false) {
   }
   const [types, license, html] = await Promise.all([
     get(
-      `https://raw.githubusercontent.com/figma/plugin-typings/${commit}/${current.file}`,
+      `https://raw.githubusercontent.com/figma/plugin-typings/${revision}/${referenceFile}`,
     ),
     get(
-      `https://raw.githubusercontent.com/figma/plugin-typings/${commit}/LICENSE`,
+      `https://raw.githubusercontent.com/figma/plugin-typings/${revision}/LICENSE`,
     ),
     get(documentationUrl),
   ]);
@@ -113,8 +128,8 @@ async function refresh(update = false) {
     sha256 !== current.sha256 ||
     documentation.sha256 !== current.documentation?.sha256;
   if (update && changed) {
-    fs.writeFileSync(path.join(directory, current.file), types);
-    fs.writeFileSync(path.join(directory, current.licenseFile), license);
+    fs.writeFileSync(path.join(directory, referenceFile), types);
+    fs.writeFileSync(path.join(directory, licenseFile), license);
     fs.writeFileSync(
       sourceFile,
       JSON.stringify(
