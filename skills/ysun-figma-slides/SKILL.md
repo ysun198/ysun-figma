@@ -7,6 +7,8 @@ description: Create, restyle or edit a native Figma Slides deck with ysun figma,
 
 Use [files](../ysun-figma-files/SKILL.md) and [native execution](../ysun-figma/references/native-execution.md). Check the actual editor/capabilities. Create a cloud deck through normal authenticated Figma UI when needed.
 
+Read [Slides API recipes](../ysun-figma/references/slides.md) for native grid/row/slide ownership and editable content. Use `figma_api(query=...)` to distinguish actual native methods from official remote conveniences.
+
 Use `figma.getSlideGrid()` to discover the deck, and `createSlide`/`createSlideRow` only when available. Grid rows are arrays of slides, not SLIDE_ROW nodes. Newly inserted rows/slides can appear only after the creation script returns; inspect in a following operation. Figma can normalize section names back to Section, even after a later setter. Read persisted state and use the actual editor when a section name matters.
 
 `getSlideGrid()` returns a read-only outer array. For explicit ordering, copy its rows with `grid.map(row => [...row])`, modify that copy, then call `setSlideGrid(nextGrid)`. A native created slide can exist under a row while still absent from the returned grid; confirm its exact ID and parent before adding that same slide to the intended grid. Do not recreate it or invent its position from its name.

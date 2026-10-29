@@ -43,22 +43,7 @@ assert.ok(
     fs.existsSync(path.join(root, onboarding)),
   'packaged onboarding skill must exist',
 );
-const apiDirectory = path.join(root, 'skills/ysun-figma/references');
-const apiSource = JSON.parse(
-  fs.readFileSync(path.join(apiDirectory, 'API-SOURCE.json'), 'utf8'),
-);
-assert.equal(
-  require('node:crypto')
-    .createHash('sha256')
-    .update(fs.readFileSync(path.join(apiDirectory, apiSource.file)))
-    .digest('hex'),
-  apiSource.sha256,
-  'public API types must match their pinned source',
-);
-assert.ok(
-  fs.existsSync(path.join(apiDirectory, apiSource.licenseFile)),
-  'the public API license must ship with the reference',
-);
+require('./sync-api.cjs').checkLocal();
 
 const code = fs.readFileSync(path.join(built, 'plugin-runtime.js'), 'utf8');
 new vm.Script(code, { filename: 'plugin-runtime.js' });

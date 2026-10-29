@@ -365,6 +365,59 @@ test('same-name files require an exact document, client and verified cloud URL; 
     undefined,
   );
 });
+test('verified bindings preserve every native instance of the same cloud file', () => {
+  const catalog = createCatalog();
+  catalog.update({ status: 'ready', accountId: '123', files: [file()] });
+  const clients = [0, 1].map((i) => ({
+    id: 'native-client-' + i,
+    instanceId: String(i + 1).repeat(32),
+    documentId: 'a'.repeat(32),
+    connected: true,
+    fileName: 'Same file',
+  }));
+  for (const client of clients)
+    catalog.bind(
+      {
+        fileKey: 'FileAlpha12',
+        clientId: client.id,
+        documentId: client.documentId,
+        verifiedUrl: file().url,
+      },
+      clients,
+    );
+  const decorated = catalog.decorate(clients);
+  assert.deepEqual(
+    decorated.map((c) => c.fileKey),
+    ['FileAlpha12', 'FileAlpha12'],
+  );
+  const item = require('../src/host/app.cjs').fileList(
+    { clients: decorated },
+    catalog.view(),
+  ).files[0];
+  assert.equal(item.sessions.length, 2);
+  assert.equal(item.clientId, null);
+  assert.throws(
+    () =>
+      require('../src/host/targets.cjs').resolveTarget(
+        { fileKey: 'FileAlpha12' },
+        decorated,
+      ),
+    (error) => error.code === 'FILE_AMBIGUOUS',
+  );
+  catalog.bind(
+    {
+      fileKey: 'FileBravo12',
+      clientId: clients[1].id,
+      documentId: clients[1].documentId,
+      verifiedUrl: 'https://www.figma.com/design/FileBravo12',
+    },
+    clients,
+  );
+  assert.deepEqual(
+    catalog.decorate(clients).map((c) => c.fileKey),
+    ['FileAlpha12', 'FileBravo12'],
+  );
+});
 test('catalog rejects external file links, ambiguous identities and external cover fetches', () => {
   for (const extra of [
     { url: 'https://example.com/design/FileAlpha12' },

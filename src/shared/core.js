@@ -1,5 +1,5 @@
 // Shared native runtime contract. No design snapshot dependencies.
-const BRIDGE_RUNTIME_VERSION = 20;
+const BRIDGE_RUNTIME_VERSION = 24;
 const BRIDGE_PROTOCOL_VERSION = 3;
 function formatBridgeError(error) {
   if (

@@ -132,6 +132,35 @@ async function connected(t) {
     call: (name, args = {}) => mcp.callTool(name, { clientId, ...args }),
   };
 }
+test('concurrent duplicate MCP writes execute once through the shipped HTTP, UI and native pipeline', async (t) => {
+  const f = await connected(t),
+    before = f.calls.creates;
+  const receipts = await Promise.all(
+    Array.from({ length: 40 }, (_, i) => {
+      const input = {
+        operationId: 'burst-create-' + i,
+        source:
+          'const node=figma.createFrame();node.name=args.name;return node;',
+        args: { name: 'burst ' + i },
+      };
+      return Promise.all([
+        f.call('figma_run', input),
+        f.call('figma_run', input),
+      ]);
+    }),
+  );
+  assert.equal(f.calls.creates - before, 40);
+  assert.equal(f.calls.commits, 40);
+  assert.equal(
+    new Set(
+      receipts.map(([a, b]) => {
+        assert.equal(a.job.result.value.id, b.job.result.value.id);
+        return a.job.result.value.id;
+      }),
+    ).size,
+    40,
+  );
+});
 test('shipped execution creates once, reads the same nodes and transfers exact binary assets and previews', async (t) => {
   const f = await connected(t);
   const source =

@@ -121,35 +121,27 @@ function createExecution({
     );
   }
   function archive(job, save) {
-    const {
-      id,
-      payloadHash,
-      receiptHash,
-      kind,
-      status,
-      target,
-      createdAt,
-      finishedAt,
-      error,
-      reconciledAt,
-      reconciliation,
-    } = job;
     save({
-      id,
-      payloadHash,
-      receiptHash,
-      kind,
-      status,
-      target,
-      createdAt,
-      finishedAt,
-      error,
-      reconciledAt,
-      reconciliation,
+      ...Object.fromEntries(
+        [
+          'id',
+          'payloadHash',
+          'receiptHash',
+          'kind',
+          'status',
+          'target',
+          'createdAt',
+          'finishedAt',
+          'error',
+          'reconciledAt',
+          'reconciliation',
+        ].map((key) => [key, job[key]]),
+      ),
       archived: true,
       result: null,
     });
   }
+
   function collectGarbage() {
     const removed = [];
     for (const { id } of statement(
@@ -277,6 +269,55 @@ function createExecution({
             'this client has an unresolved outcome; inspect the file and reconcile the original operation',
             { blockingOperationIds: blocked.map((job) => job.id) },
           );
+        const references = input.options?.ifUnchanged || [];
+        if (
+          !Array.isArray(references) ||
+          references.length > 20 ||
+          references.some((id) => typeof id !== 'string')
+        )
+          throw problem(
+            400,
+            'ifUnchanged must contain up to 20 snapshot operation IDs',
+          );
+        const snapshots = references.map((id) => {
+          const previous = get(id);
+          if (
+            !previous ||
+            previous.archived ||
+            previous.status !== 'succeeded' ||
+            previous.options?.readOnly !== true ||
+            !previous.options.snapshot ||
+            previous.result?.value?.format !== 'figma.snapshot.v1'
+          )
+            throw problem(
+              409,
+              'Snapshot is unavailable or expired; read it again with figma_snapshot: ' +
+                id,
+            );
+          if (
+            digest(
+              targetIdentity({
+                ...previous.target,
+                id: previous.target.clientId,
+              }),
+            ) !== digest(expected)
+          )
+            throw problem(
+              409,
+              'Snapshot belongs to another file or native instance; take a fresh snapshot',
+            );
+          return previous.result.value;
+        });
+        if (Buffer.byteLength(JSON.stringify(snapshots)) > 4 * 1024 * 1024)
+          throw problem(
+            413,
+            'Observed data exceeds 4 MiB; snapshot smaller properties',
+          );
+        const roots = [
+          ...new Set(snapshots.map((item) => item.rootId).filter(Boolean)),
+        ];
+        const rootId =
+          input.options?.rootId || (roots.length === 1 ? roots[0] : null);
         const counts = statement(`SELECT count(*) AS recent,
           sum(status IN ('queued','running')) AS pending FROM operations WHERE archived=0`).get();
         if (counts.pending >= 200)
@@ -306,6 +347,9 @@ function createExecution({
             readOnly: input.options?.readOnly === true,
             operationId: input.id,
             commitUndo: input.options?.commitUndo !== false,
+            ...(input.options?.snapshot ? { snapshot: true } : {}),
+            ...(references.length ? { ifUnchanged: references } : {}),
+            ...(rootId ? { rootId } : {}),
           },
           createdAt: now(),
           expiresAt:
@@ -329,6 +373,9 @@ function createExecution({
             source: input.source,
             args: input.args,
             assets: input.assets,
+            ...(snapshots.length
+              ? { options: { ...job.options, observations: snapshots } }
+              : {}),
           }),
         );
         return { job, created: true };
@@ -459,27 +506,32 @@ function createExecution({
       });
     },
     cleanup(clients) {
+      let next = Infinity;
       change((save, after) => {
         for (const job of records(
           "SELECT record FROM operations WHERE status IN ('queued','running') AND archived=0",
         )) {
           const client = clients.get(job.clientId);
-          let error;
-          if (job.status === 'queued' && now() >= job.expiresAt)
-            error = 'job expired before delivery';
-          if (
-            job.status === 'running' &&
-            (!client ||
-              now() >= client.expiresAt ||
-              now() - job.startedAt >= MAX_RUN_MS)
-          )
-            error = job.options.readOnly
-              ? 'read interrupted by session end or execution deadline'
-              : 'session ended or execution deadline exceeded; inspect the file before another write';
-          if (error) {
-            save(interrupt(job, error));
+          const deadline =
+            job.status === 'queued'
+              ? job.expiresAt
+              : Math.min(
+                  client?.expiresAt ?? now(),
+                  job.startedAt + MAX_RUN_MS,
+                );
+          if (now() >= deadline) {
+            save(
+              interrupt(
+                job,
+                job.status === 'queued'
+                  ? 'job expired before delivery'
+                  : job.options.readOnly
+                    ? 'read interrupted by session end or execution deadline'
+                    : 'session ended or execution deadline exceeded; inspect the file before another write',
+              ),
+            );
             after(() => payloads.delete(job.id));
-          }
+          } else next = Math.min(next, deadline);
         }
         for (const job of records(
           'SELECT record FROM operations WHERE archived=0 AND retention_at IS NOT NULL AND retention_at<?',
@@ -488,6 +540,17 @@ function createExecution({
           archive(job, save);
       });
       collectGarbage();
+      const retained = statement(
+        'SELECT min(retention_at) AS earliest FROM operations WHERE archived=0 AND retention_at IS NOT NULL',
+      ).get().earliest;
+      const garbage = statement(
+        'SELECT id FROM operations WHERE garbage=1 LIMIT 1',
+      ).get();
+      return Math.min(
+        next,
+        retained === null ? Infinity : retained + TERMINAL_JOB_TTL_MS + 1,
+        garbage ? now() + 60000 : Infinity,
+      );
     },
     close() {
       payloads.clear();

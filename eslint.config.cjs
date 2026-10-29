@@ -53,9 +53,10 @@ module.exports = [
     languageOptions: { globals: { module: 'readonly' } },
   },
   {
-    // These four files are concatenated, in order, into one native Figma script.
+    // Native source files are concatenated into one Figma script.
     files: [
       'src/shared/core.js',
+      'src/figma/observation.js',
       'src/figma/design-queries.js',
       'src/figma/script-runtime.js',
       'src/figma/native-runtime.js',
@@ -70,6 +71,7 @@ module.exports = [
       globals: {
         figma: 'readonly',
         createDesignQueries: 'readonly',
+        nativeObservation: 'readonly',
         formatBridgeError: 'readonly',
         validArtifactName: 'readonly',
       },

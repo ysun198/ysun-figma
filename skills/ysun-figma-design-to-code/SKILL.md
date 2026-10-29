@@ -7,6 +7,8 @@ description: Implement a Figma design in an existing repository using ysun figma
 
 Use the local connection/targeting workflow in [ysun-figma](../ysun-figma/SKILL.md). The deliverable is working code in the requested project stack; native JSON/CSS are design evidence, not finished application code.
 
+Read [handoff and source translation](../ysun-figma/references/handoff.md) for native Dev Resources, CSS, SwiftUI asset mapping and the boundary between local code and hosted services. For requested mapping changes, load [Code Connect](../ysun-figma-code-connect/SKILL.md).
+
 Read the target repository's components, tokens, navigation and conventions. Obtain `figma_design_context` for the exact node; a single exportable root includes its screenshot and variable/style references by default. Read `issues`, `sparse` and child truncation. Drill into returned child IDs until the required visible structure is accounted for. Use `figma_screenshot` if the context did not obtain a usable preview. Do not infer a whole design from a partial tree.
 
 Reuse actual project components before adding new ones. For Figma instances, inspect `component` and `component.propertyOwner`; search real `.figma.ts`, `.figma.tsx`, code mapping/config files and their source components. Respect the mapping format already used by the project. A matching layer name is insufficient proof of a component mapping. Do not create a parallel mapping registry or pretend the official hosted Code Connect service is connected.

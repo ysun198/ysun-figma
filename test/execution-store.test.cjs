@@ -67,6 +67,52 @@ function rejectWrites(file, sql) {
     lock.close();
   };
 }
+test('a long-lived ledger serializes shared files, deduplicates bursts and survives repeated reopen', (t) => {
+  const f = fixture(t),
+    other = {
+      ...client,
+      id: 'kernel-client-2',
+      instanceId: 'kernel-instance-2',
+    };
+  let e = f.open();
+  const first = input('stress-0-a');
+  for (let batch = 0; batch < 600; batch++) {
+    const requests = [
+      input('stress-' + batch + '-a'),
+      input('stress-' + batch + '-b', other),
+    ];
+    for (const request of requests) {
+      assert.equal(e.submit(request, [client, other]).created, true);
+      for (let duplicate = 0; duplicate < 2; duplicate++)
+        assert.equal(e.submit(request, [client, other]).created, false);
+    }
+    const a = e.claim(targetIdentity(client));
+    assert.equal(a.id, requests[0].id);
+    assert.equal(
+      e.claim(targetIdentity(other)),
+      null,
+      'only one native execution per cloud file',
+    );
+    const receipt = { ok: true, result: { value: batch } };
+    e.complete(a.id, client.id, receipt);
+    assert.equal(e.complete(a.id, client.id, receipt).result.value, batch);
+    const b = e.claim(targetIdentity(other));
+    assert.equal(b.id, requests[1].id);
+    e.complete(b.id, other.id, receipt);
+    if (batch % 50 === 49) {
+      f.close();
+      e = f.open();
+    }
+  }
+  assert.equal(e.list().length, 200);
+  assert.equal(
+    e.submit(first, [client, other]).created,
+    false,
+    'retired operations remain deduplicated',
+  );
+  assert.equal(e.get(first.id).archived, true);
+  assert.equal(e.claim(targetIdentity(client)), null);
+});
 test('receipt, terminal state and publication commit together; an aborted receipt retains its original claim', (t) => {
   const f = fixture(t),
     published = [];
@@ -118,6 +164,36 @@ test('receipt, terminal state and publication commit together; an aborted receip
     'a duplicate receipt does not create another event',
   );
   assert.equal(e.get(original.id, { payload: true }).source, undefined);
+});
+test('a write queued before an uncertain outcome stays blocked while inspection can proceed', (t) => {
+  const f = fixture(t),
+    e = f.open();
+  e.submit(input('earlier-write'), [client]);
+  e.submit(input('already-queued-write'), [client]);
+  e.submit({ ...input('queued-inspection'), options: { readOnly: true } }, [
+    client,
+  ]);
+  e.claim(targetIdentity(client));
+  e.complete('earlier-write', client.id, {
+    ok: false,
+    outcomeUnknown: true,
+    error: 'failed after mutation',
+  });
+  assert.throws(
+    () => e.submit(input('later-write'), [client]),
+    /unresolved outcome/,
+  );
+  assert.equal(e.claim(targetIdentity(client)).id, 'queued-inspection');
+  e.complete('queued-inspection', client.id, {
+    ok: true,
+    result: { inspected: true },
+  });
+  assert.equal(e.claim(targetIdentity(client)), null);
+  e.reconcile('earlier-write', {
+    outcome: 'partially_applied',
+    note: 'Inspected the affected node',
+  });
+  assert.equal(e.claim(targetIdentity(client)).id, 'already-queued-write');
 });
 test('claim failure rolls back all rejected targets and preserves queued payloads for exact delivery', (t) => {
   const f = fixture(t),

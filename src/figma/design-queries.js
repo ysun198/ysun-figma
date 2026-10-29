@@ -1,5 +1,5 @@
 // Bundled once in the native plugin. MCP jobs call a named query with JSON args.
-// Reads preserve file, selection and viewport.
+// Reads preserve file, selection and viewport; navigation explicitly changes them.
 function createDesignQueries(figma, bridge, log = () => {}) {
   const issues = [];
   let nativeReads = {};
@@ -166,6 +166,33 @@ function createDesignQueries(figma, bridge, log = () => {}) {
       page: describe(page),
       selection: page.selection.map(describe),
       children: page.children.map(describe),
+    };
+  }
+  async function navigate(args) {
+    const page = figma.root.children.find((node) => node.id === args.pageId);
+    if (!page) throw new Error('The requested page is not in this file');
+    const previousPageId = figma.currentPage.id;
+    await figma.setCurrentPageAsync(page);
+    const nodeIds = args.nodeIds || (args.nodeId ? [args.nodeId] : null),
+      selected = [];
+    for (const id of nodeIds || []) {
+      const node = await nodeById(id);
+      if (node.type === 'PAGE')
+        throw new Error('Expected a selectable node: ' + id);
+      let owner = node.parent;
+      while (owner && owner.type !== 'PAGE') owner = owner.parent;
+      if (owner?.id !== page.id)
+        throw new Error('Node is on another page: ' + id);
+      selected.push(node);
+    }
+    if (nodeIds) page.selection = selected;
+    if (args.zoomToFit && selected.length)
+      figma.viewport.scrollAndZoomIntoView(selected);
+    return {
+      previousPageId,
+      page: { id: page.id, name: page.name },
+      selection: page.selection.map((node) => node.id),
+      viewport: { center: figma.viewport.center, zoom: figma.viewport.zoom },
     };
   }
   async function canvas(args = {}) {
@@ -664,7 +691,11 @@ function createDesignQueries(figma, bridge, log = () => {}) {
       : figma.currentPage.selection.length === 1
         ? figma.currentPage.selection[0]
         : null;
-    if (!node || typeof node.exportAsync !== 'function' || node.type === 'PAGE')
+    if (
+      !node ||
+      typeof node.exportAsync !== 'function' ||
+      (node.type === 'PAGE' && args.format !== 'JSON_REST_V1')
+    )
       throw new Error(
         'Choose one exportable node with nodeId or a single selection.',
       );
@@ -700,14 +731,19 @@ function createDesignQueries(figma, bridge, log = () => {}) {
       if (format === 'GIF') settings.loopCount = args.loopCount ?? 0;
       else settings.quality = args.quality ?? 'MEDIUM';
     }
-    const bytes = await nativeRead('exportAsync', node.id, () =>
-        node.exportAsync(settings),
-      ),
-      name =
-        (args.preview ? 'preview-' : 'node-') +
-        node.id.replace(/[^A-Za-z0-9_-]/g, '-') +
-        '.' +
-        format.toLowerCase();
+    let bytes = await nativeRead('exportAsync', node.id, () =>
+      node.exportAsync(settings),
+    );
+    if (format === 'JSON_REST_V1') {
+      const text = unescape(encodeURIComponent(JSON.stringify(bytes)));
+      bytes = new Uint8Array(text.length);
+      for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i);
+    }
+    const name =
+      (args.preview ? 'preview-' : 'node-') +
+      node.id.replace(/[^A-Za-z0-9_-]/g, '-') +
+      '.' +
+      (format === 'JSON_REST_V1' ? 'json' : format.toLowerCase());
     const mimeType = {
       PNG: 'image/png',
       JPG: 'image/jpeg',
@@ -716,6 +752,7 @@ function createDesignQueries(figma, bridge, log = () => {}) {
       MP4: 'video/mp4',
       GIF: 'image/gif',
       WEBM: 'video/webm',
+      JSON_REST_V1: 'application/json',
     }[format];
     bridge.exportFile(name, bytes, mimeType);
     return {
@@ -724,6 +761,15 @@ function createDesignQueries(figma, bridge, log = () => {}) {
       format,
       settings,
       bytes: bytes.length,
+      ...(format === 'JSON_REST_V1'
+        ? {
+            nodeId: node.id,
+            name: node.name,
+            exportName: name,
+            scope:
+              'Native REST-shaped node data; not a .fig file or a guaranteed round-trip backup',
+          }
+        : {}),
     };
   }
   async function variables(args = {}) {
@@ -780,17 +826,23 @@ function createDesignQueries(figma, bridge, log = () => {}) {
         'Local variables and collections only. Cloud libraries require an authorized library API.',
     };
   }
-  async function foundNode(node) {
+  async function foundNode(node, includeComponentMetadata) {
     const info = {
       ...describe(node),
       parentId: node.parent?.id,
       ...read(node, ['key', 'remote', 'description', 'variantProperties']),
     };
-    if (['INSTANCE', 'COMPONENT', 'COMPONENT_SET'].includes(node.type))
+    if (
+      includeComponentMetadata &&
+      ['INSTANCE', 'COMPONENT', 'COMPONENT_SET'].includes(node.type)
+    )
       info.component = await componentInfo(node);
     return info;
   }
-  async function findNodes(args = {}, project = foundNode) {
+  async function findNodes(
+    args = {},
+    project = (node) => foundNode(node, args.includeComponentMetadata === true),
+  ) {
     const issueStart = issues.length;
     // Search is independent of selection. Load pages only when traversal reaches them.
     const selected =
@@ -810,6 +862,8 @@ function createDesignQueries(figma, bridge, log = () => {}) {
       roots: selected.map((node) => node.id),
       query: args.query || '',
       types: args.types || [],
+      includeStaticTimelines: args.includeStaticTimelines === true,
+      includeComponentMetadata: args.includeComponentMetadata === true,
     });
     if (args.cursor) {
       const cursor = JSON.parse(args.cursor);
@@ -838,7 +892,8 @@ function createDesignQueries(figma, bridge, log = () => {}) {
         (!args.types?.length || args.types.includes(node.type)) &&
         (!text || node.name.toLocaleLowerCase().includes(text))
       ) {
-        matches.push(await project(node));
+        const match = await project(node);
+        if (match) matches.push(match);
       }
       if ('children' in node) {
         const children = node.children;
@@ -977,6 +1032,7 @@ function createDesignQueries(figma, bridge, log = () => {}) {
             query: item.query,
             limit,
             types: ['COMPONENT', 'COMPONENT_SET', 'INSTANCE'],
+            includeComponentMetadata: true,
           })),
         });
       else {
@@ -1216,10 +1272,15 @@ function createDesignQueries(figma, bridge, log = () => {}) {
     };
   }
   async function motion(args = {}) {
+    const rootId = args.nodeId || args.rootId;
+    const populated = (value) =>
+      Array.isArray(value)
+        ? value.length > 0
+        : !!(value && Object.keys(value).length);
     const found = await findNodes(
       {
         ...args,
-        rootId: args.nodeId || args.rootId,
+        rootId,
         query: '',
         limit: args.maxNodes ?? 200,
       },
@@ -1231,12 +1292,17 @@ function createDesignQueries(figma, bridge, log = () => {}) {
           'timelines',
           'reactions',
         ]);
-        return Object.values(data).some((value) =>
-          Array.isArray(value)
-            ? value.length
-            : value && Object.keys(value).length,
-        )
-          ? { ...describe(node), ...data }
+        const hasMotion = [
+          'animations',
+          'manualKeyframeTracks',
+          'animationStyles',
+        ].some((key) => populated(data[key]));
+        const hasPrototype = populated(data.reactions);
+        return hasMotion ||
+          hasPrototype ||
+          (populated(data.timelines) &&
+            (args.includeStaticTimelines || node.id === rootId))
+          ? { ...describe(node), ...data, hasMotion, hasPrototype }
           : null;
       },
     );
@@ -1251,7 +1317,17 @@ function createDesignQueries(figma, bridge, log = () => {}) {
     }
     return {
       file: identity(),
-      nodes: found.nodes.filter(Boolean),
+      nodes: found.nodes,
+      motionNodeCount: found.nodes.filter((node) => node?.hasMotion).length,
+      prototypeNodeCount: found.nodes.filter((node) => node?.hasPrototype)
+        .length,
+      timelineOnlyNodeCount: found.nodes.filter(
+        (node) =>
+          node &&
+          !node.hasMotion &&
+          !node.hasPrototype &&
+          node.timelines?.length,
+      ).length,
       availableStyles,
       cursor: found.cursor,
       truncated: found.truncated,
@@ -1416,12 +1492,6 @@ function createDesignQueries(figma, bridge, log = () => {}) {
     return { file: identity(), assets };
   }
   async function capabilities(args = {}) {
-    const api = {},
-      node = args.nodeId
-        ? await nodeById(args.nodeId)
-        : figma.currentPage.selection.length === 1
-          ? figma.currentPage.selection[0]
-          : null;
     const methods = args.methods || [
       ...[
         'createFrame',
@@ -1451,6 +1521,14 @@ function createDesignQueries(figma, bridge, log = () => {}) {
         'exportAsync',
       ].map((key) => 'node.' + key),
     ];
+    const api = {},
+      node = !methods.some((method) => method.startsWith('node.'))
+        ? null
+        : args.nodeId
+          ? await nodeById(args.nodeId)
+          : figma.currentPage.selection.length === 1
+            ? figma.currentPage.selection[0]
+            : null;
     for (const method of methods) {
       const [root, ...keys] = method.split('.'),
         key = root === 'figma' ? keys.join('.') : method;
@@ -1472,7 +1550,7 @@ function createDesignQueries(figma, bridge, log = () => {}) {
     }
     let shaderLibrary = null,
       motionStyles = null;
-    if (api.listAvailableShaders)
+    if (args.includeResources === true && api.listAvailableShaders)
       try {
         shaderLibrary = safe(await figma.listAvailableShaders());
       } catch (error) {
@@ -1481,7 +1559,7 @@ function createDesignQueries(figma, bridge, log = () => {}) {
           error: String(error.message || error).slice(0, 200),
         });
       }
-    if (api['motion.figmaAnimationStyles'])
+    if (args.includeResources === true && api['motion.figmaAnimationStyles'])
       try {
         motionStyles = safe(figma.motion.figmaAnimationStyles());
       } catch (error) {
@@ -1502,6 +1580,7 @@ function createDesignQueries(figma, bridge, log = () => {}) {
   }
   const queries = {
     inspect,
+    navigate,
     canvas,
     context,
     exportNode,
@@ -1509,7 +1588,11 @@ function createDesignQueries(figma, bridge, log = () => {}) {
     variables,
     findNodes,
     components: (args) =>
-      findNodes({ ...args, types: ['COMPONENT', 'COMPONENT_SET'] }),
+      findNodes({
+        ...args,
+        types: ['COMPONENT', 'COMPONENT_SET'],
+        includeComponentMetadata: true,
+      }),
     designSystem,
     downloadAssets,
     importAssets,

@@ -1,4 +1,4 @@
-const { connectDesktop } = require('./desktop.cjs');
+const { connectDesktop, createPageReader } = require('./desktop.cjs');
 const { createCommunityReader } = require('./community-reader.js');
 const HOSTS = new Set(['www.figma.com', 'figma.com']);
 function validateResearch(input) {
@@ -70,32 +70,8 @@ function validateResearch(input) {
 async function communityReader({ connect = connectDesktop } = {}) {
   const connection = await connect();
   const readers = [];
-  const value = (result) => {
-    if (result.exceptionDetails)
-      throw new Error(
-        result.exceptionDetails.exception?.description
-          ?.split('\n')[0]
-          ?.replace(/^Error: /, '') || 'community_read_failed',
-      );
-    return result.result;
-  };
   async function closeReader(r) {
-    if (r.objectId) {
-      await connection
-        .call(
-          'Runtime.callFunctionOn',
-          {
-            objectId: r.objectId,
-            functionDeclaration: 'function(){this.close()}',
-            returnByValue: true,
-          },
-          r.sessionId,
-        )
-        .catch(() => {});
-      await connection
-        .call('Runtime.releaseObject', { objectId: r.objectId }, r.sessionId)
-        .catch(() => {});
-    }
+    await r.reader?.close();
     await connection
       .call('Target.detachFromTarget', { sessionId: r.sessionId })
       .catch(() => {});
@@ -121,42 +97,22 @@ async function communityReader({ connect = connectDesktop } = {}) {
     });
     if (!targets.length) throw new Error('community_home_unavailable');
     const available = [];
-    const invoke = async (reader, method, ...args) =>
-      value(
-        await connection.call(
-          'Runtime.callFunctionOn',
-          {
-            objectId: reader.objectId,
-            functionDeclaration:
-              'function(method,args){return this[method](...args)}',
-            arguments: [{ value: method }, { value: args }],
-            awaitPromise: true,
-            returnByValue: true,
-          },
-          reader.sessionId,
-        ),
-      ).value;
     for (const target of targets) {
       const r = await connection.call('Target.attachToTarget', {
         targetId: target.targetId,
         flatten: true,
       });
-      const reader = { sessionId: r.sessionId };
-      readers.push(reader);
-      reader.objectId = value(
-        await connection.call(
-          'Runtime.evaluate',
-          {
-            expression: '(' + createCommunityReader.toString() + ')()',
-            returnByValue: false,
-          },
-          reader.sessionId,
-        ),
-      ).objectId;
-      if (!reader.objectId) throw new Error('community_reader_unavailable');
+      const session = { sessionId: r.sessionId };
+      readers.push(session);
+      session.reader = await createPageReader(
+        connection,
+        session.sessionId,
+        createCommunityReader,
+        'community_reader_unavailable',
+      );
       try {
-        const identity = await invoke(reader, 'identity');
-        available.push({ ...reader, ...identity });
+        const identity = await session.reader.invoke('identity');
+        available.push({ ...session, ...identity });
       } catch (error) {
         if (error.message !== 'community_login_required') throw error;
       }
@@ -167,8 +123,8 @@ async function communityReader({ connect = connectDesktop } = {}) {
     const selected = available[0];
     return {
       userAgent: selected.userAgent,
-      search: (args) => invoke(selected, 'search', args),
-      detail: (id) => invoke(selected, 'detail', id),
+      search: (args) => selected.reader.invoke('search', args),
+      detail: (id) => selected.reader.invoke('detail', id),
       close,
     };
   } catch (error) {

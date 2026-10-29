@@ -48,48 +48,36 @@ function problem(statusCode, message) {
   return Object.assign(new Error(message), { statusCode });
 }
 function publicClient(client, now) {
-  const {
-    id,
-    instanceId,
-    fileName,
-    fileKey,
-    editorType,
-    pageName,
-    pageId,
-    selection,
-    documentId,
-    pluginId,
-    runtimeVersion,
-    nativeBuild,
-    documentRevision,
-    startedAt,
-    lastSeenAt,
-    expiresAt,
-  } = client;
+  const value = Object.fromEntries(
+    [
+      'id',
+      'instanceId',
+      'fileName',
+      'fileKey',
+      'editorType',
+      'pageName',
+      'pageId',
+      'selection',
+      'documentId',
+      'pluginId',
+      'runtimeVersion',
+      'nativeBuild',
+      'documentRevision',
+      'startedAt',
+      'lastSeenAt',
+      'expiresAt',
+    ].map((key) => [key, client[key]]),
+  );
   return {
-    id,
-    instanceId,
-    fileName,
-    fileKey,
-    editorType,
-    pageName,
-    pageId,
-    selection,
-    documentId,
-    pluginId,
-    runtimeVersion,
-    nativeBuild,
-    documentRevision,
-    startedAt,
-    lastSeenAt,
-    expiresAt,
-    needsPluginUpdate: runtimeVersion !== BRIDGE_RUNTIME_VERSION,
+    ...value,
+    needsPluginUpdate: value.runtimeVersion !== BRIDGE_RUNTIME_VERSION,
     connected:
       !client.suspended &&
-      now - lastSeenAt <= CLIENT_LEASE_MS &&
-      now < expiresAt,
+      now - value.lastSeenAt <= CLIENT_LEASE_MS &&
+      now < value.expiresAt,
   };
 }
+
 function summarizeStatus(
   state,
   { scope = 'connected', clientId, fileKey } = {},
@@ -233,6 +221,7 @@ function createBridgeServer(options = {}) {
     changePending = true;
     queueMicrotask(() => {
       changePending = false;
+      if (ready) maintain();
       changes.emit('change');
     });
   }
@@ -249,7 +238,8 @@ function createBridgeServer(options = {}) {
         if (grant.expiresAt > now()) grants.set(grant.client.id, grant);
     }
   }
-  let lastAssetCleanup = 0;
+  let nextAssetCleanup = 0,
+    cleanupTimer;
   const activeClients = () =>
     [...clients.values()].filter(
       (client) => publicClient(client, now()).connected,
@@ -261,22 +251,35 @@ function createBridgeServer(options = {}) {
     const code = crypto.randomBytes(16).toString('hex'),
       expiresAt = now() + PAIRING_TTL_MS;
     pairings.set(code, expiresAt);
+    notifyChange();
     return { code, expiresAt };
   }
   function cleanup() {
-    if (now() - lastAssetCleanup >= 60000) {
-      lastAssetCleanup = now();
-      artifacts.cleanupAssets(now(), execution.assetIds());
-    }
+    let next = execution.cleanup(clients);
+    if (now() >= nextAssetCleanup)
+      nextAssetCleanup = artifacts.cleanupAssets(now(), execution.assetIds());
+    next = Math.min(next, nextAssetCleanup);
     for (const [secret, session] of sessions)
       if (now() >= session.expiresAt) sessions.delete(secret);
+      else next = Math.min(next, session.expiresAt);
     for (const [code, expiry] of pairings)
       if (now() >= expiry) pairings.delete(code);
-    execution.cleanup(clients);
+      else next = Math.min(next, expiry);
     for (const [id, client] of clients)
       if (now() >= client.expiresAt) clients.delete(id);
+      else next = Math.min(next, client.expiresAt);
+    clearTimeout(cleanupTimer);
+    if (Number.isFinite(next))
+      cleanupTimer = setTimeout(maintain, Math.max(1, next - now())).unref();
   }
-
+  function maintain() {
+    try {
+      cleanup();
+    } catch (error) {
+      options.onError?.(error);
+      cleanupTimer = setTimeout(maintain, 60000).unref();
+    }
+  }
   function waitForValue(read, timeoutMs, res) {
     const initial = read();
     if (initial !== NO_VALUE) return Promise.resolve(initial);
@@ -727,10 +730,13 @@ function createBridgeServer(options = {}) {
     );
     if (req.method === 'POST' && assetUpload) {
       requireAdmin();
-      return send(res, 201, {
+      const result = {
         assetId: assetUpload[1],
         ...(await artifacts.save('assets', assetUpload[1], req)),
-      });
+      };
+      nextAssetCleanup = 0;
+      notifyChange();
+      return send(res, 201, result);
     }
     const binary = url.pathname.match(
       /^\/v1\/jobs\/([A-Za-z0-9_-]{8,100})\/(exports|assets)\/([^/]+)$/,
@@ -911,7 +917,6 @@ function createBridgeServer(options = {}) {
     }),
   );
   server.requestTimeout = 30000;
-  let cleanupTimer;
   return {
     token,
     clients,
@@ -925,17 +930,21 @@ function createBridgeServer(options = {}) {
         });
       });
       // Bind first: a second process failing EADDRINUSE must never rewrite a
-      // running owner's receipt journal or run its retention timer.
+      // running owner's receipt journal or perform cleanup.
       try {
         execution = createExecution({
           databasePath: options.databasePath,
           now,
-          onChange: notifyChange,
+          onChange() {
+            nextAssetCleanup = 0;
+            notifyChange();
+          },
           onError: options.onError,
           artifacts,
         });
         restoreGrants();
         ready = true;
+        maintain();
       } catch (error) {
         execution?.close();
         execution = null;
@@ -943,14 +952,6 @@ function createBridgeServer(options = {}) {
         await new Promise((resolve) => server.close(resolve));
         throw error;
       }
-      cleanupTimer = setInterval(() => {
-        try {
-          cleanup();
-        } catch (error) {
-          if (options.onError) options.onError(error);
-        }
-      }, 1000);
-      cleanupTimer.unref();
       return {
         host,
         port: server.address().port,
@@ -959,7 +960,7 @@ function createBridgeServer(options = {}) {
     },
     async stop() {
       ready = false;
-      clearInterval(cleanupTimer);
+      clearTimeout(cleanupTimer);
       if (catalogWorker) {
         const worker = catalogWorker;
         worker.kill('SIGTERM');

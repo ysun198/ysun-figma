@@ -25,6 +25,141 @@ function isolatedRuntime(t, overrides) {
   });
   return runtime;
 }
+test('stdio pressure preserves fragmented UTF-8 messages, IDs and error boundaries', async (t) => {
+  const { PassThrough } = require('node:stream');
+  const api = isolatedRuntime(t, {}),
+    input = new PassThrough(),
+    output = new PassThrough(),
+    messages = [];
+  output.on('data', (bytes) => messages.push(JSON.parse(bytes.toString())));
+  api.serve(input, output);
+  const packets = [
+    {
+      id: 1,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2025-11-25',
+        clientInfo: { name: 'stress', version: '1' },
+        capabilities: {},
+      },
+    },
+    { method: 'notifications/initialized' },
+    ...Array.from({ length: 500 }, (_, i) => ({
+      id: i + 2,
+      method: i % 5 ? 'tools/call' : 'ping',
+      ...(i % 5
+        ? {
+            params: {
+              name: 'figma_api',
+              arguments: {
+                query: i % 2 ? 'GridLayoutMixin' : '不存在',
+                limit: 1,
+              },
+            },
+          }
+        : {}),
+    })),
+  ];
+  const bytes = Buffer.from(
+    packets.map((p) => JSON.stringify({ jsonrpc: '2.0', ...p })).join('\r\n') +
+      '\n{broken json}\n',
+  );
+  for (let offset = 0; offset < bytes.length; offset += 37)
+    input.write(bytes.subarray(offset, offset + 37));
+  input.end();
+  await new Promise((resolve) => setImmediate(resolve));
+  const replies = messages.filter((m) => m.id !== null);
+  assert.equal(replies.length, 501);
+  assert.equal(new Set(replies.map((m) => m.id)).size, 501);
+  assert.equal(messages.filter((m) => m.error?.code === -32700).length, 1);
+  assert(replies.every((m) => m.result && !m.result.isError));
+});
+test('a closed stdio input aborts its pending transport work without a late response', async (t) => {
+  const { PassThrough } = require('node:stream');
+  let ready, forwarded;
+  const started = new Promise((resolve) => {
+    ready = resolve;
+  });
+  const api = isolatedRuntime(t, {
+    companion: { ensureCompanion: async () => ({}) },
+    'bridge-client': {
+      bridgeRequest: async (_connection, _route, { signal }) =>
+        new Promise((resolve, reject) => {
+          forwarded = signal;
+          signal.addEventListener(
+            'abort',
+            () => reject(new Error('request aborted')),
+            { once: true },
+          );
+          ready();
+        }),
+    },
+  });
+  const input = new PassThrough(),
+    output = new PassThrough(),
+    messages = [];
+  output.on('data', (bytes) => messages.push(JSON.parse(bytes.toString())));
+  api.serve(input, output);
+  input.write(
+    JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2025-11-25',
+        clientInfo: { name: 'stress', version: '1' },
+        capabilities: {},
+      },
+    }) + '\n',
+  );
+  input.write('{"jsonrpc":"2.0","method":"notifications/initialized"}\n');
+  input.write(
+    '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"figma_status"}}\n',
+  );
+  await started;
+  input.destroy();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(forwarded.aborted, true);
+  assert.equal(
+    messages.some((m) => m.id === 2),
+    false,
+  );
+});
+test('malformed tools/call envelopes are protocol errors rather than successful empty calls', async (t) => {
+  const { PassThrough } = require('node:stream');
+  const api = isolatedRuntime(t, {}),
+    input = new PassThrough(),
+    output = new PassThrough();
+  const messages = [];
+  output.on('data', (bytes) => messages.push(JSON.parse(bytes.toString())));
+  api.serve(input, output);
+  const send = (message) =>
+    input.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
+  send({
+    id: 1,
+    method: 'initialize',
+    params: {
+      protocolVersion: '2025-11-25',
+      clientInfo: { name: 'fixture', version: '1' },
+      capabilities: {},
+    },
+  });
+  send({ method: 'notifications/initialized' });
+  const invalid = [null, [], false, 'text', 42];
+  invalid.forEach((value, i) =>
+    send({
+      id: i + 2,
+      method: 'tools/call',
+      params: { name: 'figma_api', arguments: value },
+    }),
+  );
+  send({ id: 7, method: 'tools/call', params: { name: 'figma_api' } });
+  input.end();
+  await new Promise((resolve) => setImmediate(resolve));
+  for (let id = 2; id <= 6; id++)
+    assert.equal(messages.find((m) => m.id === id)?.error?.code, -32602);
+  assert.equal(messages.find((m) => m.id === 7).result.isError, false);
+});
 test('submission rejects an instance changed while assets were being uploaded', async (t) => {
   const { createBridgeServer } = require('../src/host/bridge-server.cjs');
   const { BRIDGE_RUNTIME_VERSION } = require('../src/shared/core.js');
@@ -46,7 +181,12 @@ test('submission rejects an instance changed while assets were being uploaded', 
     }),
   });
   const api = isolatedRuntime(t, {
-    companion: { ensureCompanion: async () => connection },
+    companion: {
+      ensureCompanion: async () => ({
+        ...connection,
+        status: await bridgeRequest(connection, '/v1/status?summary=1'),
+      }),
+    },
     'artifact-client': {
       uploadAssets: async () => {
         await bridgeRequest(
@@ -139,12 +279,16 @@ test('native success retains its receipt and generated ID when preview delivery 
     },
   };
   const api = isolatedRuntime(t, {
-    companion: { ensureCompanion: async () => ({}) },
+    companion: {
+      ensureCompanion: async () => ({
+        status: { clients: [{ id: 'client-fixture', connected: true }] },
+      }),
+    },
     'bridge-client': {
-      bridgeRequest: async (_connection, route) =>
-        route === '/v1/jobs'
-          ? { job }
-          : { clients: [{ id: 'client-fixture', connected: true }] },
+      bridgeRequest: async (_connection, route) => {
+        assert.equal(route, '/v1/jobs');
+        return { job };
+      },
     },
     'artifact-client': {
       uploadAssets: async () => ({}),
@@ -171,11 +315,13 @@ test('an interrupted wait retains the accepted job, including a generated read o
     target: { clientId: 'client-fixture' },
   };
   const api = isolatedRuntime(t, {
-    companion: { ensureCompanion: async () => ({}) },
+    companion: {
+      ensureCompanion: async () => ({
+        status: { clients: [{ id: 'client-fixture', connected: true }] },
+      }),
+    },
     'bridge-client': {
       bridgeRequest: async (_connection, route) => {
-        if (route.startsWith('/v1/status'))
-          return { clients: [{ id: 'client-fixture', connected: true }] };
         if (route === '/v1/jobs') return { job };
         throw new Error('wait disconnected');
       },
@@ -339,7 +485,13 @@ test('stdio MCP negotiates, lists tools and reports invalid calls without stdout
   assert.match(decoded, /@media\(prefers-color-scheme:dark\)/);
   child.stdin.write('{"jsonrpc":"2.0","method":"notifications/initialized"}\n');
   result = await call({ id: 3, method: 'tools/list' });
-  assert.equal(result.result.tools.length, 23);
+  assert.deepEqual(
+    result.result.tools.map((tool) => tool.name).sort(),
+    require('../src/host/mcp.cjs')
+      .tools.map((tool) => tool.name)
+      .sort(),
+    'the built transport must expose the current source tool catalogue',
+  );
   for (const name of ['figma_canvas', 'figma_watch']) {
     const tool = result.result.tools.find((tool) => tool.name === name);
     assert.deepEqual(tool._meta.ui.visibility, ['app']);
@@ -633,4 +785,112 @@ test('invalid Community requests fail before starting the companion', async (t) 
       communityFileId: '1475930096803673913',
     }),
   );
+});
+
+test('API discovery works without Figma and rejects invalid topic/query inputs before connection', async (t) => {
+  const api = isolatedRuntime(t, {
+    companion: {
+      ensureCompanion: async () =>
+        assert.fail('offline discovery must not start the companion'),
+    },
+  });
+  const result = await api.callTool('figma_api', {
+    query: 'GridLayoutMixin',
+    limit: 1,
+  });
+  assert.equal(result.excerpts[0].owner, 'GridLayoutMixin');
+  assert.equal(
+    api.tools.find((tool) => tool.name === 'figma_api').annotations
+      .readOnlyHint,
+    true,
+  );
+  await assert.rejects(
+    api.callTool('figma_api', { query: 'FrameNode', topic: 'layout' }),
+    /Choose/,
+  );
+  await assert.rejects(
+    api.callTool('figma_api', { query: 'FrameNode', limit: 9 }),
+    /invalid/,
+  );
+  for (const key of ['constructor', 'toString', '__proto__'])
+    await assert.rejects(
+      api.callTool('figma_api', { [key]: 'unexpected' }),
+      /unexpected|invalid/,
+    );
+});
+
+test('navigation and JSON exports use the existing exact-target receipt channel without design writes', async (t) => {
+  const submissions = [];
+  const api = isolatedRuntime(t, {
+    companion: {
+      ensureCompanion: async () => ({
+        status: {
+          clients: [
+            {
+              id: 'client-fixture',
+              connected: true,
+              fileKey: 'OriginalFile12',
+              instanceId: 'original-instance',
+            },
+          ],
+        },
+      }),
+    },
+    'bridge-client': {
+      bridgeRequest: async (_connection, route, options) => {
+        assert.equal(route, '/v1/jobs');
+        const submission = JSON.parse(options.body);
+        submissions.push(submission);
+        return {
+          job: {
+            id: submission.operationId,
+            status: 'succeeded',
+            target: submission.target,
+            result: { value: {}, exports: [] },
+          },
+        };
+      },
+    },
+    'artifact-client': { uploadAssets: async () => ({}) },
+  });
+  const navigation = await api.callTool('figma_navigate', {
+    fileKey: 'OriginalFile12',
+    operationId: 'native-navigate-01',
+    pageId: '0:1',
+    nodeIds: ['3:3'],
+    zoomToFit: true,
+  });
+  assert.equal(navigation.job.id, 'native-navigate-01');
+  assert.equal(submissions[0].target.instanceId, 'original-instance');
+  assert.equal(submissions[0].args.pageId, '0:1');
+  assert.deepEqual(submissions[0].args.nodeIds, ['3:3']);
+  assert.equal(submissions[0].options.readOnly, true);
+  assert.equal(submissions[0].options.commitUndo, false);
+  await api.callTool('figma_navigate', {
+    figmaUrl: 'https://www.figma.com/design/OriginalFile12/Test?node-id=3-3',
+    operationId: 'native-navigate-url',
+    pageId: '0:1',
+  });
+  assert.equal(submissions[1].args.nodeId, '3:3');
+  await assert.rejects(
+    api.callTool('figma_navigate', {
+      figmaUrl: 'https://www.figma.com/design/OriginalFile12/Test?node-id=3-3',
+      operationId: 'native-navigate-conflict',
+      pageId: '0:1',
+      nodeIds: ['3:4'],
+    }),
+    /choose.*URL node/,
+  );
+  assert.equal(submissions.length, 2);
+  await api.callTool('figma_export_node', {
+    fileKey: 'OriginalFile12',
+    nodeId: '3:3',
+    format: 'JSON_REST_V1',
+  });
+  const json = submissions[2];
+  assert.equal(json.args.nodeId, '3:3');
+  assert.equal(json.options.readOnly, true);
+  assert.equal(json.options.commitUndo, false);
+  assert.match(json.source, /bridge.query\('exportNode'/);
+  assert.equal(json.args.format, 'JSON_REST_V1');
 });

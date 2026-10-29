@@ -176,7 +176,12 @@ function fixture() {
   }
   const context = vm.createContext({ console, Uint8Array });
   vm.runInContext(
-    ['shared/core.js', 'figma/design-queries.js', 'figma/script-runtime.js']
+    [
+      'shared/core.js',
+      'figma/observation.js',
+      'figma/design-queries.js',
+      'figma/script-runtime.js',
+    ]
       .map((name) =>
         fs.readFileSync(path.join(__dirname, '../../src', name), 'utf8'),
       )

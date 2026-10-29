@@ -1,44 +1,29 @@
-const { connectDesktop } = require('./desktop.cjs');
+const {
+  connectDesktop,
+  runtimeResult,
+  createPageReader,
+} = require('./desktop.cjs');
 const { bridgeRequest, readConnection } = require('./bridge-client.cjs');
 const { createAccountReader } = require('./account-reader.js');
 const pause = () => new Promise((resolve) => setTimeout(resolve, 200));
 async function desktopReader({ connect = connectDesktop } = {}) {
   const connection = await connect();
   const sessions = new Set();
-  let sessionId, objectId;
+  let sessionId, reader;
   const detach = async (id) => {
     await connection.call('Target.detachFromTarget', { sessionId: id });
     sessions.delete(id);
   };
   const close = async () => {
     try {
-      if (objectId) {
-        await connection.call(
-          'Runtime.callFunctionOn',
-          {
-            objectId,
-            functionDeclaration: 'function(){this.close()}',
-            returnByValue: true,
-          },
-          sessionId,
-        );
-        await connection.call('Runtime.releaseObject', { objectId }, sessionId);
-      }
+      await reader?.close();
     } catch {
     } finally {
       for (const id of sessions) await detach(id).catch(() => {});
       connection.close();
     }
   };
-  const value = (result) => {
-    if (result.exceptionDetails)
-      throw new Error(
-        result.exceptionDetails.exception?.description
-          ?.split('\n')[0]
-          .replace(/^Error: /, '') || 'account_directory_unavailable',
-      );
-    return result.result;
-  };
+
   try {
     const deadline = Date.now() + 45000;
     while (Date.now() < deadline) {
@@ -66,7 +51,7 @@ async function desktopReader({ connect = connectDesktop } = {}) {
           },
         );
         sessions.add(id);
-        const state = value(
+        const state = runtimeResult(
           await connection.call(
             'Runtime.evaluate',
             {
@@ -76,6 +61,7 @@ async function desktopReader({ connect = connectDesktop } = {}) {
             },
             id,
           ),
+          'account_directory_unavailable',
         ).value;
         if (state.login) loginCount++;
         if (state.ready && state.accountId)
@@ -103,32 +89,13 @@ async function desktopReader({ connect = connectDesktop } = {}) {
       await pause();
     }
     if (!sessionId) throw new Error('account_directory_unavailable');
-    objectId = value(
-      await connection.call(
-        'Runtime.evaluate',
-        {
-          expression: '(' + createAccountReader.toString() + ')()',
-          returnByValue: false,
-        },
-        sessionId,
-      ),
-    ).objectId;
-    if (!objectId) throw new Error('account_directory_unavailable');
-    const invoke = async (method, ...args) =>
-      value(
-        await connection.call(
-          'Runtime.callFunctionOn',
-          {
-            objectId,
-            functionDeclaration:
-              'function(method,args){return this[method](...args)}',
-            arguments: [{ value: method }, { value: args }],
-            awaitPromise: true,
-            returnByValue: true,
-          },
-          sessionId,
-        ),
-      ).value;
+    reader = await createPageReader(
+      connection,
+      sessionId,
+      createAccountReader,
+      'account_directory_unavailable',
+    );
+    const invoke = reader.invoke;
     return {
       identity: () => invoke('identity'),
       plans: () => invoke('plans'),

@@ -636,7 +636,7 @@ test('both UI and native host refuse closing before a result receipt is delivere
 test('native writes refresh the design revision even when dynamic-page documentchange is unavailable', async () => {
   const packets = [];
   const figma = {
-    root: { name: 'Test', getPluginData: () => '' },
+    root: { name: 'Test', children: [], getPluginData: () => '' },
     currentPage: { id: '0:1', name: 'Page', selection: [] },
     showUI() {},
     on(type) {
@@ -654,7 +654,14 @@ test('native writes refresh the design revision even when dynamic-page documentc
     BRIDGE_RUNTIME_VERSION,
     BRIDGE_PROTOCOL_VERSION: 3,
     async executeScript(source) {
-      if (source === 'partial') throw new Error('partial write');
+      if (source === 'partial')
+        throw Object.assign(new Error('partial write'), {
+          outcomeUnknown: true,
+        });
+      if (source === 'conflict')
+        throw Object.assign(new Error('precondition'), {
+          outcomeUnknown: false,
+        });
       return { value: 1 };
     },
     formatBridgeError: (e) => e.message,
@@ -689,6 +696,14 @@ test('native writes refresh the design revision even when dynamic-page documentc
     options: {},
   });
   assert.equal(packets.at(-1).type, 'ERROR');
+  assert.equal(packets.at(-1).context.documentRevision, 2);
+  await figma.ui.onmessage({ type: 'RECEIPT_DELIVERED' });
+  await figma.ui.onmessage({
+    type: 'RUN_JOB',
+    kind: 'exec',
+    source: 'conflict',
+    options: {},
+  });
   assert.equal(packets.at(-1).context.documentRevision, 2);
 });
 test('re-pairing restarts polling after the previous poll settles', async () => {
@@ -752,6 +767,7 @@ test('manual page edits invalidate previews in dynamic mode without loading unre
     children: [],
     async loadAsync() {
       loads++;
+      return new Promise(() => {});
     },
     on(type, callback) {
       pageEvents.set(type, callback);
@@ -786,7 +802,7 @@ test('manual page edits invalidate previews in dynamic mode without loading unre
     context,
   );
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(loads, 1);
+  assert.equal(loads, 0);
   assert(pageEvents.has('nodechange'));
   assert.equal(events.has('documentchange'), false);
   pageEvents.get('nodechange')({
@@ -796,7 +812,18 @@ test('manual page edits invalidate previews in dynamic mode without loading unre
   assert.equal(packets.at(-1).documentRevision, 1);
   events.get('currentpagechange')();
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(loads, 1);
+  assert.equal(loads, 0);
+  await figma.ui.onmessage({
+    type: 'RUN_JOB',
+    kind: 'exec',
+    source: 'read',
+    options: { readOnly: true },
+  });
+  assert.equal(
+    packets.at(-1).type,
+    'APPLIED',
+    'observer setup cannot hold an execution receipt behind page loading',
+  );
 });
 test('job observation skips existing root arrays and registers newly loaded empty pages', async () => {
   const packets = [],
@@ -876,7 +903,7 @@ test('job observation skips existing root arrays and registers newly loaded empt
   await read();
   assert.equal(activeReads, 0, 'observed roots are never re-enumerated');
   assert.equal(hiddenReads, reads, 'new observations are reused');
-  assert.equal(hiddenLoads, 1);
+  assert.equal(hiddenLoads, 0);
   subscriptions.get(hidden.id)({});
   assert.equal(packets.at(-1).type, 'CONTEXT');
   assert.equal(packets.at(-1).documentRevision, 1);

@@ -1,9 +1,14 @@
 {
   "repository": "https://github.com/figma/plugin-typings",
-  "commit": "c56f7a4d2a00e964cfecc2d9529c83a0461b7bee",
+  "commit": "dff4874ca083e18cd74835fd5afc5079d46866b7",
   "file": "plugin-api.d.ts",
-  "sha256": "1afb1fa5c9b657c9b04806bfc750fbf4d00297d7b18d029d790a5e232d622c42",
+  "sha256": "46685808f4994664397367ff855ff87619f8177370da572f7d3acfd2553dc95a",
   "license": "MIT",
   "licenseFile": "PLUGIN-API-LICENSE",
-  "retrieved": "2026-10-05"
+  "retrieved": "2026-10-29",
+  "documentation": {
+    "url": "https://developers.figma.com/docs/plugins/updates/",
+    "release": "Version 1, Update 141",
+    "sha256": "08badd369e172410e488e51ac0c7b20364b1d6985f9241ce90d96eedb201c57d"
+  }
 }
