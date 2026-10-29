@@ -58,6 +58,11 @@ function createArtifacts(directory) {
             statusCode: 409,
           });
       }
+      if (group === 'assets') {
+        // Re-uploading starts a fresh lifetime before the next job claims it.
+        const uploadedAt = new Date();
+        fs.utimesSync(destination, uploadedAt, uploadedAt);
+      }
       return info;
     } finally {
       await handle.close().catch(() => {});
@@ -85,17 +90,17 @@ function createArtifacts(directory) {
   }
   function cleanupAssets(now, retained) {
     const folder = path.join(directory, 'assets');
-    if (!fs.existsSync(folder)) return;
+    let next = Infinity;
+    if (!fs.existsSync(folder)) return next;
     for (const name of fs.readdirSync(folder)) {
       const file = path.join(folder, name),
         stat = fs.lstatSync(file);
-      if (
-        stat.isFile() &&
-        !retained.has(name) &&
-        now - stat.mtimeMs > 24 * 60 * 60 * 1000
-      )
-        fs.unlinkSync(file);
+      if (!stat.isFile() || retained.has(name)) continue;
+      const expires = stat.mtimeMs + 24 * 60 * 60 * 1000;
+      if (now > expires) fs.unlinkSync(file);
+      else next = Math.min(next, Math.floor(expires) + 1);
     }
+    return next;
   }
   return { save, describe, send, remove, cleanupAssets };
 }

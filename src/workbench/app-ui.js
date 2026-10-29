@@ -32,7 +32,8 @@ let listSort = { field: 'updatedAt', direction: 'desc' };
 const scrollPositions = { cards: 0, list: 0 },
   cardCache = new Map();
 let noticeTimer,
-  noticeKey = '';
+  noticeKey = '',
+  noticeSource = '';
 try {
   if (localStorage.getItem('ysun-figma-view') === 'list') view = 'list';
 } catch {}
@@ -59,16 +60,17 @@ function visibleFiles() {
     });
   return selected;
 }
-function notice(text = '', retry = false) {
+function notice(text = '', retry = false, source = '') {
   if (replacing) return;
-  const key = JSON.stringify([text, retry]);
+  const key = JSON.stringify([text, retry, source]);
   if (noticeKey === key) return;
   noticeKey = key;
+  noticeSource = source;
   clearTimeout(noticeTimer);
   $('notice-text').textContent = text;
   $('retry').hidden = !retry;
   $('notice').hidden = !text;
-  if (text) noticeTimer = setTimeout(dismissNotice, 5000);
+  if (text && !retry) noticeTimer = setTimeout(dismissNotice, 5000);
 }
 function dismissNotice() {
   clearTimeout(noticeTimer);
@@ -358,8 +360,16 @@ function render(data, force = false) {
   if (!unchanged || force) draw();
   void syncContext();
   const incomplete = ['incomplete', 'interrupted'].includes(catalog.status);
-  if (incomplete && previousStatus === 'syncing')
-    notice('未能更新文件目录', true);
+  const directoryError = {
+    desktop_restart_required: '请保存并退出 Figma 后重试',
+    desktop_required: '请先安装 Figma 桌面端',
+    login_required: '请在 Figma 桌面端登录后重试',
+  }[catalog.status];
+  if (directoryError && files.length && previousStatus !== catalog.status)
+    notice(directoryError, true, 'catalog');
+  else if (incomplete && previousStatus === 'syncing')
+    notice('未能更新文件目录', true, 'catalog');
+  else if (catalog.status === 'ready' && noticeSource === 'catalog') notice();
 }
 async function replaceWorkbench() {
   replacing = true;

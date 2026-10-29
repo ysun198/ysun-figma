@@ -62,12 +62,22 @@ async function executeScript(source, args = {}, assets = {}, options = {}) {
     truncatedMessages: 0,
   };
   let exportBytes = 0;
+  const observations = nativeObservation(figma);
   const bridge = {
+    root: null,
+    observe: (input) => observations.snapshot(input),
     assets,
     operationId: options.operationId || null,
     documentId: options.documentId || null,
     documentRevision: options.documentRevision ?? null,
     query(name, input) {
+      if (
+        name === 'importAssets' &&
+        bridge.root &&
+        !input.nodeId &&
+        !input.parentId
+      )
+        input = { ...input, parentId: bridge.root.id };
       const queries = createDesignQueries(figma, bridge, scriptConsole.log);
       if (!Object.hasOwn(queries, name))
         throw new Error('Unknown native query: ' + name);
@@ -95,7 +105,11 @@ async function executeScript(source, args = {}, assets = {}, options = {}) {
     autoLayout(direction = 'VERTICAL', properties = {}) {
       if (!['VERTICAL', 'HORIZONTAL'].includes(direction))
         throw new Error('Choose VERTICAL or HORIZONTAL');
-      return bridge.set(figma.createFrame(), {
+      if (bridge.root && typeof bridge.root.appendChild !== 'function')
+        throw new Error('Workspace root cannot contain children');
+      const node = figma.createFrame();
+      if (bridge.root) bridge.root.appendChild(node);
+      return bridge.set(node, {
         layoutMode: direction,
         primaryAxisSizingMode: 'AUTO',
         counterAxisSizingMode: 'AUTO',
@@ -172,7 +186,25 @@ async function executeScript(source, args = {}, assets = {}, options = {}) {
     ]),
   );
   const startedAt = Date.now();
+  let executionStarted = false;
   try {
+    if (options.observations?.length || options.rootId) {
+      const checked = await observations.check(
+        options.observations || [],
+        options.rootId,
+      );
+      if (checked.error || checked.conflictCount) {
+        const error = new Error(checked.error || 'Observed Figma data changed');
+        error.precondition = {
+          code: checked.error ? 'PRECONDITION_UNAVAILABLE' : 'WRITE_CONFLICT',
+          conflicts: checked.conflicts || [],
+          conflictCount: checked.conflictCount || 0,
+        };
+        throw error;
+      }
+      bridge.root = checked.root;
+    }
+    executionStarted = true;
     const value = await run(figma, bridge, args, scriptConsole);
     const receipt = {
       operationId: bridge.operationId,
@@ -206,11 +238,11 @@ async function executeScript(source, args = {}, assets = {}, options = {}) {
     const failure = new Error(
       'script: ' +
         formatBridgeError(error) +
-        (options.readOnly === true
+        (options.readOnly === true || !executionStarted
           ? ''
           : '; execution started, inspect the file before another write'),
     );
-    failure.outcomeUnknown = options.readOnly !== true;
+    failure.outcomeUnknown = executionStarted && options.readOnly !== true;
     failure.receipt = {
       operationId: bridge.operationId,
       editorType: figma.editorType,
@@ -219,6 +251,9 @@ async function executeScript(source, args = {}, assets = {}, options = {}) {
       logs,
       logLimits,
       exports,
+      ...(!executionStarted && error.precondition
+        ? { precondition: error.precondition }
+        : {}),
       ...(error.queryDiagnostics
         ? { queryDiagnostics: error.queryDiagnostics }
         : {}),

@@ -278,6 +278,63 @@ async function connectDesktop({ start = ensureDesktop } = {}) {
     throw error;
   }
 }
+function runtimeResult(result, unavailable = 'desktop_reader_unavailable') {
+  if (result.exceptionDetails)
+    throw new Error(
+      result.exceptionDetails.exception?.description
+        ?.split('\n')[0]
+        ?.replace(/^Error: /, '') || unavailable,
+    );
+  return result.result;
+}
+async function createPageReader(connection, sessionId, factory, unavailable) {
+  const objectId = runtimeResult(
+    await connection.call(
+      'Runtime.evaluate',
+      {
+        expression: '(' + factory.toString() + ')()',
+        returnByValue: false,
+      },
+      sessionId,
+    ),
+    unavailable,
+  ).objectId;
+  if (!objectId) throw new Error(unavailable);
+  return {
+    invoke: async (method, ...args) =>
+      runtimeResult(
+        await connection.call(
+          'Runtime.callFunctionOn',
+          {
+            objectId,
+            functionDeclaration:
+              'function(method,args){return this[method](...args)}',
+            arguments: [{ value: method }, { value: args }],
+            awaitPromise: true,
+            returnByValue: true,
+          },
+          sessionId,
+        ),
+        unavailable,
+      ).value,
+    async close() {
+      await connection
+        .call(
+          'Runtime.callFunctionOn',
+          {
+            objectId,
+            functionDeclaration: 'function(){this.close()}',
+            returnByValue: true,
+          },
+          sessionId,
+        )
+        .catch(() => {});
+      await connection
+        .call('Runtime.releaseObject', { objectId }, sessionId)
+        .catch(() => {});
+    },
+  };
+}
 async function launchDesktop(
   key,
   { execute = run, connect = ensureDesktop, platform = process.platform } = {},
@@ -300,4 +357,10 @@ async function launchDesktop(
   );
   return { state: 'opened', fileKey: key || null, accountConnection };
 }
-module.exports = { ensureDesktop, connectDesktop, launchDesktop };
+module.exports = {
+  ensureDesktop,
+  connectDesktop,
+  launchDesktop,
+  runtimeResult,
+  createPageReader,
+};

@@ -37,7 +37,6 @@ function startNativePlugin() {
   };
   async function watchPage(page) {
     if (!page || watchedPages.has(page.id)) return;
-    await page.loadAsync();
     page.on('nodechange', changed);
     watchedPages.add(page.id);
   }
@@ -136,7 +135,7 @@ function startNativePlugin() {
           context: context(),
         });
       } catch (error) {
-        if (message.options?.readOnly !== true) documentRevision++;
+        if (error.outcomeUnknown === true) documentRevision++;
         figma.ui.postMessage({
           type: 'ERROR',
           requestId: message.requestId,

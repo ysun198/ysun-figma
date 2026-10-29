@@ -11,6 +11,8 @@ Use [ysun-figma](../ysun-figma/SKILL.md) for the shared tool/runtime contract. H
 
 Prefer the requested file. Read `figma_status`, retain its current clients/instance IDs, and call `figma_file(action="open", fileKey=...)` using the exact key from Figma's actual URL. A newly created file need not wait for account sync or already exist in the directory. `verifiedUrl` can carry its observed Design, board or Slides URL. `launch` brings Desktop forward without pairing.
 
+For a connected file, navigate pages and native selection with `figma_navigate(pageId, nodeIds?, zoomToFit?)`. It activates the real page through `setCurrentPageAsync` and reports selection/viewport without bringing the application forward. Prefer this to clicking page tabs or searching layers in the GUI. Queries can read explicit pages without activating them; navigate only when the task benefits from it. Keep routine inspection, edits, exports and recovery in MCP.
+
 One cloud file can have several native instances. Directory `sessions` and an ambiguous-target error expose the actual candidates; `clientId=null` means no unique instance, not necessarily disconnected. Compare the intended URL/document/instance and pass its exact `clientId`. The plugin does not pick the first instance. Sidebar context is navigation data: fileKey/clientId/pageId identify the user's selected target even before the image loads. Its preview contains the actual rendered client/page/revision; native sessions separately report Desktop page/selection. Panning the raster does not select native layers, and it never sends a user message to request recovery on the agent's behalf.
 
 For a new cloud file, use normal authenticated Figma Home creation and the requested editor. The public native Plugin API operates inside an existing file; it cannot create a cloud file. Record the actual returned URL/key, then use the same local open/connection path. Do not require the official remote MCP or create a second file to evade login/permissions.
@@ -29,8 +31,23 @@ If `desktop_required`, install the current stable desktop app from [Figma Downlo
 
 Directory `catalog.error`, `coverage` and `lastAttemptAt` expose the actual failed refresh and completed sources; retained files are not proof of a complete new refresh. The adapter subscribes to Figma Home's own directory results and paginated arrays, not a public account-wide REST API.
 
-Account discovery reuses Figma Desktop login. If `desktop_restart_required`, check for unsynced changes and save local copies where necessary, then quit normally with native app automation and use `figma_file(action="launch")` to restart with its private pipe. Never force quit a document with pending changes. Restore the exact files and saved native authorizations, verify URLs and renew bindings for new instances. The pipe is established at app startup; a later independent Dock launch may need this reconnection again. If `login_required`, complete ordinary sign-in in Figma Desktop, then sync. Do not read Keychain credentials, copy cookies, install an external browser or ask for a second browser login. Existing native reads/edits remain available while discovery is unavailable.
+Account discovery reuses Figma Desktop login. If `desktop_restart_required`, preserve the existing files and Desktop profile. Use the version-checkpoint workflow below when appropriate, then quit normally with native app automation and use `figma_file(action="launch")` to restart with its private pipe. If Figma warns about pending changes, let synchronization finish or cancel the quit; do not force it or routinely export .fig files to make discovery work. Restore the exact files and saved native authorizations, verify URLs and renew bindings for new instances. The pipe is established at app startup; a later independent Dock launch may need this reconnection again. If `login_required`, complete ordinary sign-in in Figma Desktop, then sync. Do not read Keychain credentials, copy cookies, install an external browser or ask for a second browser login. Existing native reads/edits remain available while discovery is unavailable.
 
 Use `figma_status.apiReferencePath` for the installed API declaration. Its `skillRootPath` points to the one stable current skill tree; use it if a host cache path disappears during an upgrade. Do not pin an old cache version or reinstall old code. Read unresolved jobs before recovery; never replay an uncertain edit.
 
-Raise the actual Figma window for native actions and acceptance. Report only an actual remaining login, permission or automation blocker. A protocol test cannot prove native import, sidebar appearance or interactive prototype behavior.
+## Recovery without routine file exports
+
+Ordinary edits use the existing native Undo boundary. Before a substantial destructive edit or experiment on existing work, create a named version through `figma_run` with a stable operation ID, `commitUndo=false`, and this native body:
+
+```js
+const version = await figma.saveVersionHistoryAsync(args.title, args.description);
+return { saved: !!version?.id, versionId: version?.id ?? null };
+```
+
+Use a nonempty title and keep the returned version ID in the existing receipt/task result. Await the checkpoint before editing. A null result or rejected call is not a saved checkpoint. There is no additional backup database or export format. Avoid creating a version for every small operation.
+
+The [official contract](https://developers.figma.com/docs/plugins/api/properties/figma-saveversionhistoryasync/) warns that immediately preceding plugin edits may be absent from the saved version. This is suitable as a checkpoint of the existing design before changing it; it is not a general save/flush guarantee. A fixed delay does not prove inclusion. For an exact post-edit preservation requirement, verify the relevant stored cloud version with separately available authorized tooling, or report that boundary. Restore through Figma's version history when needed; this package has no public native restore-version method. Do not automate Undo across unrelated user edits.
+
+A cloud version is not independent offline protection. Export a native .fig copy only when offline backup is explicitly needed; retain the existing file if one already exists. JSON_REST_V1 is handoff data, not a round-trip substitute. No GUI is needed to create the version checkpoint.
+
+Use GUI only for an uncovered lifecycle step or requested real interaction, such as first sign-in, initial connection, cloud-file creation, explicit offline .fig saving, version restoration or prototype playback. Native hierarchy/exports establish static results; a protocol test alone does not establish interactive behavior or cloud synchronization.

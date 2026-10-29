@@ -31,7 +31,7 @@ async function running() {
     throw new Error(
       'Another plugin version is running. Inspect its pending jobs, then stop it before upgrading.',
     );
-  return connection;
+  return { ...connection, status: state };
 }
 let starting;
 async function startCompanion() {

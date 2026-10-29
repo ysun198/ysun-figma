@@ -1,38 +1,48 @@
 ---
 name: ysun-figma
-description: Read, edit and export Figma through ysun figma with automatic local connection and recovery. Route file, design, prototype, FigJam, Slides, design-system, motion and design-to-code tasks to the corresponding native workflow.
+description: Read, edit and export Figma through ysun figma. Discover native APIs for layout, grids, vectors, text, components, variables, motion, FigJam, Slides and code handoff; research public Community references without GUI automation.
 ---
 
 # ysun figma
 
-Use this plugin's local tools and Figma Desktop's native Plugin API. No paid MCP tier or REST token is required. Local operations have no monthly plugin quota; Figma permissions, plan-specific features and transfer/service limits still apply.
+Use local MCP tools and Figma Desktop's native Plugin API. Normal design work needs no mouse/keyboard automation. Stay in the current conversation. Local operations have no monthly plugin quota or REST-token requirement; Figma permissions, plan gates and service limits still apply. These skills explain mechanics, without prescribing a palette, font, spacing scale, motion style or library architecture.
 
-For an ordinary command/design task, stay in the current Codex conversation; show the resulting editable design in Figma Desktop. Use `figma_open` only when the user requests the interface/design browser. The sidebar opens the same workbench and supplies exact file context through the host's existing composer; do not create another chat UI.
+Read `figma_status` and target the exact connected file/client. Never bind by title or copied document identity, or choose the first ambiguous instance. Preserve unrelated content and the active page/selection/viewport unless the task changes them. Use the [files workflow](../ysun-figma-files/SKILL.md) for installation, file creation, connection, verified URL binding, account sync and recovery.
 
-Read `figma_status`, reuse the exact connected client and saved authorization. When the file is known, filter by its exact fileKey/clientId. Default job details cover connected files; global counts retain disconnected history. Use scope=all only to investigate that history, and figma_job for the original receipt. Use [files](../ysun-figma-files/SKILL.md) for new/existing file opening, native connection, verified binding, account sync or recovery. Handle routine installation and native automation yourself; expose only a concrete remaining login, permission or automation blocker. Never bind by title or copied document identity.
+## Discover before implementing
 
-The workbench uses the exact native connection to render a whole page through Figma's public exportAsync. It needs Desktop and the native plugin, but no second website login. Sidebar fileKey/clientId/pageId are the user's current navigation target, including while its image loads. When the user refers to this project/page, use that exact target; sessions separately describe Desktop's active page/selection. preview.clientId/pageId/revision identify the image actually displayed. A panned raster never selects native layers. Native revisions and write receipts update the image automatically; do not reopen the workbench or issue screenshot tools just to refresh it. Layer editing and prototype playback remain in Desktop. The desktop button targets the current exact fileKey through `figma_file(action="launch")`; clicking an unconnected account card opens that exact Desktop file, then the files workflow establishes its connection. Account discovery reuses Desktop's existing authenticated Home session through a private pipe. No separate browser, copied cookies or Keychain password is required. Use the files workflow if a normally launched Desktop needs safe reconnection.
+`figma_api()` lists intent-based workflows and native topics; `figma_api(workflow="edit")` returns when to use its tools and the guide text; `figma_api(query="文字沿路径排版")` routes a task to symbols, guides and exact declarations; `figma_api(topic="vectors")` reads a recipe. A literal miss returns native topics for another approach, not a claim of missing support. Translate the user's desired behavior into native concepts without asking them to name a Figma feature. Discovery works offline from the single [feature index](references/api-map.md). `figma_capabilities` checks live callable methods; resource enumeration needs `includeResources=true`. Presence does not establish editor/account entitlement. For important edits use the [files workflow](../ysun-figma-files/SKILL.md) for a native version checkpoint, rather than routinely exporting .fig files.
 
-Before writing a script, read [native execution](references/native-execution.md), then search the relevant native interfaces. `figma_status.apiReferencePath` and `skillRootPath` point to the single stable current installation when an old host cache path disappears. There are no official remote node.query/node.set/node.screenshot/figma.createAutoLayout conveniences locally. Scripts are trusted native API bodies, not a transactional or read-only sandbox.
+A task miss is not proof that Figma lacks the feature: translate it to native concepts, inspect the relevant type/topic, then consult the linked official Plugin API documentation when the pinned reference is insufficient. `figma_api(query="figma_design_context")` returns the current installed MCP tool contract and version; use it to resolve parameter errors or stale host metadata instead of guessing another parameter. Do not invent a method or copy a hosted-only helper into native code.
 
-Use a stable operationId per intended edit/import. Preflight errors submit no native job; correct their stated cause. For queued/running or interrupted execution, read the original `figma_job`. Errors after execution retain logs and completed exports but may have changed the file. Inspect exact affected nodes before `figma_reconcile`, including partially_applied; never replay an uncertain write with a new ID. Preserve unrelated nodes, active page, selection and viewport unless requested.
+Before `figma_run`, read [native execution](references/native-execution.md). It accepts trusted async JavaScript bodies with the real Plugin API and documented bridge helpers. Remote node.query/node.set/node.screenshot conveniences and automatic page resets are absent; native operations serialize per file. For concurrent tasks, reuse one exact native client per file and pin each workspace by root ID. Prefer a coherent native read/compute/write when the decision can use live values in one body. When a decision depends on an earlier tool read, use `figma_snapshot` and pass its job.id through `ifUnchanged`; follow [conditional edits](references/concurrency.md). Changed observed fields reject before the body executes; re-read and merge. Roots/readOnly are not sandboxes; asynchronous bodies are not transactions.
 
-Use `figma_inspect(nodeId/nodeIds)` for lightweight names, native dimensions and parents; pageId reads another page's roots without activating it. Use `figma_design_context` when layout, property references, vector paths or screenshots are actually needed, `figma_design_system` for file assets/enabled variable libraries, `figma_download_assets` for original bytes and `figma_motion` for actual tracks. File-wide component/node searches use scope=file and their returned continuation cursor with unchanged options; edits expire cursors. Sparse/truncated/error results require narrower reads, not claims of absence.
+| Task | Workflow |
+| --- | --- |
+| Editable screens, including source code → Figma | [create-design](../ysun-figma-create-design/SKILL.md) |
+| Variables, styles, components and variants | [design-system](../ysun-figma-design-system/SKILL.md) |
+| Navigation, overlays and state interactions | [prototype](../ysun-figma-prototype/SKILL.md) |
+| Boards and editable diagrams | [FigJam](../ysun-figma-figjam/SKILL.md) |
+| Decks, rows and slide grids | [Slides](../ysun-figma-slides/SKILL.md) |
+| Native keyframes, animation styles and motion implementation | [motion](../ysun-figma-motion/SKILL.md) |
+| Figma → repository code, including SwiftUI | [design-to-code](../ysun-figma-design-to-code/SKILL.md) |
+| Local component-to-code mappings | [Code Connect](../ysun-figma-code-connect/SKILL.md) |
+| Native shader application | [shaders](references/shaders.md) |
+| Public template/reference research | `figma_community`; read [Community research](references/community.md) |
+| Specs, Make and other hosted workflows | [capability boundaries](references/capabilities.md) |
 
-Load the workflow relevant to the task:
+## Execute and verify
 
-- File creation, connection and recovery: [files](../ysun-figma-files/SKILL.md).
-- Editable Design screens, including code → Figma: [create-design](../ysun-figma-create-design/SKILL.md).
-- Native navigation, overlays and interactive prototypes: [prototype](../ysun-figma-prototype/SKILL.md).
-- Boards and editable diagrams: [FigJam](../ysun-figma-figjam/SKILL.md).
-- Decks and slide grids: [Slides](../ysun-figma-slides/SKILL.md).
-- Variables, styles, components, variants and repository mappings: [design-system](../ysun-figma-design-system/SKILL.md).
-- Figma → actual repository code, including SwiftUI: [design-to-code](../ysun-figma-design-to-code/SKILL.md).
-- Native keyframes, video exports or motion implementation: [motion](../ysun-figma-motion/SKILL.md).
-- Available native shader fills: [shader reference](references/shaders.md).
+Use `figma_inspect` for IDs, bounds and parents; `figma_find_nodes` for lightweight searches without resolving instance masters; `figma_design_context` for detailed layout/assets/bindings; `figma_design_system` for file assets and enabled variable libraries; `figma_download_assets` for original bytes; `figma_motion` for real tracks. `includeComponentMetadata=true` retains detailed component information in a search when needed. Paginated searches need the same target/options; edits expire cursors. Sparse, truncated or failed reads do not establish absence.
 
-Check `figma_capabilities` and actual feature responses for the live editor. Cloud Weave, Make resources, shader/generative-plugin authoring and hosted Code Connect are distinct services; a local script does not implement them. New cloud files require normal authenticated Figma UI creation.
+Keep one stable operationId per intentional edit/import. Preflight errors submit no native work. For interrupted or accepted work, read the original `figma_job`; inspect exact affected IDs and reconcile uncertain/partial outcomes before another edit. Never replay an uncertain write with a new ID. Return affected IDs and useful structural evidence, then obtain a native export when appearance matters. Repeat checks after a relevant change or missing evidence.
 
-Published updates arrive automatically through the local receiver; figma_status.updates reports its actual state. Retain grants and receipts. Enable Figma's Development → Hot reload plugin once during installation using available native automation. An unchanged nativeBuild needs no restart when the package version changes. If needsPluginUpdate, wait until idle, reopen the native plugin yourself and verify restored authorization. After an actual native restart, renew the exact cloud binding from the open file URL; do not reuse a previous instance's binding. Figma can cache manifest permissions/editor types; re-import the same stable manifest/ID if actual API errors require it. teamlibrary permission does not enable libraries or expand account access.
+Use `figma_navigate` for native page/selection/viewport changes. Static verification uses native screenshots/exports. A JSON_REST_V1 export is not a .fig backup; a static render or stored reaction does not prove focus, dragging, presenter input or other real interactions. Cloud-only services need their own integration, not an invented native substitute.
 
-A closed host transport can continue native tasks through the current companion's existing callTool export, described in [native execution](references/native-execution.md). This uses the same grants/ledger; it cannot prove or repair host sidebar rendering. Raise the actual target Figma window for native GUI acceptance. Do not substitute protocol tests or static previews for the requested real user journey.
+## Workbench and lifecycle
+
+Open `figma_open` when the user requests the browser/sidebar. Its fileKey/clientId/pageId are the intended navigation target; native sessions separately report Desktop selection. preview.clientId/pageId/revision identify the rendered image. Panning the raster does not select layers. Native revisions refresh it automatically, so do not reopen the workbench or take extra screenshots merely to refresh. `figma_file(action="launch", fileKey)` shows the exact Desktop file when requested.
+
+Published updates retain grants and receipts. `figma_status.skillRootPath` and `apiReferencePath` locate the stable current installation if a host cache disappears. An unchanged nativeBuild needs no native restart. Use the files workflow for needsPluginUpdate, manifest changes or a new native instance; renew cloud binding from its actual open-file URL.
+
+A closed/stale host transport or a missing new tool in the host's older catalog can use the same companion's existing callTool export as described in [native execution](references/native-execution.md), with the same grants and ledger. Do not silently omit a required condition because the host lacks its tool name. This does not prove host UI acceptance. Reserve GUI for a concrete uncovered lifecycle step or a requested real interactive test.

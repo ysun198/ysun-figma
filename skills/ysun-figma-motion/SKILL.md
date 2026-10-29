@@ -5,11 +5,15 @@ description: Read, author, export or implement Figma motion with ysun figma usin
 
 # Native motion
 
+Use `figma_api(workflow="motion")` for animation over time; choose `prototype` for click/navigation/state interactions. Static artwork does not need motion.
+
 Read [native execution](../ysun-figma/references/native-execution.md), use the exact file/IDs and check `figma_capabilities` plus real feature responses. Method presence does not prove entitlement; a free-plan assumption does not prove absence.
 
-`figma_motion` reads native animations, manualKeyframeTracks, animationStyles, timelines and prototype reactions. Follow its bounded cursor with the same target/options. Preserve actual property names, typed values, seconds, easing, coordinate origins and loop behavior. A missing, failed or truncated read is not evidence of a static design.
+Read [native motion recipes](../ysun-figma/references/motion.md) for manual tracks, unit/easing semantics, local animation styles and native text presets. Use `figma_api(query=...)` for the exact types before inventing a format. Text motion does not require splitting text into individual character nodes.
 
-Before authoring, search ManualKeyframeTrackInput, ManualKeyframeInput, Timeline, applyManualKeyframeTrack and AnimationStyle in the shared pinned types. Read the top-level frame's duration/timelines and existing tracks. Build against returned IDs, using the exact property types. Return changed IDs and read their persisted tracks; do not guess formats or flatten the animation into an image.
+`figma_motion` reads native animations, manualKeyframeTracks, animationStyles, timelines and prototype reactions. It omits static default timelines except for an explicitly requested root; use `includeStaticTimelines=true` when those are needed. `hasMotion` marks observed nonempty tracks/styles; an empty timeline alone is not authored animation. Counts apply only to the returned page of results. Follow its bounded cursor with the same target/options. Preserve actual property names, typed values, seconds, easing, coordinate origins and loop behavior. A missing, failed or truncated read is not evidence of a static design.
+
+Before authoring, search ManualKeyframeTrackInput, ManualKeyframeInput, Timeline, applyManualKeyframeTrack and AvailableAnimationStyle / AppliedAnimationStyle in the shared pinned types. Read the top-level frame's duration/timelines and existing tracks. Snapshot those fields and relevant style definitions before deriving changes, then author through `figma_run(ifUnchanged=[snapshotJobId])`; `figma_motion` is a reader, not an authoring tool. Build against returned IDs, using the exact property types. Return changed IDs and read their persisted tracks; do not guess formats or flatten the animation into an image.
 
 The native runtime rejects animation writes to product components, instance sublayers, parents of top-level frames and unsupported node types. Method presence does not override these structural restrictions. Preserve the original rejection and inspect the receipt; choose an actual supported target only when it fits the requested design, without detaching instances or flattening components merely to bypass the restriction.
 

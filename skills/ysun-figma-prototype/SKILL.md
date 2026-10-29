@@ -5,7 +5,7 @@ description: Create, edit, inspect or validate interactive Figma prototypes with
 
 # Native prototypes
 
-Read [native execution](../ysun-figma/references/native-execution.md) and connect the exact file via [files](../ysun-figma-files/SKILL.md). Use the shared pinned API types for `Reaction`, `Action`, `Trigger` and `PrototypeMixin`. Inspect existing reactions and destination IDs before changing a flow.
+Read [native execution](../ysun-figma/references/native-execution.md) and connect the exact file via [files](../ysun-figma-files/SKILL.md). Use the shared pinned API types for `Reaction`, `Action`, `Trigger` and `ReactionMixin` and `FramePrototypingMixin`. Inspect existing reactions and destination IDs before changing a flow.
 
 The manifest uses dynamic-page access: update reactions with `await node.setReactionsAsync(...)`. Preserve existing interactions unless replacement is requested. Check every destination, trigger, action and transition in the native types before the first write; official remote convenience fields are not native setters.
 

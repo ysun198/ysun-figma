@@ -9,6 +9,7 @@ function generatedFiles(directory = root) {
   const pkg = JSON.parse(fs.readFileSync(path.join(directory, 'package.json')));
   const nativeSource = [
     'shared/core.js',
+    'figma/observation.js',
     'figma/design-queries.js',
     'figma/script-runtime.js',
     'figma/native-runtime.js',

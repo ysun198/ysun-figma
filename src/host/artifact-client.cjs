@@ -3,7 +3,8 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { bridgeRequest, validateConnection } = require('./bridge-client.cjs');
 const { MAX_BINARY_BYTES, validName } = require('./artifacts.cjs');
-async function uploadAssets(connection, sources = {}) {
+async function uploadAssets(connection, sources = {}, signal) {
+  signal?.throwIfAborted();
   const assets = {};
   let total = 0;
   const entries = Object.entries(sources);
@@ -29,11 +30,13 @@ async function uploadAssets(connection, sources = {}) {
       body: bytes,
       headers: { 'Content-Type': 'application/octet-stream' },
       timeoutMs: 120000,
+      signal,
     });
   }
   return assets;
 }
-async function saveExports(connection, job, directory) {
+async function saveExports(connection, job, directory, signal) {
+  signal?.throwIfAborted();
   if (!directory) return [];
   const files = (job.result && job.result.exports) || [],
     root = path.resolve(directory),
@@ -51,7 +54,8 @@ async function saveExports(connection, job, directory) {
   const saved = [];
   try {
     for (const file of files) {
-      const bytes = await readExport(connection, job.id, file);
+      const bytes = await readExport(connection, job.id, file, signal);
+      signal?.throwIfAborted();
       const destination = path.join(root, file.name);
       fs.writeFileSync(destination, bytes, { flag: 'wx', mode: 0o600 });
       saved.push({

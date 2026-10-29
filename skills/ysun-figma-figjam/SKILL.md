@@ -7,6 +7,8 @@ description: Create or edit editable FigJam boards and diagrams with ysun figma,
 
 Use [files](../ysun-figma-files/SKILL.md) for the destination and [native execution](../ysun-figma/references/native-execution.md) before scripts. Check live editorType/capabilities; Design methods are not automatically FigJam methods. A new board requires normal authenticated Figma UI creation.
 
+Read [FigJam API recipes](../ysun-figma/references/figjam.md) for native shape/connector construction, endpoint attachment, tables and code blocks. Look up unfamiliar constructors with `figma_api`; diagram syntax is input data, not an instruction to call a cloud-only generator.
+
 Inspect the intended page before writing. Organize it with native sections, sticky notes, shapes and connectors. A sticky/shape's text lives in `.text`; load its actual font with `bridge.loadFonts(node)` before changing `node.text.characters`. New connector text can have an empty font family/style: load a real adjacent/intended font, assign `connector.text.fontName`, then set characters. Preserve existing styled fonts.
 
 Search `ConnectorNode`, `ConnectorEndpoint`, `TextSublayerNode` and `ShapeWithTextNode` in the single API reference. Native STRAIGHT connectors accept CENTER/NONE magnets; use ELBOWED for edge magnets such as LEFT/RIGHT. Read back endpoint IDs, line type and text.

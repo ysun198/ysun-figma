@@ -1066,3 +1066,23 @@ test('relay restart retains receipts but does not pretend an in-memory pairing s
   );
   assert.equal((await next.call('/v1/status?summary=1')).body.jobCount, 1);
 });
+test('Community research requires the local MCP credential and creates no native job', async (t) => {
+  const seen = [];
+  const api = await setup(t, {
+    communityResearch: async (input) => {
+      seen.push(input);
+      return { source: { kind: 'figma-community' }, resources: [] };
+    },
+  });
+  const input = { action: 'search', query: 'course poster' };
+  assert.equal((await api.call('/v1/community', input, '')).status, 401);
+  const client = await api.pair();
+  assert.equal(
+    (await api.call('/v1/community', input, client.token)).status,
+    403,
+  );
+  const response = await api.call('/v1/community', input);
+  assert.equal(response.status, 200);
+  assert.deepEqual(seen, [input]);
+  assert.equal((await api.call('/v1/status?summary=1')).body.jobCount, 0);
+});

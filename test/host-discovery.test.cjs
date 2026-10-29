@@ -108,6 +108,7 @@ test(
     // still be discovered; the installed package is accepted separately.
     assert.deepEqual(response.result.plugin.skills.map((s) => s.name).sort(), [
       'figma-plugin-local:ysun-figma',
+      'figma-plugin-local:ysun-figma-code-connect',
       'figma-plugin-local:ysun-figma-create-design',
       'figma-plugin-local:ysun-figma-design-system',
       'figma-plugin-local:ysun-figma-design-to-code',

@@ -206,10 +206,7 @@ function createCatalog(filename) {
       ...state,
       files: known ? state.files : [...state.files, file],
       bindings: [
-        ...state.bindings.filter(
-          (binding) =>
-            binding.fileKey !== file.fileKey && binding.clientId !== client.id,
-        ),
+        ...state.bindings.filter((binding) => binding.clientId !== client.id),
         {
           fileKey: file.fileKey,
           clientId: client.id,

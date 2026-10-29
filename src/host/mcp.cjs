@@ -6,6 +6,7 @@ const crypto = require('node:crypto');
 const { ensureCompanion } = require('./companion.cjs');
 const { bridgeStateDirectory } = require('./state.cjs');
 const { bridgeRequest } = require('./bridge-client.cjs');
+const { readAPIReference, topics, workflows } = require('./api-reference.cjs');
 const {
   uploadAssets,
   saveExports,
@@ -19,6 +20,8 @@ const {
 } = require('./targets.cjs');
 const app = require('./app.cjs');
 const version = require('../../package.json').version;
+const isRecord = (value) =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
 const object = (properties = {}, required = []) => ({
   type: 'object',
   properties,
@@ -34,6 +37,13 @@ const target = {
   figmaUrl: { type: 'string', minLength: 1, maxLength: 3000 },
 };
 const operation = { operationId: id };
+const ifUnchanged = {
+  type: 'array',
+  items: id,
+  minItems: 1,
+  maxItems: 20,
+  uniqueItems: true,
+};
 const nodeId = {
   type: 'string',
   pattern: '^(?:I)?[0-9]+:[0-9]+(?:;[0-9]+:[0-9]+)*$',
@@ -61,8 +71,10 @@ const search = {
   maxVisited: integer(1, 20000, 5000),
 };
 const queries = {
+  figma_navigate: 'navigate',
   figma_canvas: 'canvas',
   figma_inspect: 'inspect',
+  figma_snapshot: 'snapshot',
   figma_design_context: 'context',
   figma_screenshot: 'screenshot',
   figma_variables: 'variables',
@@ -97,6 +109,8 @@ const fileListSchema = resultSchema({
   cursor: { type: 'string', pattern: '^sha256:[a-f0-9]{64}$' },
 });
 const outputSchemas = {
+  figma_api: resultSchema({ reference: { type: 'object' } }),
+  figma_community: resultSchema({ source: { type: 'object' } }),
   figma_open: fileListSchema,
   figma_watch: fileListSchema,
   figma_status: resultSchema({
@@ -127,33 +141,47 @@ const receiptSchema = resultSchema({
     },
   }),
 });
+const errorSchema = resultSchema({
+  code: { type: 'string' },
+  message: { type: 'string' },
+  error: { type: 'string' },
+});
 function toolError(error, input = {}) {
   const detail = String(error.message || error);
+  const precondition = error.receipt?.job.result?.precondition;
   const code =
-    error.phase === 'delivery'
-      ? 'ARTIFACT_DELIVERY_FAILED'
-      : error.code === 'FILE_AMBIGUOUS'
-        ? error.code
-        : error.receipt?.job.status === 'outcome_unknown'
-          ? 'OUTCOME_NEEDS_REVIEW'
-          : error.receipt?.job.status === 'failed'
-            ? 'FIGMA_OPERATION_FAILED'
-            : /No matching connected|no matching connected|open the plugin and pair/.test(
-                  detail,
-                )
-              ? 'FIGMA_NOT_CONNECTED'
-              : /Several Figma|multiple matching/.test(detail)
-                ? 'FILE_AMBIGUOUS'
-                : /outcome_unknown|uncertain|reconcil/i.test(detail)
-                  ? 'OUTCOME_NEEDS_REVIEW'
-                  : /outdated|version mismatch|update the plugin/i.test(detail)
-                    ? 'PLUGIN_UPDATE_REQUIRED'
-                    : /ECONN|fetch failed|timeout|not running|could not start|Port 38491/i.test(
-                          detail,
-                        )
-                      ? 'CONNECTION_UNAVAILABLE'
-                      : 'FIGMA_OPERATION_FAILED';
+    precondition?.code === 'WRITE_CONFLICT'
+      ? 'FIGMA_WRITE_CONFLICT'
+      : precondition
+        ? 'FIGMA_PRECONDITION_FAILED'
+        : error.phase === 'delivery'
+          ? 'ARTIFACT_DELIVERY_FAILED'
+          : error.code === 'FILE_AMBIGUOUS'
+            ? error.code
+            : error.receipt?.job.status === 'outcome_unknown'
+              ? 'OUTCOME_NEEDS_REVIEW'
+              : error.receipt?.job.status === 'failed'
+                ? 'FIGMA_OPERATION_FAILED'
+                : /No matching connected|no matching connected|open the plugin and pair/.test(
+                      detail,
+                    )
+                  ? 'FIGMA_NOT_CONNECTED'
+                  : /Several Figma|multiple matching/.test(detail)
+                    ? 'FILE_AMBIGUOUS'
+                    : /outcome_unknown|uncertain|reconcil/i.test(detail)
+                      ? 'OUTCOME_NEEDS_REVIEW'
+                      : /outdated|version mismatch|update the plugin/i.test(
+                            detail,
+                          )
+                        ? 'PLUGIN_UPDATE_REQUIRED'
+                        : /ECONN|fetch failed|timeout|not running|could not start|Port 38491/i.test(
+                              detail,
+                            )
+                          ? 'CONNECTION_UNAVAILABLE'
+                          : 'FIGMA_OPERATION_FAILED';
   const messages = {
+    FIGMA_WRITE_CONFLICT: '目标内容已变化，本次脚本尚未执行。',
+    FIGMA_PRECONDITION_FAILED: '无法核对写入条件，本次脚本尚未执行。',
     FIGMA_NOT_CONNECTED: '目标 Figma 文件尚未连接。',
     FILE_AMBIGUOUS: '存在多个可能的 Figma 实例，需要明确目标文件和客户端。',
     OUTCOME_NEEDS_REVIEW: '上次操作的结果尚未确认，需要先核对设计。',
@@ -176,52 +204,53 @@ function toolError(error, input = {}) {
   // Rejection of this request does not resolve an older uncertain write. Derive
   // retry guidance once, so a preflight branch cannot override the ledger.
   const safeToRetryWithoutCanvasRead =
-    blockingOperationIds || code === 'OUTCOME_NEEDS_REVIEW'
+    precondition || blockingOperationIds || code === 'OUTCOME_NEEDS_REVIEW'
       ? false
       : error.receipt
         ? error.receipt.job.status === 'failed'
         : !submitted && operationId
           ? true
           : undefined;
-  return {
+  const result = {
     code,
     message:
       error.phase === 'preflight' && !blockingOperationIds
         ? '请求未提交到 Figma，请根据具体错误修正后继续。'
         : messages[code],
     error: detail,
-    ...(error.phase ? { phase: error.phase } : {}),
-    ...(error.clients || error.body?.clients
-      ? { clients: error.clients || error.body.clients }
-      : {}),
-    ...(error.body?.expected && error.body?.actual
-      ? {
-          targetChange: {
-            expected: error.body.expected,
-            actual: error.body.actual,
-          },
-        }
-      : {}),
-    ...(blockingOperationIds ? { blockingOperationIds } : {}),
-    ...(error.receipt
-      ? { receipt: error.receipt, nativeStatus: error.receipt.job.status }
-      : {}),
-    ...(safeToRetryWithoutCanvasRead !== undefined
-      ? { safeToRetryWithoutCanvasRead }
-      : {}),
-    ...(operationId
-      ? {
-          operationId,
-          next: blockingOperationIds
-            ? 'This request was not submitted. Inspect each blocking operation ID and reconcile its actual outcome before another write.'
-            : error.phase === 'delivery'
-              ? 'Read figma_job with includePreviews=false for this original operation ID, or retry figma_export to an empty directory. Do not rerun the native script.'
-              : submitted
-                ? 'Inspect this original operation ID before retrying.'
-                : 'No native job was submitted. Correct the request before retrying.',
-        }
-      : {}),
+    phase: error.phase || undefined,
+    clients: error.clients || error.body?.clients || undefined,
+    targetChange:
+      error.body?.expected && error.body?.actual
+        ? { expected: error.body.expected, actual: error.body.actual }
+        : undefined,
+    blockingOperationIds: blockingOperationIds || undefined,
+    precondition,
+    receipt: error.receipt || undefined,
+    nativeStatus: error.receipt?.job.status,
+    safeToRetryWithoutCanvasRead,
+    operationId: operationId || undefined,
+    toolName: error.toolName,
+    next: blockingOperationIds
+      ? 'This request was not submitted. Inspect each blocking operation ID and reconcile its actual outcome before another write.'
+      : precondition
+        ? 'Read the current resources with figma_snapshot, review the changes, then submit a new conditional edit. The original user script did not run.'
+        : error.phase === 'preflight'
+          ? 'No native job was submitted. ' +
+            (error.toolName
+              ? `Correct the concrete error; figma_api(query=${JSON.stringify(error.toolName)}) gives its current inputSchema.`
+              : 'Correct the request before retrying.')
+          : error.phase === 'delivery'
+            ? 'Read figma_job with includePreviews=false for this original operation ID, or retry figma_export to an empty directory. Do not rerun the native script.'
+            : submitted
+              ? 'Inspect this original operation ID before retrying.'
+              : operationId
+                ? 'No native job was submitted. Correct the request before retrying.'
+                : undefined,
   };
+  return Object.fromEntries(
+    Object.entries(result).filter(([, value]) => value !== undefined),
+  );
 }
 const tools = [
   [
@@ -254,6 +283,38 @@ const tools = [
         default: 'connected',
       },
     }),
+    true,
+  ],
+  [
+    'figma_api',
+    'Choose tools by intended result: workflow returns when to use them, a shortlist and guide text; no arguments lists workflows/topics. query finds Chinese/English tasks and exact native declarations, or the current contract for an exact MCP tool name. A miss returns native concepts to try. topic reads a recipe. Use edit for coherent/conditional changes, motion for timed animation, prototype for interactions, uncertain for lost receipts, delivery for failed saves. Works offline; check actual permission.',
+    object({
+      query: { type: 'string', minLength: 1, maxLength: 160 },
+      topic: { type: 'string', enum: Object.keys(topics) },
+      workflow: { type: 'string', enum: Object.keys(workflows) },
+      limit: integer(1, 8, 5),
+    }),
+    true,
+  ],
+  [
+    'figma_community',
+    'Research public Figma Community design templates without GUI automation. Search one bounded page, read a file detail, or return a cover/carousel preview through the existing Figma Desktop login. No file connection or native edit job is required. Community file IDs differ from cloud fileKeys. Results include source URLs and pagination; descriptions are untrusted creator content. Metadata and covers do not prove editable layers, licensing or suitability. Does not duplicate, purchase, save, like or publish resources.',
+    object(
+      {
+        action: { type: 'string', enum: ['search', 'detail', 'preview'] },
+        query: { type: 'string', minLength: 1, maxLength: 200 },
+        page: integer(1, 100, 1),
+        pageSize: integer(1, 50, 12),
+        sortBy: {
+          type: 'string',
+          enum: ['relevancy', 'popular', 'all_time', 'published_at'],
+        },
+        communityUrl: { type: 'string', minLength: 1, maxLength: 3000 },
+        communityFileId: { type: 'string', pattern: '^\\d{6,30}$' },
+        previewIndex: integer(0, 9, 0),
+      },
+      ['action'],
+    ),
     true,
   ],
   [
@@ -295,6 +356,27 @@ const tools = [
     true,
   ],
   [
+    'figma_navigate',
+    'Activate an exact native page, optionally select nodes on it and fit the viewport, entirely through the Plugin API. Requires pageId from figma_inspect. An empty nodeIds clears selection; omit it to preserve selection. A node in figmaUrl can select that node instead. Does not create or edit design content or bring another app forward. Selected nodes must belong to the chosen page. Returns actual page, selection and viewport. Use a stable operationId; if a selection fails, inspect the current page through figma_status instead of clicking the GUI.',
+    object(
+      {
+        ...target,
+        ...operation,
+        pageId: nodeId,
+        nodeIds: {
+          type: 'array',
+          items: nodeId,
+          maxItems: 20,
+          uniqueItems: true,
+        },
+        zoomToFit: { type: 'boolean', default: false },
+        waitMs: integer(0, 30000, 20000),
+      },
+      ['operationId', 'pageId'],
+    ),
+    false,
+  ],
+  [
     'figma_canvas',
     'Read the selected native page and render it through Figma exportAsync for the local workbench. Preserves the active page, selection and viewport. Requires an exact connected native file; no website login or remote MCP.',
     object(
@@ -305,6 +387,40 @@ const tools = [
         maxDimension: integer(256, 4096, 2048),
       },
       ['clientId', 'fileKey'],
+    ),
+    true,
+  ],
+  [
+    'figma_snapshot',
+    'Read exact selected properties for a conditional edit. Resources may be nodes, variables, collections or styles. rootId pins the workspace without navigating. Pass this returned job.id in figma_run/figma_upload_assets ifUnchanged; only these observed fields and node ancestry are protected. Independent workspaces do not invalidate each other. Re-read on conflict; this is not a transaction or a JavaScript sandbox.',
+    object(
+      {
+        ...target,
+        rootId: nodeId,
+        resources: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 20,
+          items: object(
+            {
+              kind: {
+                type: 'string',
+                enum: ['node', 'variable', 'collection', 'style'],
+              },
+              id: { type: 'string', minLength: 1, maxLength: 200 },
+              fields: {
+                type: 'array',
+                minItems: 1,
+                maxItems: 64,
+                uniqueItems: true,
+                items: { type: 'string', minLength: 1, maxLength: 100 },
+              },
+            },
+            ['kind', 'id', 'fields'],
+          ),
+        },
+      },
+      ['resources'],
     ),
     true,
   ],
@@ -357,9 +473,10 @@ const tools = [
   ],
   [
     'figma_find_nodes',
-    'Find nodes by literal name substring and optional native types in a page, subtree or entire file (scope=file). Bounded traversal; continue with the returned cursor and identical query. Edits expire cursors. No selection or viewport change.',
+    'Find lightweight node identities by literal name and optional types in a page, subtree or file (scope=file). Does not resolve instance masters by default; includeComponentMetadata=true adds that detail, or use figma_components/design_context. Bounded traversal; continue with its cursor and identical options. Edits expire cursors. No selection/viewport change.',
     object({
       ...search,
+      includeComponentMetadata: { type: 'boolean', default: false },
       types: {
         type: 'array',
         items: { type: 'string', minLength: 1, maxLength: 60 },
@@ -372,14 +489,23 @@ const tools = [
   ],
   [
     'figma_export_node',
-    'Export PNG/JPG/SVG/PDF, or native MP4/GIF/WEBM from an animated top-level frame when Figma enables it. SVG options are explicit; omitted options use native defaults. Verify bytes and optionally save locally. Native video fps is format-specific; unsupported permissions/features are reported, never bypassed. No file or viewport edits.',
+    'Export PNG/JPG/SVG/PDF, native REST-shaped JSON_REST_V1 node data, or MP4/GIF/WEBM from an animated top-level frame when Figma enables it. JSON is not a .fig file or guaranteed round-trip backup. SVG options are explicit; omitted options use native defaults. Verify bytes and optionally save locally. Native video fps is format-specific; unsupported permissions/features are reported, never bypassed. No file or viewport edits.',
     object({
       ...target,
       ...svgOptions,
       nodeId,
       format: {
         type: 'string',
-        enum: ['PNG', 'JPG', 'SVG', 'PDF', 'MP4', 'GIF', 'WEBM'],
+        enum: [
+          'PNG',
+          'JPG',
+          'SVG',
+          'PDF',
+          'MP4',
+          'GIF',
+          'WEBM',
+          'JSON_REST_V1',
+        ],
         default: 'PNG',
       },
       fps: integer(8, 60, 24),
@@ -393,10 +519,11 @@ const tools = [
   ],
   [
     'figma_capabilities',
-    'Inspect this live editor API, enabled motion styles and available shaders. nodeId or a single selection identifies node-method checks; without a target those checks are unknown, not false. Optional methods checks exact dotted figma/node paths. Method presence is not permission or plan entitlement. No monthly local plugin quota.',
+    'Probe callable methods on this live editor without enumerating resources. Optional methods checks exact dotted figma/node paths; global-only checks do not load nodes. nodeId or a single selection identifies node-method checks; without a target those checks are unknown, not false. includeResources=true additionally lists requested motion styles/shaders and can wait for the cloud. Method presence is not permission or plan entitlement.',
     object({
       ...target,
       nodeId,
+      includeResources: { type: 'boolean', default: false },
       methods: {
         type: 'array',
         minItems: 1,
@@ -476,6 +603,7 @@ const tools = [
       {
         ...target,
         ...operation,
+        ifUnchanged,
         nodeId,
         parentId: nodeId,
         x: { type: 'number' },
@@ -498,7 +626,7 @@ const tools = [
   ],
   [
     'figma_motion',
-    'Read actual native keyframes, animation styles, timeline durations and prototype reactions in a bounded subtree/file. Returns typed values/easing and issues as facts; no guessed animation snippets. Continue with its cursor; feature availability varies by account/editor.',
+    'Read actual keyframes, animation styles and prototype reactions in a bounded subtree/file. Static default timelines are omitted except for an explicit root; includeStaticTimelines=true includes them. Returns typed values/easing, current-page counts, issues and a cursor. No guessed animation snippets. Continue with the same options; feature availability varies by account/editor.',
     object({
       ...target,
       nodeId,
@@ -508,16 +636,19 @@ const tools = [
       cursor,
       maxNodes: integer(1, 1000, 200),
       maxVisited: integer(1, 20000, 5000),
+      includeStaticTimelines: { type: 'boolean', default: false },
     }),
     true,
   ],
   [
     'figma_run',
-    'Run a native async JavaScript body with figma, args, bridge and returned console logs. Helpers: bridge.autoLayout, set, loadFonts, screenshot, assetText and exportFile. Supply a stable operationId; inspect it after a lost response. Waits briefly for the original receipt; queued jobs remain available through figma_job. readOnly=true is a trusted declaration, not a sandbox.',
+    'Run a native async JavaScript body. Prefer one live read/compute/write for coherent edits. For decisions based on earlier tool reads, ifUnchanged accepts figma_snapshot IDs and rejects changed fields before the body runs. rootId (or a unique snapshot root) supplies bridge.root and scopes autoLayout/import creation without navigating. Helpers: set, loadFonts, screenshot, assetText, exportFile. Use stable operationId; inspect after a lost response. Native code retains full API access; root/readOnly are not a sandbox.',
     object(
       {
         ...target,
         ...operation,
+        rootId: nodeId,
+        ifUnchanged,
         source: { type: 'string', minLength: 1, maxLength: 1048576 },
         args: { type: 'object' },
         assetPaths: {
@@ -572,14 +703,23 @@ const tools = [
   ],
 ].map(([name, description, inputSchema, readOnlyHint]) => ({
   name,
+  title: name.replace(/^figma_/, 'Figma ').replaceAll('_', ' '),
   description,
   inputSchema,
-  outputSchema: outputSchemas[name] || receiptSchema,
+  outputSchema: {
+    type: 'object',
+    anyOf: [outputSchemas[name] || receiptSchema, errorSchema],
+  },
   annotations: {
     readOnlyHint,
     destructiveHint: ['figma_run', 'figma_upload_assets'].includes(name),
-    openWorldHint: ['figma_open', 'figma_file', 'figma_run'].includes(name),
-    ...(['figma_run', 'figma_upload_assets'].includes(name)
+    openWorldHint: [
+      'figma_open',
+      'figma_file',
+      'figma_run',
+      'figma_community',
+    ].includes(name),
+    ...(['figma_run', 'figma_upload_assets', 'figma_navigate'].includes(name)
       ? { idempotentHint: true }
       : {}),
   },
@@ -595,16 +735,15 @@ for (const name of ['figma_canvas', 'figma_watch'])
   };
 function validate(value, schema, label = 'arguments') {
   if (schema.type === 'object') {
-    if (!value || typeof value !== 'object' || Array.isArray(value))
-      throw new Error(`${label} must be an object`);
+    if (!isRecord(value)) throw new Error(`${label} must be an object`);
     for (const key of schema.required || [])
       if (!Object.hasOwn(value, key))
         throw new Error(`${label}.${key} is required`);
     for (const [key, item] of Object.entries(value)) {
       const rule =
-        (schema.properties && schema.properties[key]) ??
-        schema.additionalProperties ??
-        true;
+        schema.properties && Object.hasOwn(schema.properties, key)
+          ? schema.properties[key]
+          : (schema.additionalProperties ?? true);
       if (rule === false || rule === undefined)
         throw new Error(`unexpected ${label}.${key}`);
       if (typeof rule === 'object') validate(item, rule, `${label}.${key}`);
@@ -678,6 +817,7 @@ async function deliverResult(
         connection,
         record.job,
         outputDirectory,
+        signal,
       );
     return includePreviews
       ? await withPreviews(connection, record, signal, explicit)
@@ -698,8 +838,14 @@ async function callTool(name, input, signal) {
     if (!definition)
       throw Object.assign(new Error('unknown tool'), { code: -32602 });
     validate(input, definition.inputSchema);
+    if (name === 'figma_api') {
+      const tool = tools.find((entry) => entry.name === input.query?.trim());
+      return { version, ...readAPIReference(input), ...(tool ? { tool } : {}) };
+    }
     if (
-      [input.nodeId, input.nodeIds, input.pageId].filter(Boolean).length > 1 ||
+      (name !== 'figma_navigate' &&
+        [input.nodeId, input.nodeIds, input.pageId].filter(Boolean).length >
+          1) ||
       (input.rootId && (input.pageId || input.nodeId)) ||
       (input.nodeId && input.parentId) ||
       (input.scope === 'file' && (input.rootId || input.pageId || input.nodeId))
@@ -738,6 +884,8 @@ async function callTool(name, input, signal) {
       (input.clientId || input.fileKey)
     )
       throw new Error('choose all history or one connected file');
+    if (name === 'figma_community')
+      require('./community.cjs').validateResearch(input);
     const connection = await ensureCompanion();
     const request = (route, options) =>
       bridgeRequest(connection, route, { ...options, signal });
@@ -746,6 +894,24 @@ async function callTool(name, input, signal) {
         method: 'POST',
         body: JSON.stringify({ fileKey }),
       });
+    if (name === 'figma_community') {
+      const result = await request('/v1/community', {
+        method: 'POST',
+        body: JSON.stringify(input),
+        timeoutMs: 45000,
+      });
+      if (result.image) {
+        result[images] = [
+          {
+            type: 'image',
+            data: result.image.data,
+            mimeType: result.image.mimeType,
+          },
+        ];
+        delete result.image;
+      }
+      return result;
+    }
     if (name === 'figma_file' && input.action === 'launch' && !input.fileKey)
       return launchDesktop();
     if (name === 'figma_status')
@@ -878,17 +1044,32 @@ async function callTool(name, input, signal) {
       });
     }
     signal?.throwIfAborted();
-    const state = await request('/v1/status?summary=1');
+    // The health check already read this status; submit rechecks exact identity.
+    const state = connection.status;
     const selected = resolveTarget(input, state.clients);
     if (
+      state.clients.find((client) => client.id === selected.clientId)
+        ?.needsPluginUpdate
+    )
+      throw new Error(
+        'The native plugin is outdated; update and reopen it before submitting an operation',
+      );
+    if (
       selected.nodeId &&
-      (input.pageId || input.rootId || input.nodeIds || input.scope === 'file')
+      (name === 'figma_navigate'
+        ? input.nodeIds
+        : input.pageId ||
+          input.rootId ||
+          input.nodeIds ||
+          input.scope === 'file')
     )
       throw new Error('choose one node/root targeting option');
-    const assets = await uploadAssets(connection, input.assetPaths);
+    const assets = await uploadAssets(connection, input.assetPaths, signal);
     const query = queries[name];
     const source = query
-      ? `return await bridge.query('${query}', args);`
+      ? query === 'snapshot'
+        ? 'return await bridge.observe(args);'
+        : `return await bridge.query('${query}', args);`
       : input.source;
     const {
       clientId,
@@ -905,15 +1086,13 @@ async function callTool(name, input, signal) {
     signal?.throwIfAborted();
     const readOnly =
       (!!query && name !== 'figma_upload_assets') ||
-      name === 'figma_inspect' ||
       (name === 'figma_run' && input.readOnly === true);
     phase = 'submitted';
-    submittedId =
-      name === 'figma_run'
-        ? input.operationId
-        : readOnly
-          ? crypto.randomUUID()
-          : input.operationId;
+    submittedId = ['figma_run', 'figma_navigate'].includes(name)
+      ? input.operationId
+      : readOnly
+        ? crypto.randomUUID()
+        : input.operationId;
     const { job } = await request('/v1/jobs', {
       method: 'POST',
       body: JSON.stringify({
@@ -941,6 +1120,11 @@ async function callTool(name, input, signal) {
         options: {
           readOnly,
           commitUndo: !readOnly && input.commitUndo !== false,
+          ...(name === 'figma_snapshot' ? { snapshot: true } : {}),
+          ...(input.ifUnchanged ? { ifUnchanged: input.ifUnchanged } : {}),
+          ...(name === 'figma_run' && input.rootId
+            ? { rootId: input.rootId }
+            : {}),
         },
       }),
     }).catch((error) => {
@@ -958,7 +1142,7 @@ async function callTool(name, input, signal) {
     receipt = result;
     result.targeting = { ...selected.targeting, ...result.job.target };
     if (['failed', 'outcome_unknown'].includes(result.job.status)) {
-      phase = 'execution';
+      phase = result.job.result?.precondition ? 'precondition' : 'execution';
       const error = new Error(
         (result.job.status === 'outcome_unknown' ? 'outcome_unknown: ' : '') +
           (result.job.error || 'Figma operation failed'),
@@ -975,6 +1159,7 @@ async function callTool(name, input, signal) {
     });
   } catch (error) {
     error.phase ||= phase;
+    error.toolName ||= name;
     error.operationId ||= submittedId;
     if (receipt) error.receipt ||= receipt;
     throw error;
@@ -985,7 +1170,7 @@ function serve(input = process.stdin, output = process.stdout) {
     phase = 'new';
   const pending = new Map();
   const send = (message) => output.write(JSON.stringify(message) + '\n');
-  let runtime, updateTimer;
+  let runtime, updateWatch;
   function currentRuntime() {
     runtime ||= module.exports;
     let observed;
@@ -1032,14 +1217,27 @@ function serve(input = process.stdin, output = process.stdout) {
         phase === 'initializing'
       ) {
         phase = 'ready';
-        updateTimer = setInterval(() => {
-          try {
-            currentRuntime();
-          } catch (error) {
-            process.stderr.write('Update discovery: ' + error.message + '\n');
-          }
-        }, 1000);
-        updateTimer.unref();
+        const packageRoot = path.resolve(__dirname, '../..');
+        const report = (error) =>
+          process.stderr.write('Update discovery: ' + error.message + '\n');
+        try {
+          // Managed updates atomically replace packageRoot; watch its stable parent.
+          updateWatch = fs.watch(
+            path.dirname(packageRoot),
+            { persistent: false },
+            (_event, name) => {
+              if (!name || name.toString() === path.basename(packageRoot))
+                try {
+                  currentRuntime();
+                } catch (error) {
+                  report(error);
+                }
+            },
+          );
+          updateWatch.on('error', report);
+        } catch (error) {
+          report(error);
+        }
       }
       if (message.method === 'notifications/cancelled')
         pending.get(message.params && message.params.requestId)?.abort();
@@ -1050,6 +1248,10 @@ function serve(input = process.stdin, output = process.stdout) {
     try {
       const api = currentRuntime();
       let result;
+      if (message.params !== undefined && !isRecord(message.params))
+        throw Object.assign(new Error('invalid request parameters'), {
+          code: -32602,
+        });
       if (message.method === 'initialize') {
         if (phase !== 'new')
           throw Object.assign(new Error('already initialized'), {
@@ -1057,8 +1259,9 @@ function serve(input = process.stdin, output = process.stdout) {
           });
         if (
           typeof message.params?.protocolVersion !== 'string' ||
-          !message.params.clientInfo ||
-          !message.params.capabilities
+          typeof message.params.clientInfo?.name !== 'string' ||
+          typeof message.params.clientInfo?.version !== 'string' ||
+          !isRecord(message.params.capabilities)
         )
           throw Object.assign(new Error('invalid initialize parameters'), {
             code: -32602,
@@ -1077,7 +1280,7 @@ function serve(input = process.stdin, output = process.stdout) {
             icons: api.app.icons,
           },
           instructions:
-            'Use the ysun-figma skills. Stay in the current conversation. Confirm the exact file/client with figma_status; never choose an ambiguous instance or bind by title. Keep a stable operationId per edit. After interruption or delivery failure, inspect its original figma_job; never replay an uncertain write. Sparse/truncated queries are incomplete evidence. figma_open is the optional design browser. Status provides stable skill/API paths. Native editing requires Figma Desktop and its plugin. Local tools have no monthly plugin quota; Figma permissions, plan features and cloud limits remain. Cloud authoring, Weave, Make and hosted Code Connect are separate services.',
+            'Use ysun-figma skills in this conversation. Confirm exact file/client with figma_status; reuse one native client per file across tasks, never bind by title. Choose native capabilities from desired behavior without asking the user to name features. figma_api workflows give guides: edit for coherent or conditional edits, motion for timed animation, prototype for interactions, handoff for code. Prefer one live read/compute/write. When a decision spans tool calls, figma_snapshot its dependent fields and pass job.id as ifUnchanged; pin rootId rather than currentPage. On conflict re-read and merge; the body did not run. Keep one operationId per edit. After interruption inspect original figma_job and reconcile uncertain writes; repair delivery from original output. Use native MCP for edits/navigation/exports, GUI only for uncovered lifecycle or actual interactions. Sparse/truncated reads are incomplete; cloud-only services remain separate.',
         };
       } else if (message.method === 'ping') result = {};
       else {
@@ -1091,6 +1294,14 @@ function serve(input = process.stdin, output = process.stdout) {
         else if (message.method === 'resources/read')
           result = api.app.readResource(message.params?.uri);
         else if (message.method === 'tools/call') {
+          if (
+            typeof message.params?.name !== 'string' ||
+            (message.params.arguments !== undefined &&
+              !isRecord(message.params.arguments))
+          )
+            throw Object.assign(new Error('invalid tools/call parameters'), {
+              code: -32602,
+            });
           try {
             const value = await api.callTool(
               message.params?.name,
@@ -1120,14 +1331,15 @@ function serve(input = process.stdin, output = process.stdout) {
       if (!controller.signal.aborted)
         send({ jsonrpc: '2.0', id: message.id, result });
     } catch (error) {
-      send({
-        jsonrpc: '2.0',
-        id: message.id,
-        error: {
-          code: Number.isInteger(error.code) ? error.code : -32603,
-          message: error.message,
-        },
-      });
+      if (!controller.signal.aborted)
+        send({
+          jsonrpc: '2.0',
+          id: message.id,
+          error: {
+            code: Number.isInteger(error.code) ? error.code : -32603,
+            message: error.message,
+          },
+        });
     } finally {
       pending.delete(message.id);
     }
@@ -1159,10 +1371,11 @@ function serve(input = process.stdin, output = process.stdout) {
       void handle(message);
     }
   });
-  input.on('end', () => {
-    clearInterval(updateTimer);
+  const stop = () => {
+    updateWatch?.close();
     for (const controller of pending.values()) controller.abort();
-  });
+  };
+  for (const event of ['end', 'close', 'error']) input.once(event, stop);
 }
 module.exports = {
   tools,

@@ -787,7 +787,7 @@ test('capability report reflects the live editor, rather than treating cloud too
   const f = graph();
   f.figma.listAvailableShaders = async () => [];
   f.figma.motion = { figmaAnimationStyles: () => [{ id: 'fade' }] };
-  const value = await f.queries.capabilities();
+  const value = await f.queries.capabilities({ includeResources: true });
   assert.equal(value.api.createSticky, false);
   assert.deepEqual(value.shaderLibrary, []);
   assert.equal(value.localMonthlyQuota, null);
@@ -829,6 +829,37 @@ test('targeted capability checks do not enumerate unrelated motion or shader lib
   assert.deepEqual(result.api, { getNodeByIdAsync: true });
   assert.equal(result.motionStyles, null);
   assert.equal(result.shaderLibrary, null);
+});
+test('ordinary capability probes never call resource APIs or load an unneeded node', async () => {
+  const f = graph();
+  let resourceReads = 0;
+  f.figma.listAvailableShaders = () => {
+    resourceReads++;
+    return [];
+  };
+  f.figma.motion = {
+    figmaAnimationStyles: () => {
+      resourceReads++;
+      return [];
+    },
+  };
+  const defaults = await f.queries.capabilities();
+  assert.equal(defaults.api.listAvailableShaders, true);
+  assert.equal(defaults.shaderLibrary, null);
+  assert.equal(defaults.motionStyles, null);
+  f.figma.getNodeByIdAsync = () =>
+    assert.fail('global-only checks must not fetch nodes');
+  const globals = await f.queries.capabilities({
+    nodeId: f.frame.id,
+    methods: [
+      'figma.listAvailableShaders',
+      'figma.variables.getLocalVariablesAsync',
+    ],
+  });
+  assert.equal(globals.api.listAvailableShaders, true);
+  assert.equal(globals.api['variables.getLocalVariablesAsync'], true);
+  assert.equal(globals.targetNode, null);
+  assert.equal(resourceReads, 0);
 });
 test('SVG exports respect explicit text/ID options and otherwise leave native settings intact', async () => {
   const f = graph();
