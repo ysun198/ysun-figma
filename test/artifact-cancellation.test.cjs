@@ -80,7 +80,11 @@ test('PNG export diagnostics detect empty and visible pixels across native scanl
   ]) {
     const bytes = png([...first, filter, ...row]),
       name = 'filter-' + filter + '.png',
-      saved = await artifacts.save('export-job', name, [bytes]);
+      saved = await artifacts.save('export-job', name, [
+        bytes.subarray(0, 17),
+        bytes.subarray(17, 40),
+        bytes.subarray(40),
+      ]);
     assert.equal(saved.image.width, 2);
     assert.equal(saved.image.height, 2);
     assert.equal(saved.image.fullyTransparent, true);

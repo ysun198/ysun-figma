@@ -127,7 +127,8 @@ function createArtifacts(directory) {
     const destination = location(group, name),
       temporary = destination + '.' + crypto.randomUUID() + '.tmp';
     const handle = await fs.promises.open(temporary, 'wx', 0o600);
-    const hash = crypto.createHash('sha256');
+    const hash = crypto.createHash('sha256'),
+      pngChunks = group !== 'assets' && /\.png$/i.test(name) ? [] : null;
     let size = 0;
     try {
       for await (const chunk of input) {
@@ -138,6 +139,7 @@ function createArtifacts(directory) {
           });
         hash.update(chunk);
         await handle.writeFile(chunk);
+        pngChunks?.push(chunk);
       }
       await handle.close();
       const info = { name, size, sha256: hash.digest('hex') };
@@ -156,8 +158,8 @@ function createArtifacts(directory) {
         // Re-uploading starts a fresh lifetime before the next job claims it.
         const uploadedAt = new Date();
         fs.utimesSync(destination, uploadedAt, uploadedAt);
-      } else if (/\.png$/i.test(name)) {
-        const image = pngInfo(fs.readFileSync(destination));
+      } else if (pngChunks) {
+        const image = pngInfo(Buffer.concat(pngChunks, size));
         if (image) info.image = image;
       }
       return info;
