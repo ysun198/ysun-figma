@@ -836,9 +836,10 @@ test('unknown outcomes remain visible beyond the retention window and recent-his
   const status = (await api.call('/v1/status?summary=1')).body;
   assert.equal(status.jobCount, 26);
   assert.equal(status.jobCounts.outcome_unknown, 1);
-  assert.equal(status.unresolvedJobCount, 1);
+  assert.equal(status.globalUnresolvedJobCount, 1);
+  assert.equal(status.scopedUnresolvedJobCount, 0);
   assert.deepEqual(status.jobs, []);
-  assert.equal(status.jobsTruncated, true);
+  assert.equal(status.jobsTruncated, false);
   assert(
     (await api.call('/v1/status?summary=1&scope=all')).body.jobs.some(
       (j) => j.id === id,
