@@ -62,6 +62,7 @@ async function saveExports(connection, job, directory, signal) {
         path: destination,
         size: bytes.length,
         mimeType: file.mimeType,
+        ...(file.image ? { image: file.image } : {}),
       });
     }
   } catch (error) {

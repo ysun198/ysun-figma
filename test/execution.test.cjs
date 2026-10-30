@@ -220,6 +220,23 @@ test('shipped execution creates once, reads the same nodes and transfers exact b
   });
   assert.equal(preview[mcp.images][0].data, png.toString('base64'));
   assert.equal(preview.job.result.exports[0].mimeType, 'image/png');
+  assert.deepEqual(preview.job.result.exports[0].image, {
+    width: 1,
+    height: 1,
+    fullyTransparent: false,
+  });
+  assert.equal(preview.job.options, undefined);
+  assert.equal(preview.job.result.logs, undefined);
+  const original = await mcp.callTool('figma_job', {
+    operationId: preview.job.id,
+    includePreviews: false,
+  });
+  assert.equal(original.job.options.readOnly, true);
+  assert.equal(original.job.result.elapsedMs >= 0, true);
+  assert.deepEqual(original.job.result.logs, []);
+  assert.deepEqual(original.job.result.value, preview.job.result.value);
+  assert.deepEqual(original.job.result.exports, preview.job.result.exports);
+  assert(JSON.stringify(preview).length < JSON.stringify(original).length);
   assert.deepEqual(f.figma.currentPage.selection, []);
 });
 test('a partial native write keeps its original receipt, permits inspection and blocks further writes until reconciled', async (t) => {

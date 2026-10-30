@@ -121,12 +121,13 @@ function summarizeStatus(
     clients: selected
       ? state.clients.filter((client) => client.id === selected)
       : state.clients,
+    jobsScope: { scope, ...(selected ? { clientId: selected } : {}) },
+    scopedUnresolvedJobCount: jobs.length,
+    jobs,
+    globalUnresolvedJobCount: unresolved.length,
     jobCount: state.jobs.length,
     jobCounts,
-    unresolvedJobCount: unresolved.length,
-    jobsScope: { scope, ...(selected ? { clientId: selected } : {}) },
-    jobsTruncated: jobs.length < state.jobs.length,
-    jobs,
+    jobsTruncated: false,
   };
 }
 function createBridgeServer(options = {}) {

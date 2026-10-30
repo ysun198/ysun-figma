@@ -95,13 +95,17 @@ test('compact status retains unresolved work without loading binary receipts', (
   };
   const compact = summarizeStatus(state, { scope: 'all' });
   assert.equal(compact.jobCount, 23);
-  assert.equal(compact.jobsTruncated, true);
+  assert.equal(compact.jobsTruncated, false);
   assert.equal(compact.jobs.length, 2);
   assert.equal(compact.jobs[0].id, 'old-unknown');
   assert.equal(compact.jobs.at(-1).id, 'old-running');
   assert.doesNotMatch(JSON.stringify(compact), /large native result/);
-  assert.equal(compact.unresolvedJobCount, 2);
-  assert.deepEqual(summarizeStatus(state).jobs, []);
+  assert.equal(compact.globalUnresolvedJobCount, 2);
+  assert.equal(compact.scopedUnresolvedJobCount, 2);
+  const connected = summarizeStatus(state);
+  assert.deepEqual(connected.jobs, []);
+  assert.equal(connected.scopedUnresolvedJobCount, 0);
+  assert.equal(connected.globalUnresolvedJobCount, 2);
 });
 test('status scopes identities without erasing global counts or guessing same-name files', () => {
   const clients = ['client-first', 'client-other'].map((id, i) => ({
@@ -148,7 +152,8 @@ test('status scopes identities without erasing global counts or guessing same-na
   );
   assert.equal(value.clients[0].id, clients[1].id);
   assert.equal(value.jobCounts.outcome_unknown, 3);
-  assert.equal(value.unresolvedJobCount, 3);
+  assert.equal(value.globalUnresolvedJobCount, 3);
+  assert.equal(value.scopedUnresolvedJobCount, 1);
   assert.deepEqual(value.jobsScope, {
     scope: 'connected',
     clientId: clients[1].id,

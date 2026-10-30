@@ -117,6 +117,8 @@ const outputSchemas = {
     clients: { type: 'array', items: { type: 'object' } },
     version: { type: 'string' },
     jobCount: { type: 'integer' },
+    scopedUnresolvedJobCount: { type: 'integer' },
+    globalUnresolvedJobCount: { type: 'integer' },
   }),
   figma_connect: resultSchema({
     state: { type: 'string', enum: ['connected', 'pairing_required'] },
@@ -273,7 +275,7 @@ const tools = [
   ],
   [
     'figma_status',
-    'Read connected files, page/selection and their unresolved operations. Filter by exact clientId/fileKey. Global counts always remain visible; scope=all includes disconnected historical unresolved jobs. Read an original receipt with figma_job, never discard history to clear a blocker.',
+    'Read connected files, page/selection and their unresolved operations. Filter by exact clientId/fileKey. scopedUnresolvedJobCount counts the listed jobs; globalUnresolvedJobCount, jobCount and jobCounts cover all retained history. scope=all includes disconnected historical unresolved jobs. Read an original receipt with figma_job, never discard history to clear a blocker.',
     object({
       clientId: id,
       fileKey,
@@ -489,7 +491,7 @@ const tools = [
   ],
   [
     'figma_export_node',
-    'Export PNG/JPG/SVG/PDF, native REST-shaped JSON_REST_V1 node data, or MP4/GIF/WEBM from an animated top-level frame when Figma enables it. JSON is not a .fig file or guaranteed round-trip backup. SVG options are explicit; omitted options use native defaults. Verify bytes and optionally save locally. Native video fps is format-specific; unsupported permissions/features are reported, never bypassed. No file or viewport edits.',
+    'Export PNG/JPG/SVG/PDF, native REST-shaped JSON_REST_V1 node data, or MP4/GIF/WEBM from an animated top-level frame when Figma enables it. JSON is not a .fig file or guaranteed round-trip backup. SVG options are explicit; omitted options use native defaults. PNG exports report actual image dimensions and fullyTransparent (null when alpha inspection is unavailable); empty renders warn without blocking delivery. Verify bytes and optionally save locally. Native video fps is format-specific; unsupported permissions/features are reported, never bypassed. No file or viewport edits.',
     object({
       ...target,
       ...svgOptions,
@@ -829,6 +831,24 @@ async function deliverResult(
     throw error;
   }
 }
+function compactSuccess(record) {
+  if (record.job.status !== 'succeeded') return record;
+  const { id, status, target, result } = record.job;
+  const details = { ...result };
+  for (const key of ['operationId', 'editorType', 'apiVersion', 'elapsedMs'])
+    delete details[key];
+  if (!details.logs?.length) delete details.logs;
+  if (
+    !details.logLimits?.droppedEntries &&
+    !details.logLimits?.truncatedMessages
+  )
+    delete details.logLimits;
+  if (!details.exports?.length) delete details.exports;
+  return {
+    ...record,
+    job: { id, status, target, result: details },
+  };
+}
 async function callTool(name, input, signal) {
   let phase = 'preflight',
     receipt,
@@ -1152,11 +1172,13 @@ async function callTool(name, input, signal) {
     }
     result.safeToRetryWithoutCanvasRead =
       readOnly || result.job.status === 'failed';
-    return await deliverResult(connection, result, {
-      signal,
-      outputDirectory: input.outputDirectory,
-      explicit: ['figma_screenshot', 'figma_design_context'].includes(name),
-    });
+    return compactSuccess(
+      await deliverResult(connection, result, {
+        signal,
+        outputDirectory: input.outputDirectory,
+        explicit: ['figma_screenshot', 'figma_design_context'].includes(name),
+      }),
+    );
   } catch (error) {
     error.phase ||= phase;
     error.toolName ||= name;
