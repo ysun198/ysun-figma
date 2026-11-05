@@ -318,6 +318,7 @@ test('public previews use Desktop client context, no credentials, no redirects, 
   for (const [type, bytes, code] of [
     ['image/svg+xml', '<svg/>', 'type_not_allowed'],
     ['image/png', '<html/>', 'invalid_image'],
+    ['image/jpeg', png, 'invalid_image'],
     ['image/png', Buffer.alloc(2 * 1024 * 1024 + 1), 'too_large'],
   ])
     await assert.rejects(
@@ -335,6 +336,21 @@ test('public previews use Desktop client context, no credentials, no redirects, 
     }),
     /community_preview_http_403/,
   );
+});
+test('Figma covers with a generic CDN content type use their raster signature', async () => {
+  for (const type of ['binary/octet-stream', 'application/octet-stream']) {
+    const read = (bytes) =>
+      readPreview(imageUrl, {
+        userAgent,
+        fetcher: async () =>
+          new Response(bytes, { headers: { 'content-type': type } }),
+      });
+    const image = await read(png);
+    assert.equal(image.mimeType, 'image/png');
+    assert.equal(image.data, png.toString('base64'));
+    await assert.rejects(read('<html/>'), /community_preview_invalid_image/);
+    await assert.rejects(read('<svg/>'), /community_preview_invalid_image/);
+  }
 });
 test('preview URLs cannot send requests to arbitrary hosts or accept absent client context', async () => {
   const fetcher = () => assert.fail('must reject before network');

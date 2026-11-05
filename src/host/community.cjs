@@ -154,6 +154,21 @@ function validPreviewUrl(value) {
     throw new Error('community_preview_url_not_allowed');
   return u.href;
 }
+function previewMimeType(bytes) {
+  if (
+    bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+  )
+    return 'image/png';
+  if (bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255)
+    return 'image/jpeg';
+  if (/^GIF8[79]a$/.test(bytes.subarray(0, 6).toString())) return 'image/gif';
+  if (
+    bytes.subarray(0, 4).toString() === 'RIFF' &&
+    bytes.subarray(8, 12).toString() === 'WEBP'
+  )
+    return 'image/webp';
+  return null;
+}
 async function readPreview(url, { fetcher = fetch, userAgent } = {}) {
   if (
     typeof userAgent !== 'string' ||
@@ -179,9 +194,18 @@ async function readPreview(url, { fetcher = fetch, userAgent } = {}) {
         r.status,
     );
   if (r.status !== 200) throw new Error('community_preview_http_' + r.status);
-  const mimeType = r.headers.get('content-type')?.split(';')[0];
+  const declaredType = r.headers
+    .get('content-type')
+    ?.split(';')[0]
+    .trim()
+    .toLowerCase();
+  const rasterTypes = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
   if (
-    !['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(mimeType)
+    ![
+      ...rasterTypes,
+      'application/octet-stream',
+      'binary/octet-stream',
+    ].includes(declaredType)
   )
     throw new Error('community_preview_type_not_allowed');
   const limit = 2 * 1024 * 1024;
@@ -201,18 +225,12 @@ async function readPreview(url, { fetcher = fetch, userAgent } = {}) {
     throw error;
   }
   const bytes = Buffer.concat(chunks);
-  const valid =
-    mimeType === 'image/png'
-      ? bytes
-          .subarray(0, 8)
-          .equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
-      : mimeType === 'image/jpeg'
-        ? bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255
-        : mimeType === 'image/gif'
-          ? /^GIF8[79]a$/.test(bytes.subarray(0, 6).toString())
-          : bytes.subarray(0, 4).toString() === 'RIFF' &&
-            bytes.subarray(8, 12).toString() === 'WEBP';
-  if (!valid) throw new Error('community_preview_invalid_image');
+  const mimeType = previewMimeType(bytes);
+  if (
+    !mimeType ||
+    (rasterTypes.includes(declaredType) && declaredType !== mimeType)
+  )
+    throw new Error('community_preview_invalid_image');
   return { mimeType, size, data: bytes.toString('base64') };
 }
 async function researchCommunity(
