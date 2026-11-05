@@ -24,13 +24,27 @@ async function connectNativeFile({
   if (expectedNativeBuild && !/^[a-f0-9]{64}$/.test(expectedNativeBuild))
     throw new Error('Invalid expected native build identity');
   const connection = await connect();
-  const { pluginId } = require('./native-profiles.cjs').profileInfo(profile);
+  const { profiles, profileInfo } = require('./native-profiles.cjs');
+  const { pluginId } = profileInfo(profile);
+  const ownedIds = Object.values(profiles).map((p) => p.pluginId);
   let sessionId,
     reader,
     unsubscribe,
     widgetStarted = false,
     activatedEditor = false;
   const contexts = new Set();
+  const observed = new Map(),
+    endedClients = new Map();
+  function endContext(contextId) {
+    contexts.delete(contextId);
+    const peer = observed.get(contextId);
+    if (peer)
+      endedClients.set(peer.instanceId, {
+        clientId: peer.clientId,
+        instanceId: peer.instanceId,
+        pluginId: peer.pluginId,
+      });
+  }
   try {
     const { targetInfos } = await connection.call('Target.getTargets');
     const matches = targetInfos.filter((t) => {
@@ -65,8 +79,9 @@ async function connectNativeFile({
       )
         contexts.add(event.params.context.id);
       if (event.method === 'Runtime.executionContextDestroyed')
-        contexts.delete(event.params.executionContextId);
-      if (event.method === 'Runtime.executionContextsCleared') contexts.clear();
+        endContext(event.params.executionContextId);
+      if (event.method === 'Runtime.executionContextsCleared')
+        for (const id of [...contexts]) endContext(id);
     });
     reader = await createPageReader(
       connection,
@@ -90,8 +105,9 @@ async function connectNativeFile({
               {
                 contextId,
                 expression:
-                  '(()=>{const owned=globalThis.__ysunFigmaLifecycle?.identity?.() || (typeof direct!=="undefined"&&direct.context?.pluginId===' +
-                  JSON.stringify(pluginId) +
+                  '(()=>{const owned=globalThis.__ysunFigmaLifecycle?.identity?.() || (typeof direct!=="undefined"&&' +
+                  JSON.stringify(ownedIds) +
+                  '.includes(direct.context?.pluginId)' +
                   '?{legacy:true,clientId:direct.clientId,instanceId:direct.instanceId,documentId:direct.context.documentId,pluginId:direct.context.pluginId,connected:!!direct.token,busy:!!direct.pending||!!direct.blockedJobId,closed:direct.closed}:null);return owned&&typeof direct!=="undefined"?{...owned,runtimeVersion:direct.context?.runtimeVersion,nativeBuild:direct.context?.nativeBuild}:owned})()',
                 returnByValue: true,
               },
@@ -99,8 +115,11 @@ async function connectNativeFile({
               { timeoutMs: 1000, isolatedTimeout: true },
             ),
           ).value;
-          if (value?.pluginId === pluginId && !value.closed)
-            found.push({ contextId, ...value });
+          if (ownedIds.includes(value?.pluginId) && !value.closed) {
+            observed.set(contextId, value);
+            if (value.pluginId === pluginId)
+              found.push({ contextId, ...value });
+          }
         } catch {}
       }
       if (found.length > 1) throw new Error('desktop_native_frame_ambiguous');
@@ -131,6 +150,8 @@ async function connectNativeFile({
       ui = null;
     }
     if (!ui) {
+      if ([...observed].some(([id, peer]) => contexts.has(id) && peer.busy))
+        throw new Error('desktop_native_operation_pending');
       if (profile === 'widget' && status.documentVisible !== true) {
         // Figma defers Widget effects in hidden file renderers. Activate only
         // this exact observed file through its own deep link, then verify the
@@ -253,10 +274,14 @@ async function connectNativeFile({
       targetId: target.targetId,
       verifiedUrl,
       native: ui,
+      ...(endedClients.size
+        ? { endedClients: [...endedClients.values()] }
+        : {}),
       ...(activatedEditor ? { activatedEditor: true } : {}),
       ...(widgetNodeId ? { widgetNodeId } : {}),
     };
   } catch (error) {
+    if (endedClients.size) error.endedClients = [...endedClients.values()];
     if (
       widgetStarted &&
       !/^desktop_widget_(?:not_imported|not_permitted|identity_changed|schema_changed|insertion_rejected)$/.test(

@@ -68,7 +68,7 @@ Codex 只接收普通 MCP 工具调用，不注册 MCP App 资源或全局页面
 
 默认入口与 Dev、Widget 入口共用原生内核、伴随服务和 SQLite 账本。Dev 单独启用 inspect/codegen/textreview，避免 Figma 禁止的 Dev/FigJam manifest 组合；codegen 在真实 generate 回调中返回 CSS/JSON。Widget 使用实际 widget.register、Hooks 和持久状态；本地可信 render 模块保存在私有目录，更新后保留，不从云端 synced state 执行代码。Widget 身份使用公开 widgetId；准备 Widget 不改动其他入口的文件，避免触发无关插件热重载。
 
-桌面状态读取从当前加载模块发现真实 Redux store，避免 Figma 调试 getState 的忙等待。启动器与 Widget 插入使用应用当前的真实导出和权限检查，不固定模块编号、不绕过账号权限。兼容性诊断只解析当前模块结构与导出类型，不调用权限检查、启动器、插入或挂载；多个候选、未知结构和缺失导出明确报错，不任取第一个候选。冷恢复同时核对原生运行时版本、构建标识和实际服务端会话，不能把 iframe 里的旧令牌当成在线连接。Figma 对隐藏文件延迟 Widget effect，连接器用官方精确文件链接激活该文件，检查其实际可见状态后才挂载原节点，无需菜单操作。确切 URL、targetId、clientId、documentId 和 instanceId 分别验证；同名文件不建立身份。内部桌面接口可能随 Figma 版本变化，未知结构应返回具体错误。
+桌面状态读取从当前加载模块发现真实 Redux store，避免 Figma 调试 getState 的忙等待。启动器与 Widget 插入使用应用当前的真实导出和权限检查，不固定模块编号、不绕过账号权限。兼容性诊断只解析当前模块结构与导出类型，不调用权限检查、启动器、插入或挂载；多个候选、未知结构和缺失导出明确报错，不任取第一个候选。冷恢复同时核对原生运行时版本、构建标识和实际服务端会话，不能把 iframe 里的旧令牌当成在线连接。Figma 对隐藏文件延迟 Widget effect，连接器用官方精确文件链接激活该文件，检查其实际可见状态后才挂载原节点，无需菜单操作。确切 URL、targetId、clientId、documentId 和 instanceId 分别验证；同名文件不建立身份。显式连接会重新验证实际原生 iframe，连接切换期间拒绝新任务进入同一文件。Figma 切换入口时若销毁已观察到的自有 iframe，立即按原始实例身份停用旧客户端；新实例、其他窗口和未观察到的客户端不被推断为关闭。启动失败仍保留已销毁实例的证据，不能等待旧在线租约超时后才停止任务准入。内部桌面接口可能随 Figma 版本变化，未知结构应返回具体错误。
 
 `rest.cjs` 保留官方 OpenAPI 原文并执行全部 59 项接口；`rest-supplement.cjs` 明确标注来源，补充规范之外的 12 项 SCIM 与 Discovery。MCP 层验证实际 endpoint schema；伴随服务统一鉴权，凭据不会通过 MCP 参数跨进程。个人、组织和 SCIM 配置独立保留，组织令牌不强制调用个人身份接口。仅访问固定官方 API/SCIM 路径且拒绝重定向；SCIM 检查配置租户与请求租户一致。
 

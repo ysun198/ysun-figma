@@ -111,6 +111,114 @@ test('a same-version stale native build is detected before any job is accepted',
   assert.equal((await api.claim(paired)).status, 204);
   assert.equal((await api.submit(paired.id)).status, 409);
 });
+test('a profile switch blocks racing submissions and retires only the exact destroyed iframe, preserving unrelated sessions', async (t) => {
+  let api, old, other;
+  let started, release;
+  const starting = new Promise((r) => {
+    started = r;
+  });
+  const hold = new Promise((r) => {
+    release = r;
+  });
+  api = await setup(t, {
+    nativeConnect: async () => {
+      started();
+      await hold;
+      const paired = await api.pair('profile-new-client', 'QA', {
+        fileKey: 'CloudFile12',
+        instanceId: 'b'.repeat(32),
+        documentId: 'c'.repeat(32),
+        pluginId: '1700203379527851322',
+      });
+      return {
+        native: { ...api.bridge.clients.get(paired.id), clientId: paired.id },
+        verifiedUrl: 'https://www.figma.com/design/CloudFile12/QA',
+        endedClients: [
+          {
+            clientId: old.id,
+            instanceId: 'a'.repeat(32),
+            pluginId: '1700202761156255033',
+          },
+          {
+            clientId: other.id,
+            instanceId: 'wrong-instance',
+            pluginId: '1675211139174009382',
+          },
+        ],
+      };
+    },
+  });
+  old = await api.pair('profile-old-client', 'QA', {
+    fileKey: 'CloudFile12',
+    instanceId: 'a'.repeat(32),
+    documentId: 'd'.repeat(32),
+    pluginId: '1700202761156255033',
+  });
+  other = await api.pair('profile-other-client', 'Other', {
+    fileKey: 'AnotherFile12',
+    instanceId: 'e'.repeat(32),
+    pluginId: '1675211139174009382',
+  });
+  const recovery = api.call('/v1/desktop/connect', {
+    fileKey: 'CloudFile12',
+    profile: 'dev',
+  });
+  await starting;
+  try {
+    assert.equal((await api.submit(old.id)).status, 503);
+    assert.equal((await api.call('/v1/status?summary=1')).body.jobCount, 0);
+  } finally {
+    release();
+  }
+  assert.equal((await recovery).status, 200);
+  const state = (await api.call('/v1/status?summary=1')).body;
+  assert.equal(!!state.clients.find((c) => c.id === old.id)?.connected, false);
+  assert.equal(state.clients.find((c) => c.id === other.id).connected, true);
+  assert.equal((await api.submit(old.id)).status, 409);
+  assert.equal((await api.submit('profile-new-client')).status, 202);
+});
+
+test('failed profile launch still retires a proven destroyed iframe and releases the file admission guard', async (t) => {
+  let old;
+  const api = await setup(t, {
+    nativeConnect: async () => {
+      throw Object.assign(new Error('simulated_launcher_failure'), {
+        endedClients: [
+          {
+            clientId: old.id,
+            instanceId: 'a'.repeat(32),
+            pluginId: '1700202761156255033',
+          },
+        ],
+      });
+    },
+  });
+  old = await api.pair('failed-profile-old', 'QA', {
+    fileKey: 'CloudFile12',
+    instanceId: 'a'.repeat(32),
+    documentId: 'b'.repeat(32),
+    pluginId: '1700202761156255033',
+  });
+  assert.equal(
+    (
+      await api.call('/v1/desktop/connect', {
+        fileKey: 'CloudFile12',
+        profile: 'dev',
+      })
+    ).status,
+    500,
+  );
+  assert.equal(api.bridge.clients.get(old.id).suspended, true);
+  assert.equal((await api.submit(old.id)).status, 409);
+  const renewed = await api.pair('failed-profile-new', 'QA', {
+    fileKey: 'CloudFile12',
+    instanceId: 'c'.repeat(32),
+    documentId: 'b'.repeat(32),
+    pluginId: '1700203379527851322',
+  });
+  assert.equal((await api.submit(renewed.id)).status, 202);
+});
+
 test('verified cloud identities separate copied documents and preserve unknown-write barriers across connections', async (t) => {
   const api = await setup(t);
   const original = await api.pair('scope-original-client', 'Original', {

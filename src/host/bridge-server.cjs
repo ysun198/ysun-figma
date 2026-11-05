@@ -153,6 +153,7 @@ function createBridgeServer(options = {}) {
     grants = new Map();
   let execution, externalJobs;
   const externalClients = new Map();
+  const nativeRecoveries = new Set();
   const catalog = require('./catalog.cjs').createCatalog(options.catalogPath);
   let catalogWorker = null;
   const grantPath =
@@ -682,7 +683,7 @@ function createBridgeServer(options = {}) {
         400,
         'Widget connection can insert a widget; supply a stable operationId and an existing widgetNodeId when reconnecting',
       );
-    async function recoverNative() {
+    async function recoverNativeSession() {
       const nativeClients = catalog
         .decorate(activeClients().map((client) => clientStatus(client)))
         .filter(
@@ -695,12 +696,6 @@ function createBridgeServer(options = {}) {
           'Multiple native instances match this file; select an exact client',
         );
       const active = nativeClients[0];
-      if (active && !active.needsPluginUpdate && !restart)
-        return {
-          state: 'connected',
-          clientId: active.id,
-          fileKey,
-        };
       if (
         execution
           .list()
@@ -729,9 +724,13 @@ function createBridgeServer(options = {}) {
           profile,
           widgetNodeId,
           pairingCode: pairing.code,
-          restart: restart || !!active,
+          restart: restart || !!active?.needsPluginUpdate,
           ...(expectedNativeBuild ? { expectedNativeBuild } : {}),
         });
+        retireNativeClients(result.endedClients);
+      } catch (error) {
+        retireNativeClients(error.endedClients);
+        throw error;
       } finally {
         pairings.delete(pairing.code);
       }
@@ -755,6 +754,19 @@ function createBridgeServer(options = {}) {
       notifyChange();
       return { ...result, clientId: client.id };
     }
+    async function recoverNative() {
+      if (nativeRecoveries.has(fileKey))
+        throw problem(
+          409,
+          'Native connection recovery is already in progress for this file',
+        );
+      nativeRecoveries.add(fileKey);
+      try {
+        return await recoverNativeSession();
+      } finally {
+        nativeRecoveries.delete(fileKey);
+      }
+    }
     if (profile !== 'widget') return send(res, 200, await recoverNative());
     const record = await externalJobs.run({
       id: operationId,
@@ -767,6 +779,23 @@ function createBridgeServer(options = {}) {
       perform: async () => ({ ...(await recoverNative()), ok: true }),
     });
     return send(res, 200, { ...(record.job.result?.value || {}), ...record });
+  }
+
+  function retireNativeClients(endedClients = []) {
+    for (const ended of endedClients) {
+      const previous = clients.get(ended.clientId);
+      if (
+        previous?.instanceId !== ended.instanceId ||
+        previous.pluginId !== ended.pluginId
+      )
+        continue;
+      previous.suspended = true;
+      execution.endInstance(
+        previous.id,
+        'the original native iframe ended during a profile change; this instance cannot receive new operations',
+      );
+    }
+    if (endedClients.length) notifyChange();
   }
 
   async function nativeProfileRoute({ req, res, requireAdmin }) {
@@ -1023,6 +1052,16 @@ function createBridgeServer(options = {}) {
       ...body.target,
       id: body.target.clientId,
     });
+    if (
+      !execution.get(id) &&
+      [expected.fileKey, ...(expected.fileKeys || [])].some((key) =>
+        nativeRecoveries.has(key),
+      )
+    )
+      throw problem(
+        503,
+        'Native connection recovery is in progress; no operation was submitted',
+      );
     const { job, created } = execution.submit(
       {
         id,

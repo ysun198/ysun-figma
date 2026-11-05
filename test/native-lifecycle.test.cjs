@@ -414,6 +414,125 @@ for (const mismatch of ['runtime', 'build']) {
   });
 }
 
+for (const scenario of ['replaced', 'busy', 'failed']) {
+  test(`profile transition observes an owned sibling iframe: ${scenario}`, async () => {
+    let listener,
+      started = false;
+    const closed = {
+      clientId: 'widget-old',
+      instanceId: 'old-instance',
+      pluginId: '1700202761156255033',
+    };
+    const task = connectNativeFile({
+      fileKey: 'CloudFile12',
+      profile: 'dev',
+      connect: async () => ({
+        onEvent(fn) {
+          listener = fn;
+          return () => {};
+        },
+        close() {},
+        async call(method, params = {}) {
+          const emit = (method, params) =>
+            listener({ sessionId: 'session', method, params });
+          const add = (id) =>
+            emit('Runtime.executionContextCreated', {
+              context: { id, auxData: { isDefault: true } },
+            });
+          if (method === 'Target.getTargets')
+            return {
+              targetInfos: [
+                {
+                  type: 'page',
+                  targetId: 'target',
+                  url: 'https://www.figma.com/design/CloudFile12/QA',
+                },
+              ],
+            };
+          if (method === 'Target.attachToTarget')
+            return { sessionId: 'session' };
+          if (method === 'Runtime.enable') {
+            add(10);
+            return {};
+          }
+          if (method === 'Runtime.evaluate') {
+            new vm.Script(params.expression);
+            if (params.expression.includes('createEditorReader'))
+              return { result: { objectId: 'reader' } };
+            if (params.expression.includes('typeof heartbeat'))
+              return { result: { value: true } };
+            return {
+              result: {
+                value:
+                  params.contextId === 10
+                    ? {
+                        ...closed,
+                        documentId: 'doc',
+                        connected: true,
+                        busy: scenario === 'busy',
+                        closed: false,
+                      }
+                    : {
+                        clientId: 'dev-new',
+                        instanceId: 'new-instance',
+                        pluginId: '1700203379527851322',
+                        documentId: 'doc',
+                        connected: true,
+                        closed: false,
+                      },
+              },
+            };
+          }
+          if (method === 'Runtime.callFunctionOn') {
+            const name = params.arguments?.[0]?.value;
+            if (name === 'status')
+              return {
+                result: {
+                  value: {
+                    url: 'https://www.figma.com/design/CloudFile12/QA',
+                    editorLoaded: true,
+                    documentVisible: true,
+                  },
+                },
+              };
+            if (name === 'start') {
+              started = true;
+              emit('Runtime.executionContextDestroyed', {
+                executionContextId: 10,
+              });
+              add(11);
+              if (scenario === 'failed')
+                throw new Error('simulated_launcher_failure');
+              return { result: { value: { state: 'starting' } } };
+            }
+          }
+          if (
+            ['Runtime.releaseObject', 'Target.detachFromTarget'].includes(
+              method,
+            )
+          )
+            return {};
+          assert.fail(method);
+        },
+      }),
+    });
+    if (scenario === 'busy') {
+      await assert.rejects(task, /desktop_native_operation_pending/);
+      assert.equal(started, false);
+    } else if (scenario === 'failed') {
+      await assert.rejects(task, (error) => {
+        assert.equal(error.message, 'simulated_launcher_failure');
+        assert.deepEqual(error.endedClients, [closed]);
+        return true;
+      });
+    } else {
+      const result = await task;
+      assert.deepEqual(result.endedClients, [closed]);
+      assert.equal(result.native.clientId, 'dev-new');
+    }
+  });
+}
+
 test('Widget cold start activates the exact hidden renderer before mounting, preserving the existing Widget ID', async () => {
   let listener,
     visible = false,
