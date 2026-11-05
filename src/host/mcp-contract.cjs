@@ -223,6 +223,36 @@ function setupRecovery(detail) {
   return actions.find(([pattern]) => pattern.test(detail))?.[1];
 }
 
+function operationContext(error, input, code) {
+  const blockingOperationIds = error.body?.blockingOperationIds;
+  const operationId =
+    error.receipt?.job.id ||
+    blockingOperationIds?.[0] ||
+    error.operationId ||
+    input.operationId;
+  const submitted =
+    error.phase !== 'preflight' &&
+    (['submitted', 'execution', 'delivery', 'receipt'].includes(error.phase) ||
+      !!error.receipt ||
+      code === 'OUTCOME_NEEDS_REVIEW');
+  return { blockingOperationIds, operationId, submitted };
+}
+function retrySafety(
+  error,
+  { code, precondition, blockingOperationIds, operationId, submitted },
+) {
+  // Rejection of this request does not resolve an older uncertain write. Derive
+  // retry guidance once, so a preflight branch cannot override the ledger.
+  if (
+    precondition ||
+    blockingOperationIds ||
+    code === 'OUTCOME_NEEDS_REVIEW' ||
+    code === 'CLOUD_RECEIPT_UNAVAILABLE'
+  )
+    return false;
+  if (error.receipt) return error.receipt.job.status === 'failed';
+  if (!submitted && operationId) return true;
+}
 function toolError(error, input = {}) {
   const detail = String(error.message || error);
   const precondition = error.receipt?.job.result?.precondition;
@@ -243,30 +273,13 @@ function toolError(error, input = {}) {
     FIGMA_OPERATION_FAILED: '操作未完成，请查看原始错误和执行回执。',
     ARTIFACT_DELIVERY_FAILED: '预览或文件交付失败，原始 Figma 执行回执已保留。',
   };
-  const blockingOperationIds = error.body?.blockingOperationIds;
-  const operationId =
-    error.receipt?.job.id ||
-    blockingOperationIds?.[0] ||
-    error.operationId ||
-    input.operationId;
-  const submitted =
-    error.phase !== 'preflight' &&
-    (['submitted', 'execution', 'delivery', 'receipt'].includes(error.phase) ||
-      !!error.receipt ||
-      code === 'OUTCOME_NEEDS_REVIEW');
-  // Rejection of this request does not resolve an older uncertain write. Derive
-  // retry guidance once, so a preflight branch cannot override the ledger.
-  const safeToRetryWithoutCanvasRead =
-    precondition ||
-    blockingOperationIds ||
-    code === 'OUTCOME_NEEDS_REVIEW' ||
-    code === 'CLOUD_RECEIPT_UNAVAILABLE'
-      ? false
-      : error.receipt
-        ? error.receipt.job.status === 'failed'
-        : !submitted && operationId
-          ? true
-          : undefined;
+  const context = operationContext(error, input, code);
+  const { blockingOperationIds, operationId, submitted } = context;
+  const safeToRetryWithoutCanvasRead = retrySafety(error, {
+    ...context,
+    code,
+    precondition,
+  });
   const result = {
     code,
     message:
@@ -801,53 +814,56 @@ const tools = [
       : {}),
   },
 }));
-function validate(value, schema, label = 'arguments') {
-  // An empty JSON Schema accepts any JSON value; REST validates its body
-  // against the selected operation's schema after this envelope check.
-  if (!Object.keys(schema).length) return;
-  if (schema.type === 'object') {
-    if (!isRecord(value)) throw new Error(`${label} must be an object`);
-    for (const key of schema.required || [])
-      if (!Object.hasOwn(value, key))
-        throw new Error(`${label}.${key} is required`);
-    for (const [key, item] of Object.entries(value)) {
-      const rule =
-        schema.properties && Object.hasOwn(schema.properties, key)
-          ? schema.properties[key]
-          : (schema.additionalProperties ?? true);
-      if (rule === false || rule === undefined)
-        throw new Error(`unexpected ${label}.${key}`);
-      if (typeof rule === 'object') validate(item, rule, `${label}.${key}`);
-    }
-  } else if (schema.type === 'array') {
-    if (
-      !Array.isArray(value) ||
-      (schema.minItems !== undefined && value.length < schema.minItems) ||
-      (schema.maxItems !== undefined && value.length > schema.maxItems) ||
-      (schema.uniqueItems &&
-        new Set(value.map((item) => JSON.stringify(item))).size !==
-          value.length)
-    )
-      throw new Error(`invalid ${label}`);
-    value.forEach((item, index) =>
-      validate(item, schema.items, `${label}[${index}]`),
-    );
-  } else {
-    if (
-      schema.type === 'integer'
-        ? !Number.isInteger(value)
-        : typeof value !== schema.type
-    )
-      throw new Error(`invalid ${label}`);
-    if (
-      (schema.enum && !schema.enum.includes(value)) ||
-      (schema.pattern && !new RegExp(schema.pattern).test(value)) ||
-      (schema.minLength && value.length < schema.minLength) ||
-      (schema.maxLength && value.length > schema.maxLength) ||
-      (schema.minimum !== undefined && value < schema.minimum) ||
-      (schema.maximum !== undefined && value > schema.maximum)
-    )
-      throw new Error(`invalid ${label}`);
+function validateObject(value, schema, label) {
+  if (!isRecord(value)) throw new Error(`${label} must be an object`);
+  for (const key of schema.required || [])
+    if (!Object.hasOwn(value, key))
+      throw new Error(`${label}.${key} is required`);
+  for (const [key, item] of Object.entries(value)) {
+    const rule =
+      schema.properties && Object.hasOwn(schema.properties, key)
+        ? schema.properties[key]
+        : (schema.additionalProperties ?? true);
+    if (rule === false || rule === undefined)
+      throw new Error(`unexpected ${label}.${key}`);
+    if (typeof rule === 'object') validate(item, rule, `${label}.${key}`);
   }
+}
+function validateArray(value, schema, label) {
+  if (
+    !Array.isArray(value) ||
+    (schema.minItems !== undefined && value.length < schema.minItems) ||
+    (schema.maxItems !== undefined && value.length > schema.maxItems) ||
+    (schema.uniqueItems &&
+      new Set(value.map((item) => JSON.stringify(item))).size !== value.length)
+  )
+    throw new Error(`invalid ${label}`);
+  value.forEach((item, index) =>
+    validate(item, schema.items, `${label}[${index}]`),
+  );
+}
+function validateScalar(value, schema, label) {
+  if (
+    schema.type === 'integer'
+      ? !Number.isInteger(value)
+      : typeof value !== schema.type
+  )
+    throw new Error(`invalid ${label}`);
+  if (
+    (schema.enum && !schema.enum.includes(value)) ||
+    (schema.pattern && !new RegExp(schema.pattern).test(value)) ||
+    (schema.minLength && value.length < schema.minLength) ||
+    (schema.maxLength && value.length > schema.maxLength) ||
+    (schema.minimum !== undefined && value < schema.minimum) ||
+    (schema.maximum !== undefined && value > schema.maximum)
+  )
+    throw new Error(`invalid ${label}`);
+}
+function validate(value, schema, label = 'arguments') {
+  // Empty schemas accept any JSON; endpoint-specific REST validation follows.
+  if (!Object.keys(schema).length) return;
+  if (schema.type === 'object') validateObject(value, schema, label);
+  else if (schema.type === 'array') validateArray(value, schema, label);
+  else validateScalar(value, schema, label);
 }
 module.exports = { isRecord, queries, tools, validate, toolError };

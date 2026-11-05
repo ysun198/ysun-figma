@@ -1,13 +1,190 @@
 const {
   queuedDesktop,
-  runtimeResult,
   createPageReader,
   launchDesktop,
 } = require('./desktop.cjs');
 const { createEditorReader } = require('./editor-reader.js');
+const { createNativeFrames } = require('./native-frames.cjs');
+const { profileInfo } = require('./native-profiles.cjs');
 const { parseFigmaUrl } = require('./targets.cjs');
 const { BRIDGE_RUNTIME_VERSION } = require('../shared/core.js');
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function findEditor(connection, fileKey, targetId) {
+  const { targetInfos } = await connection.call('Target.getTargets');
+  const matches = targetInfos.filter((target) => {
+    try {
+      return (
+        target.type === 'page' &&
+        /\/(design|file|board|slides|buzz)\//.test(
+          new URL(target.url).pathname,
+        ) &&
+        parseFigmaUrl(target.url).fileKey === fileKey &&
+        (!targetId || target.targetId === targetId)
+      );
+    } catch {
+      return false;
+    }
+  });
+  if (matches.length !== 1)
+    throw Object.assign(
+      new Error(
+        matches.length ? 'desktop_file_ambiguous' : 'desktop_file_not_open',
+      ),
+      {
+        targets: matches.map((target) => ({
+          targetId: target.targetId,
+          url: target.url,
+        })),
+      },
+    );
+  return matches[0];
+}
+
+function needsRestart(ui, restart, expectedBuild) {
+  if (!ui) return false;
+  return (
+    restart ||
+    ui.legacy ||
+    (ui.runtimeVersion !== undefined &&
+      ui.runtimeVersion !== BRIDGE_RUNTIME_VERSION) ||
+    !!(expectedBuild && ui.nativeBuild !== expectedBuild)
+  );
+}
+
+async function showWidgetEditor(reader, status, activate) {
+  if (status.documentVisible === true) return false;
+  // Figma defers Widget effects in hidden editors. Activate the observed file
+  // through its exact deep link before mounting an existing Widget.
+  await activate();
+  const deadline = Date.now() + 5000;
+  do {
+    const current = await reader.invoke('status');
+    if (current.documentVisible !== false) return true;
+    await pause(100);
+  } while (Date.now() < deadline);
+  throw new Error('desktop_widget_editor_not_visible');
+}
+
+async function startPlugin(reader, activate) {
+  try {
+    return { launched: await reader.invoke('start'), activated: false };
+  } catch (error) {
+    if (!error.message.includes('canViewPlugins returned false')) throw error;
+  }
+  // Re-run the app's real permission guard in its active editor, never override
+  // a permission or switch to a different file.
+  await activate();
+  const deadline = Date.now() + 5000;
+  while (true) {
+    try {
+      return { launched: await reader.invoke('start'), activated: true };
+    } catch (error) {
+      if (
+        !error.message.includes('canViewPlugins returned false') ||
+        Date.now() >= deadline
+      )
+        throw error;
+      await pause(200);
+    }
+  }
+}
+
+function connectionResult(
+  state,
+  target,
+  status,
+  ui,
+  frames,
+  { activatedEditor, widgetNodeId },
+) {
+  const ended = frames.endedClients;
+  return {
+    state,
+    fileKey: parseFigmaUrl(status.url).fileKey,
+    targetId: target.targetId,
+    verifiedUrl: status.url,
+    native: ui,
+    ...(ended.length ? { endedClients: ended } : {}),
+    ...(activatedEditor ? { activatedEditor: true } : {}),
+    ...(widgetNodeId ? { widgetNodeId } : {}),
+  };
+}
+
+async function connectEditor(connection, input, session) {
+  const {
+    fileKey,
+    targetId,
+    pairingCode,
+    restart,
+    profile,
+    pluginId,
+    expectedNativeBuild,
+    activate,
+  } = input;
+  let { widgetNodeId } = input;
+  const target = await findEditor(connection, fileKey, targetId);
+  const { sessionId } = await connection.call('Target.attachToTarget', {
+    targetId: target.targetId,
+    flatten: true,
+  });
+  session.id = sessionId;
+  const frames = (session.frames = createNativeFrames(
+    connection,
+    sessionId,
+    pluginId,
+  ));
+  const reader = (session.reader = await createPageReader(
+    connection,
+    sessionId,
+    createEditorReader,
+    'desktop_editor_unavailable',
+    { pluginId },
+  ));
+  const status = await reader.invoke('status');
+  if (parseFigmaUrl(status.url).fileKey !== fileKey)
+    throw new Error('desktop_file_identity_changed');
+  if (!status.editorLoaded) throw new Error('desktop_editor_not_ready');
+  let ui = await frames.read();
+  if (needsRestart(ui, restart, expectedNativeBuild)) {
+    await frames.closeIdle(ui);
+    ui = null;
+  }
+  let activatedEditor = false;
+  if (!ui) {
+    if (frames.busy()) throw new Error('desktop_native_operation_pending');
+    if (profile === 'widget') {
+      activatedEditor = await showWidgetEditor(reader, status, () =>
+        activate(fileKey),
+      );
+      session.widgetStarted = true;
+      const launched = await reader.invoke('startWidget', widgetNodeId);
+      widgetNodeId ||= launched?.widgetNodeId;
+    } else {
+      const started = await startPlugin(reader, () => activate(fileKey));
+      activatedEditor = started.activated;
+    }
+    ui = await frames.wait();
+  }
+  if (expectedNativeBuild && ui.nativeBuild !== expectedNativeBuild)
+    throw new Error('desktop_native_build_mismatch');
+  ui = await frames.authorize(ui, pairingCode);
+  const options = { activatedEditor, widgetNodeId };
+  if (ui && !ui.connected && !pairingCode)
+    return connectionResult(
+      'pairing_required',
+      target,
+      status,
+      ui,
+      frames,
+      options,
+    );
+  if (!ui?.connected || !ui.documentId)
+    throw new Error('desktop_native_identity_unavailable');
+  await reader.invoke('status');
+  return connectionResult('connected', target, status, ui, frames, options);
+}
+
 async function connectNativeFile({
   fileKey,
   targetId,
@@ -23,267 +200,30 @@ async function connectNativeFile({
     throw new Error('Invalid Figma file key');
   if (expectedNativeBuild && !/^[a-f0-9]{64}$/.test(expectedNativeBuild))
     throw new Error('Invalid expected native build identity');
-  const connection = await connect();
-  const { profiles, profileInfo } = require('./native-profiles.cjs');
   const { pluginId } = profileInfo(profile);
-  const ownedIds = Object.values(profiles).map((p) => p.pluginId);
-  let sessionId,
-    reader,
-    unsubscribe,
-    widgetStarted = false,
-    activatedEditor = false;
-  const contexts = new Set();
-  const observed = new Map(),
-    endedClients = new Map();
-  function endContext(contextId) {
-    contexts.delete(contextId);
-    const peer = observed.get(contextId);
-    if (peer)
-      endedClients.set(peer.instanceId, {
-        clientId: peer.clientId,
-        instanceId: peer.instanceId,
-        pluginId: peer.pluginId,
-      });
-  }
+  const connection = await connect(),
+    session = {};
   try {
-    const { targetInfos } = await connection.call('Target.getTargets');
-    const matches = targetInfos.filter((t) => {
-      try {
-        return (
-          t.type === 'page' &&
-          /\/(design|file|board|slides|buzz)\//.test(new URL(t.url).pathname) &&
-          parseFigmaUrl(t.url).fileKey === fileKey &&
-          (!targetId || t.targetId === targetId)
-        );
-      } catch {
-        return false;
-      }
-    });
-    if (matches.length !== 1)
-      throw Object.assign(
-        new Error(
-          matches.length ? 'desktop_file_ambiguous' : 'desktop_file_not_open',
-        ),
-        { targets: matches.map((t) => ({ targetId: t.targetId, url: t.url })) },
-      );
-    const target = matches[0];
-    ({ sessionId } = await connection.call('Target.attachToTarget', {
-      targetId: target.targetId,
-      flatten: true,
-    }));
-    unsubscribe = connection.onEvent?.((event) => {
-      if (event.sessionId !== sessionId) return;
-      if (
-        event.method === 'Runtime.executionContextCreated' &&
-        event.params.context.auxData?.isDefault
-      )
-        contexts.add(event.params.context.id);
-      if (event.method === 'Runtime.executionContextDestroyed')
-        endContext(event.params.executionContextId);
-      if (event.method === 'Runtime.executionContextsCleared')
-        for (const id of [...contexts]) endContext(id);
-    });
-    reader = await createPageReader(
+    return await connectEditor(
       connection,
-      sessionId,
-      createEditorReader,
-      'desktop_editor_unavailable',
-      { pluginId },
+      {
+        fileKey,
+        targetId,
+        pairingCode,
+        restart,
+        profile,
+        widgetNodeId,
+        expectedNativeBuild,
+        pluginId,
+        activate,
+      },
+      session,
     );
-    const status = await reader.invoke('status');
-    if (parseFigmaUrl(status.url).fileKey !== fileKey)
-      throw new Error('desktop_file_identity_changed');
-    if (!status.editorLoaded) throw new Error('desktop_editor_not_ready');
-    const verifiedUrl = status.url;
-    async function nativeUi() {
-      const found = [];
-      for (const contextId of [...contexts]) {
-        try {
-          const value = runtimeResult(
-            await connection.call(
-              'Runtime.evaluate',
-              {
-                contextId,
-                expression:
-                  '(()=>{const owned=globalThis.__ysunFigmaLifecycle?.identity?.() || (typeof direct!=="undefined"&&' +
-                  JSON.stringify(ownedIds) +
-                  '.includes(direct.context?.pluginId)' +
-                  '?{legacy:true,clientId:direct.clientId,instanceId:direct.instanceId,documentId:direct.context.documentId,pluginId:direct.context.pluginId,connected:!!direct.token,busy:!!direct.pending||!!direct.blockedJobId,closed:direct.closed}:null);return owned&&typeof direct!=="undefined"?{...owned,runtimeVersion:direct.context?.runtimeVersion,nativeBuild:direct.context?.nativeBuild}:owned})()',
-                returnByValue: true,
-              },
-              sessionId,
-              { timeoutMs: 1000, isolatedTimeout: true },
-            ),
-          ).value;
-          if (ownedIds.includes(value?.pluginId) && !value.closed) {
-            observed.set(contextId, value);
-            if (value.pluginId === pluginId)
-              found.push({ contextId, ...value });
-          }
-        } catch {}
-      }
-      if (found.length > 1) throw new Error('desktop_native_frame_ambiguous');
-      return found[0] || null;
-    }
-    let ui = await nativeUi();
-    const outdated =
-      (ui?.runtimeVersion !== undefined &&
-        ui.runtimeVersion !== BRIDGE_RUNTIME_VERSION) ||
-      !!(ui && expectedNativeBuild && ui.nativeBuild !== expectedNativeBuild);
-    if ((restart || ui?.legacy || outdated) && ui) {
-      if (ui.busy) throw new Error('desktop_native_operation_pending');
-      const closed = runtimeResult(
-        await connection.call(
-          'Runtime.evaluate',
-          {
-            contextId: ui.contextId,
-            expression: ui.legacy
-              ? '(()=>{if(direct.pending||direct.blockedJobId||typeof closePlugin!=="function")return false;closePlugin();return true})()'
-              : 'globalThis.__ysunFigmaLifecycle.closeIdle()',
-            returnByValue: true,
-          },
-          sessionId,
-        ),
-      ).value;
-      if (!closed) throw new Error('desktop_native_operation_pending');
-      await pause(100);
-      ui = null;
-    }
-    if (!ui) {
-      if ([...observed].some(([id, peer]) => contexts.has(id) && peer.busy))
-        throw new Error('desktop_native_operation_pending');
-      if (profile === 'widget' && status.documentVisible !== true) {
-        // Figma defers Widget effects in hidden file renderers. Activate only
-        // this exact observed file through its own deep link, then verify the
-        // renderer became visible before mounting an existing Widget.
-        await activate(fileKey);
-        activatedEditor = true;
-        const deadline = Date.now() + 5000;
-        let current;
-        do {
-          current = await reader.invoke('status');
-          if (current.documentVisible !== false) break;
-          await pause(100);
-        } while (Date.now() < deadline);
-        if (current.documentVisible === false)
-          throw new Error('desktop_widget_editor_not_visible');
-      }
-      if (profile === 'widget') widgetStarted = true;
-      let launched;
-      try {
-        launched = await reader.invoke(
-          profile === 'widget' ? 'startWidget' : 'start',
-          widgetNodeId,
-        );
-      } catch (error) {
-        if (
-          profile === 'widget' ||
-          !error.message.includes('canViewPlugins returned false')
-        )
-          throw error;
-        // The app's real guard can require its editor to be the active tab.
-        // Activate through Figma's own exact-file deep link, then re-run the
-        // same guard. Never override a permission or choose another file.
-        await activate(fileKey);
-        activatedEditor = true;
-        const deadline = Date.now() + 5000;
-        while (true) {
-          try {
-            launched = await reader.invoke('start');
-            break;
-          } catch (retryError) {
-            if (
-              !retryError.message.includes('canViewPlugins returned false') ||
-              Date.now() >= deadline
-            )
-              throw retryError;
-            await pause(200);
-          }
-        }
-      }
-      widgetNodeId ||= launched?.widgetNodeId;
-      const deadline = Date.now() + 15000;
-      do {
-        ui = await nativeUi();
-        if (ui) break;
-        await pause(100);
-      } while (Date.now() < deadline);
-    }
-    if (!ui) throw new Error('desktop_native_lifecycle_unavailable');
-    if (expectedNativeBuild && ui.nativeBuild !== expectedNativeBuild)
-      throw new Error('desktop_native_build_mismatch');
-    if (ui.connected) {
-      // A token in an existing iframe is not a current broker session. After
-      // maintenance, renew through this owned runtime's normal heartbeat/resume
-      // path before returning identity for binding. No credential is returned.
-      await connection.call(
-        'Runtime.evaluate',
-        {
-          contextId: ui.contextId,
-          expression:
-            '(async()=>{if(typeof heartbeat!=="function")return false;const deadline=Date.now()+5000;while(direct.heartbeatBusy&&Date.now()<deadline)await new Promise(r=>setTimeout(r,25));await heartbeat();return true})()',
-          returnByValue: true,
-          awaitPromise: true,
-        },
-        sessionId,
-        { timeoutMs: 8000 },
-      );
-      ui = (await nativeUi()) || ui;
-    }
-    if (!ui.connected) {
-      // Saved grants restore before a genuinely new pairing is attempted.
-      const deadline = Date.now() + 2000;
-      while (!ui.connected && Date.now() < deadline) {
-        await pause(100);
-        ui = (await nativeUi()) || ui;
-      }
-      if (!ui.connected) {
-        if (!pairingCode)
-          return {
-            state: 'pairing_required',
-            fileKey,
-            targetId: target.targetId,
-            verifiedUrl,
-            native: ui,
-          };
-        const paired = runtimeResult(
-          await connection.call(
-            'Runtime.evaluate',
-            {
-              contextId: ui.contextId,
-              expression:
-                'globalThis.__ysunFigmaLifecycle.pair(' +
-                JSON.stringify(pairingCode) +
-                ')',
-              returnByValue: true,
-              awaitPromise: true,
-            },
-            sessionId,
-          ),
-        ).value;
-        if (!paired) throw new Error('desktop_native_pairing_failed');
-        ui = await nativeUi();
-      }
-    }
-    if (!ui?.connected || !ui.documentId)
-      throw new Error('desktop_native_identity_unavailable');
-    await reader.invoke('status');
-    return {
-      state: 'connected',
-      fileKey,
-      targetId: target.targetId,
-      verifiedUrl,
-      native: ui,
-      ...(endedClients.size
-        ? { endedClients: [...endedClients.values()] }
-        : {}),
-      ...(activatedEditor ? { activatedEditor: true } : {}),
-      ...(widgetNodeId ? { widgetNodeId } : {}),
-    };
   } catch (error) {
-    if (endedClients.size) error.endedClients = [...endedClients.values()];
+    const ended = session.frames?.endedClients;
+    if (ended?.length) error.endedClients = ended;
     if (
-      widgetStarted &&
+      session.widgetStarted &&
       !/^desktop_widget_(?:not_imported|not_permitted|identity_changed|schema_changed|insertion_rejected)$/.test(
         error.message,
       )
@@ -291,11 +231,11 @@ async function connectNativeFile({
       error.outcomeUnknown = true;
     throw error;
   } finally {
-    unsubscribe?.();
-    await reader?.close().catch(() => {});
-    if (sessionId)
+    session.frames?.close();
+    await session.reader?.close().catch(() => {});
+    if (session.id)
       await connection
-        .call('Target.detachFromTarget', { sessionId })
+        .call('Target.detachFromTarget', { sessionId: session.id })
         .catch(() => {});
     connection.close();
   }

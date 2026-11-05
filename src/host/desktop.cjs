@@ -180,6 +180,29 @@ async function connectDesktop({ start = ensureDesktop } = {}) {
       path.join(receipt.directory, 'output'),
       fs.constants.O_RDWR | fs.constants.O_NONBLOCK,
     );
+    function acceptFrame(frame) {
+      let message;
+      try {
+        message = JSON.parse(frame.toString());
+      } catch {
+        // A killed reader may already have consumed a stale frame prefix.
+        // Its suffix has no request ID; the next frame starts at NUL.
+        return;
+      }
+      if (message.method)
+        for (const listener of listeners) {
+          try {
+            listener(message);
+          } catch {}
+        }
+      const request = pending.get(message.id);
+      if (request) {
+        pending.delete(message.id);
+        clearTimeout(request.timer);
+        if (message.error) request.reject(new Error(message.error.message));
+        else request.resolve(message.result);
+      }
+    }
     const chunk = Buffer.alloc(65536);
     timer = setInterval(() => {
       try {
@@ -200,28 +223,7 @@ async function connectDesktop({ start = ensureDesktop } = {}) {
           while ((end = buffer.indexOf(0)) !== -1) {
             const frame = buffer.subarray(0, end);
             buffer = buffer.subarray(end + 1);
-            let message;
-            try {
-              message = JSON.parse(frame.toString());
-            } catch {
-              // A killed reader may already have consumed a stale frame prefix.
-              // Its suffix has no request ID; the next frame starts at NUL.
-              continue;
-            }
-            if (message.method)
-              for (const listener of listeners) {
-                try {
-                  listener(message);
-                } catch {}
-              }
-            const request = pending.get(message.id);
-            if (request) {
-              pending.delete(message.id);
-              clearTimeout(request.timer);
-              if (message.error)
-                request.reject(new Error(message.error.message));
-              else request.resolve(message.result);
-            }
+            acceptFrame(frame);
           }
         }
       } catch (error) {

@@ -42,6 +42,22 @@ function encodeScriptValue(value) {
   }
   return visit(value, 0);
 }
+async function checkedScriptRoot(observations, options) {
+  const checked = await observations.check(
+    options.observations || [],
+    options.rootId,
+  );
+  if (checked.error || checked.conflictCount) {
+    const error = new Error(checked.error || 'Observed Figma data changed');
+    error.precondition = {
+      code: checked.error ? 'PRECONDITION_UNAVAILABLE' : 'WRITE_CONFLICT',
+      conflicts: checked.conflicts || [],
+      conflictCount: checked.conflictCount || 0,
+    };
+    throw error;
+  }
+  return checked.root;
+}
 async function executeScript(source, args = {}, assets = {}, options = {}) {
   if (typeof source !== 'string' || !source.trim())
     throw new Error('script source is required');
@@ -252,20 +268,7 @@ async function executeScript(source, args = {}, assets = {}, options = {}) {
   let beforeScene;
   try {
     if (options.observations?.length || options.rootId) {
-      const checked = await observations.check(
-        options.observations || [],
-        options.rootId,
-      );
-      if (checked.error || checked.conflictCount) {
-        const error = new Error(checked.error || 'Observed Figma data changed');
-        error.precondition = {
-          code: checked.error ? 'PRECONDITION_UNAVAILABLE' : 'WRITE_CONFLICT',
-          conflicts: checked.conflicts || [],
-          conflictCount: checked.conflictCount || 0,
-        };
-        throw error;
-      }
-      bridge.root = checked.root;
+      bridge.root = await checkedScriptRoot(observations, options);
     }
     if (options.readOnly !== true) beforeScene = scene();
     executionStarted = true;

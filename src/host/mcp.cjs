@@ -215,6 +215,33 @@ async function callReceipt(name, input, { connection, request, signal }) {
   }
 }
 
+function validateTargetOptions(name, input) {
+  if (
+    (name !== 'figma_navigate' &&
+      [input.nodeId, input.nodeIds, input.pageId].filter(Boolean).length > 1) ||
+    (input.rootId && (input.pageId || input.nodeId)) ||
+    (input.nodeId && input.parentId) ||
+    (input.scope === 'file' && (input.rootId || input.pageId || input.nodeId))
+  )
+    throw new Error('choose one node/root targeting option');
+}
+function validateAssetInput(input) {
+  const count = Object.keys(input.assetPaths).length;
+  if (!count || count > 20) throw new Error('Choose 1–20 assetPaths');
+  const target =
+    input.nodeId || (input.figmaUrl && parseFigmaUrl(input.figmaUrl).nodeId);
+  if (input.fillIndex !== undefined && (!target || input.replaceAllFills))
+    throw new Error(
+      'fillIndex requires a target and cannot be combined with replaceAllFills',
+    );
+  if (
+    target &&
+    ['x', 'y', 'width', 'height'].some((key) => input[key] !== undefined)
+  )
+    throw new Error(
+      'An image-fill replacement preserves node position and size; omit x, y, width and height',
+    );
+}
 function validateToolInput(name, input) {
   if (
     name === 'figma_file' &&
@@ -224,41 +251,8 @@ function validateToolInput(name, input) {
     )
   )
     throw new Error('Desktop file status accepts only an optional fileKey');
-  if (
-    (name !== 'figma_navigate' &&
-      [input.nodeId, input.nodeIds, input.pageId].filter(Boolean).length > 1) ||
-    (input.rootId && (input.pageId || input.nodeId)) ||
-    (input.nodeId && input.parentId) ||
-    (input.scope === 'file' && (input.rootId || input.pageId || input.nodeId))
-  )
-    throw new Error('choose one node/root targeting option');
-  if (
-    name === 'figma_upload_assets' &&
-    (!Object.keys(input.assetPaths).length ||
-      Object.keys(input.assetPaths).length > 20)
-  )
-    throw new Error('Choose 1–20 assetPaths');
-  if (
-    name === 'figma_upload_assets' &&
-    input.fillIndex !== undefined &&
-    (!(
-      input.nodeId ||
-      (input.figmaUrl && parseFigmaUrl(input.figmaUrl).nodeId)
-    ) ||
-      input.replaceAllFills)
-  )
-    throw new Error(
-      'fillIndex requires a target and cannot be combined with replaceAllFills',
-    );
-  if (
-    name === 'figma_upload_assets' &&
-    (input.nodeId ||
-      (input.figmaUrl && parseFigmaUrl(input.figmaUrl).nodeId)) &&
-    ['x', 'y', 'width', 'height'].some((key) => input[key] !== undefined)
-  )
-    throw new Error(
-      'An image-fill replacement preserves node position and size; omit x, y, width and height',
-    );
+  validateTargetOptions(name, input);
+  if (name === 'figma_upload_assets') validateAssetInput(input);
   if (
     name === 'figma_status' &&
     input.scope === 'all' &&
@@ -268,6 +262,85 @@ function validateToolInput(name, input) {
   if (name === 'figma_community')
     require('./community.cjs').validateResearch(input);
 }
+function nativeTarget(name, input, state) {
+  const selected = resolveTarget(input, state.clients);
+  if (
+    state.clients.find((client) => client.id === selected.clientId)
+      ?.needsPluginUpdate
+  )
+    throw new Error(
+      'The native plugin is outdated; reconnect it before submitting an operation',
+    );
+  if (
+    selected.nodeId &&
+    (name === 'figma_navigate'
+      ? input.nodeIds
+      : input.pageId || input.rootId || input.nodeIds || input.scope === 'file')
+  )
+    throw new Error('choose one node/root targeting option');
+  return selected;
+}
+function nativeJob(name, input, selected, assets) {
+  const query = queries[name];
+  const source = query
+    ? query === 'snapshot'
+      ? 'return await bridge.observe(args);'
+      : `return await bridge.query('${query}', args);`
+    : input.source;
+  const {
+    clientId,
+    fileKey,
+    fileName,
+    figmaUrl,
+    operationId,
+    waitMs,
+    assetPaths,
+    outputDirectory,
+    ...queryArgs
+  } = input;
+  const readOnly =
+    (!!query && name !== 'figma_upload_assets') ||
+    (name === 'figma_run' && input.readOnly === true);
+  return {
+    readOnly,
+    body: {
+      kind: 'exec',
+      operationId: ['figma_run', 'figma_navigate'].includes(name)
+        ? input.operationId
+        : readOnly
+          ? crypto.randomUUID()
+          : input.operationId,
+      target: selected.target,
+      source,
+      assets,
+      args: query
+        ? {
+            ...queryArgs,
+            assetNames: Object.keys(assets),
+            nodeId: selected.nodeId,
+            rootId:
+              input.rootId ||
+              ([
+                'figma_find_nodes',
+                'figma_components',
+                'figma_design_system',
+              ].includes(name)
+                ? selected.nodeId
+                : undefined),
+          }
+        : input.args,
+      options: {
+        readOnly,
+        commitUndo: !readOnly && input.commitUndo !== false,
+        ...(name === 'figma_snapshot' ? { snapshot: true } : {}),
+        ...(input.ifUnchanged ? { ifUnchanged: input.ifUnchanged } : {}),
+        ...(name === 'figma_run' && input.rootId
+          ? { rootId: input.rootId }
+          : {}),
+      },
+    },
+  };
+}
 
 async function callNative(name, input, { connection, request, signal }) {
   let phase = 'preflight',
@@ -276,88 +349,17 @@ async function callNative(name, input, { connection, request, signal }) {
   try {
     signal?.throwIfAborted();
     // The health check already read this status; submit rechecks exact identity.
-    const state = connection.status;
-    const selected = resolveTarget(input, state.clients);
-    if (
-      state.clients.find((client) => client.id === selected.clientId)
-        ?.needsPluginUpdate
-    )
-      throw new Error(
-        'The native plugin is outdated; update and reopen it before submitting an operation',
-      );
-    if (
-      selected.nodeId &&
-      (name === 'figma_navigate'
-        ? input.nodeIds
-        : input.pageId ||
-          input.rootId ||
-          input.nodeIds ||
-          input.scope === 'file')
-    )
-      throw new Error('choose one node/root targeting option');
+    const selected = nativeTarget(name, input, connection.status);
     const assets = await uploadAssets(connection, input.assetPaths, signal);
-    const query = queries[name];
-    const source = query
-      ? query === 'snapshot'
-        ? 'return await bridge.observe(args);'
-        : `return await bridge.query('${query}', args);`
-      : input.source;
-    const {
-      clientId,
-      fileKey,
-      fileName,
-      figmaUrl,
-      operationId,
-      waitMs: requestedWait,
-      assetPaths,
-      outputDirectory,
-      ...queryArgs
-    } = input;
-    // Asset bytes are content-addressed for stable request digests across upload retries.
+    // Asset bytes are content-addressed; the same request keeps its digest
+    // across upload retries. The operation id is recorded before submission.
+    const { readOnly, body } = nativeJob(name, input, selected, assets);
     signal?.throwIfAborted();
-    const readOnly =
-      (!!query && name !== 'figma_upload_assets') ||
-      (name === 'figma_run' && input.readOnly === true);
     phase = 'submitted';
-    submittedId = ['figma_run', 'figma_navigate'].includes(name)
-      ? input.operationId
-      : readOnly
-        ? crypto.randomUUID()
-        : input.operationId;
+    submittedId = body.operationId;
     const { job } = await request('/v1/jobs', {
       method: 'POST',
-      body: JSON.stringify({
-        kind: 'exec',
-        operationId: submittedId,
-        target: selected.target,
-        source,
-        assets,
-        args: query
-          ? {
-              ...queryArgs,
-              assetNames: Object.keys(assets),
-              nodeId: selected.nodeId,
-              rootId:
-                input.rootId ||
-                ([
-                  'figma_find_nodes',
-                  'figma_components',
-                  'figma_design_system',
-                ].includes(name)
-                  ? selected.nodeId
-                  : undefined),
-            }
-          : input.args,
-        options: {
-          readOnly,
-          commitUndo: !readOnly && input.commitUndo !== false,
-          ...(name === 'figma_snapshot' ? { snapshot: true } : {}),
-          ...(input.ifUnchanged ? { ifUnchanged: input.ifUnchanged } : {}),
-          ...(name === 'figma_run' && input.rootId
-            ? { rootId: input.rootId }
-            : {}),
-        },
-      }),
+      body: JSON.stringify(body),
     }).catch((error) => {
       if (error.statusCode) error.phase = 'preflight';
       throw error;

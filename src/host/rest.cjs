@@ -106,6 +106,52 @@ async function verifiedCredentials({
     if (verifying.get(key) === task) verifying.delete(key);
   }
 }
+async function refreshCredential(auth, send) {
+  if (
+    !auth.refreshToken ||
+    !auth.clientId ||
+    !auth.clientSecret ||
+    !auth.credentialFile
+  )
+    throw failure(
+      'REST_AUTH_EXPIRED',
+      'OAuth refresh requires refreshToken, clientId and clientSecret in the private credential file',
+      { phase: 'preflight' },
+    );
+  const response = await send('https://api.figma.com/v1/oauth/refresh', {
+    method: 'POST',
+    headers: {
+      Authorization:
+        'Basic ' +
+        Buffer.from(auth.clientId + ':' + auth.clientSecret).toString('base64'),
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: new URLSearchParams({ refresh_token: auth.refreshToken }),
+    redirect: 'error',
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!response.ok)
+    throw failure(
+      'REST_AUTH_EXPIRED',
+      'Figma rejected OAuth refresh: HTTP ' + response.status,
+      { phase: 'preflight' },
+    );
+  const value = await response.json();
+  if (
+    typeof value.access_token !== 'string' ||
+    !Number.isFinite(value.expires_in)
+  )
+    throw failure('REST_AUTH_INVALID', 'Invalid OAuth refresh response', {
+      phase: 'preflight',
+    });
+  const previous = privateJson(auth.credentialFile);
+  writePrivateJson(auth.credentialFile, {
+    ...previous,
+    accessToken: value.access_token,
+    refreshToken: value.refresh_token || previous.refreshToken,
+    expiresAt: new Date(Date.now() + value.expires_in * 1000).toISOString(),
+  });
+}
 async function verifyCredentials(send, profile) {
   let auth = credentials(profile);
   if (!auth.token)
@@ -121,52 +167,7 @@ async function verifyCredentials(send, profile) {
     auth.expiresAt &&
     Date.now() + 30000 >= Date.parse(auth.expiresAt)
   ) {
-    if (
-      !auth.refreshToken ||
-      !auth.clientId ||
-      !auth.clientSecret ||
-      !auth.credentialFile
-    )
-      throw failure(
-        'REST_AUTH_EXPIRED',
-        'OAuth refresh requires refreshToken, clientId and clientSecret in the private credential file',
-        { phase: 'preflight' },
-      );
-    const response = await send('https://api.figma.com/v1/oauth/refresh', {
-      method: 'POST',
-      headers: {
-        Authorization:
-          'Basic ' +
-          Buffer.from(auth.clientId + ':' + auth.clientSecret).toString(
-            'base64',
-          ),
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: new URLSearchParams({ refresh_token: auth.refreshToken }),
-      redirect: 'error',
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!response.ok)
-      throw failure(
-        'REST_AUTH_EXPIRED',
-        'Figma rejected OAuth refresh: HTTP ' + response.status,
-        { phase: 'preflight' },
-      );
-    const value = await response.json();
-    if (
-      typeof value.access_token !== 'string' ||
-      !Number.isFinite(value.expires_in)
-    )
-      throw failure('REST_AUTH_INVALID', 'Invalid OAuth refresh response', {
-        phase: 'preflight',
-      });
-    const previous = privateJson(auth.credentialFile);
-    writePrivateJson(auth.credentialFile, {
-      ...previous,
-      accessToken: value.access_token,
-      refreshToken: value.refresh_token || previous.refreshToken,
-      expiresAt: new Date(Date.now() + value.expires_in * 1000).toISOString(),
-    });
+    await refreshCredential(auth, send);
     auth = credentials(profile);
   }
   const fingerprint = crypto
@@ -312,56 +313,45 @@ function resolve(ref) {
     .split('/')
     .reduce((v, k) => v?.[k.replaceAll('~1', '/').replaceAll('~0', '~')], spec);
 }
-function validateValue(value, schema, where, depth = 0) {
-  if (!schema || depth > 80) return;
-  if (schema.$ref)
-    return validateValue(value, resolve(schema.$ref), where, depth + 1);
-  if (schema.nullable && value === null) return;
-  if (schema.allOf)
-    for (const s of schema.allOf) validateValue(value, s, where, depth + 1);
+function validateComposition(value, schema, where, depth) {
+  for (const entry of schema.allOf || [])
+    validateValue(value, entry, where, depth + 1);
   const alternatives = schema.oneOf || schema.anyOf;
-  if (alternatives) {
-    let passed = 0;
-    for (const s of alternatives)
-      try {
-        validateValue(value, s, where, depth + 1);
-        passed++;
-      } catch (error) {
-        if (error.code !== 'REST_INPUT_INVALID') throw error;
-      }
-    if (!passed || (schema.oneOf && passed !== 1))
-      throw failure(
-        'REST_INPUT_INVALID',
-        where + ' does not match its documented schema',
-      );
+  if (!alternatives) return;
+  let passed = 0;
+  for (const entry of alternatives) {
+    try {
+      validateValue(value, entry, where, depth + 1);
+      passed++;
+    } catch (error) {
+      if (error.code !== 'REST_INPUT_INVALID') throw error;
+    }
   }
-  if (
-    schema.enum &&
-    !schema.enum.some((x) => JSON.stringify(x) === JSON.stringify(value))
-  )
+  if (!passed || (schema.oneOf && passed !== 1))
     throw failure(
       'REST_INPUT_INVALID',
-      where + ' must match the documented enum',
+      where + ' does not match its documented schema',
     );
-  const types = Array.isArray(schema.type)
-    ? schema.type
-    : schema.type
-      ? [schema.type]
-      : [];
-  const matches = (t) =>
-    t === 'null'
-      ? value === null
-      : t === 'array'
-        ? Array.isArray(value)
-        : t === 'object'
-          ? value !== null && typeof value === 'object' && !Array.isArray(value)
-          : t === 'integer'
-            ? Number.isSafeInteger(value)
-            : t === 'number'
-              ? typeof value === 'number' && Number.isFinite(value)
-              : typeof value === t;
-  if (types.length && !types.some(matches))
-    throw failure('REST_INPUT_INVALID', where + ' has an invalid type');
+}
+function matchesType(value, type) {
+  switch (type) {
+    case 'null':
+      return value === null;
+    case 'array':
+      return Array.isArray(value);
+    case 'object':
+      return (
+        value !== null && typeof value === 'object' && !Array.isArray(value)
+      );
+    case 'integer':
+      return Number.isSafeInteger(value);
+    case 'number':
+      return typeof value === 'number' && Number.isFinite(value);
+    default:
+      return typeof value === type;
+  }
+}
+function validateScalar(value, schema, where) {
   if (
     typeof value === 'number' &&
     ((schema.minimum !== undefined && value < schema.minimum) ||
@@ -381,39 +371,68 @@ function validateValue(value, schema, where, depth = 0) {
       'REST_INPUT_INVALID',
       where + ' does not match its documented constraints',
     );
-  if (Array.isArray(value)) {
+}
+function validateArray(value, schema, where, depth) {
+  if (
+    (schema.minItems !== undefined && value.length < schema.minItems) ||
+    (schema.maxItems !== undefined && value.length > schema.maxItems)
+  )
+    throw failure('REST_INPUT_INVALID', where + ' has an invalid item count');
+  for (let i = 0; i < value.length; i++)
+    validateValue(value[i], schema.items, where + '[' + i + ']', depth + 1);
+}
+function validateObject(value, schema, where, depth) {
+  for (const key of schema.required || [])
+    if (!Object.hasOwn(value, key))
+      throw failure('REST_INPUT_INVALID', where + '.' + key + ' is required');
+  for (const [key, entry] of Object.entries(value)) {
     if (
-      (schema.minItems !== undefined && value.length < schema.minItems) ||
-      (schema.maxItems !== undefined && value.length > schema.maxItems)
+      schema.additionalProperties === false &&
+      schema.properties &&
+      !Object.hasOwn(schema.properties, key)
     )
-      throw failure('REST_INPUT_INVALID', where + ' has an invalid item count');
-    for (let i = 0; i < value.length; i++)
-      validateValue(value[i], schema.items, where + '[' + i + ']', depth + 1);
-  } else if (value && typeof value === 'object') {
-    for (const key of schema.required || [])
-      if (!Object.hasOwn(value, key))
-        throw failure('REST_INPUT_INVALID', where + '.' + key + ' is required');
-    for (const [key, entry] of Object.entries(value)) {
-      if (
-        schema.additionalProperties === false &&
-        schema.properties &&
-        !Object.hasOwn(schema.properties, key)
-      )
-        throw failure(
-          'REST_INPUT_INVALID',
-          where + '.' + key + ' is not a documented property',
-        );
-      validateValue(
-        entry,
-        schema.properties?.[key] ||
-          (typeof schema.additionalProperties === 'object'
-            ? schema.additionalProperties
-            : null),
-        where + '.' + key,
-        depth + 1,
+      throw failure(
+        'REST_INPUT_INVALID',
+        where + '.' + key + ' is not a documented property',
       );
-    }
+    validateValue(
+      entry,
+      schema.properties?.[key] ||
+        (typeof schema.additionalProperties === 'object'
+          ? schema.additionalProperties
+          : null),
+      where + '.' + key,
+      depth + 1,
+    );
   }
+}
+function validateValue(value, schema, where, depth = 0) {
+  if (!schema || depth > 80) return;
+  if (schema.$ref)
+    return validateValue(value, resolve(schema.$ref), where, depth + 1);
+  if (schema.nullable && value === null) return;
+  validateComposition(value, schema, where, depth);
+  if (
+    schema.enum &&
+    !schema.enum.some(
+      (entry) => JSON.stringify(entry) === JSON.stringify(value),
+    )
+  )
+    throw failure(
+      'REST_INPUT_INVALID',
+      where + ' must match the documented enum',
+    );
+  const types = Array.isArray(schema.type)
+    ? schema.type
+    : schema.type
+      ? [schema.type]
+      : [];
+  if (types.length && !types.some((type) => matchesType(value, type)))
+    throw failure('REST_INPUT_INVALID', where + ' has an invalid type');
+  validateScalar(value, schema, where);
+  if (Array.isArray(value)) validateArray(value, schema, where, depth);
+  else if (value && typeof value === 'object')
+    validateObject(value, schema, where, depth);
 }
 function operation(endpoint) {
   const found = operations.find((op) => op.operationId === endpoint);
@@ -490,88 +509,87 @@ function list({ query, offset = 0, limit = 100 } = {}) {
     source: provenance,
   };
 }
-function prepare(input) {
-  const op = operation(input.endpoint),
-    pathValues = input.pathParams || {},
-    query = input.query || {};
+function pathParameter(value) {
+  if (
+    typeof value !== 'string' ||
+    value.includes('/') ||
+    value.includes('\\') ||
+    [...value].some((char) => char.charCodeAt(0) < 32) ||
+    value === '.' ||
+    value === '..'
+  )
+    throw failure('REST_INPUT_INVALID', 'Invalid path parameter');
+  return encodeURIComponent(value);
+}
+function requestUrl(op, pathValues, query) {
   const names = new Set(
     op.parameters.filter((p) => p.in === 'path').map((p) => p.name),
   );
-  if (Object.keys(pathValues).some((k) => !names.has(k)))
+  if (Object.keys(pathValues).some((key) => !names.has(key)))
     throw failure('REST_INPUT_INVALID', 'Unknown path parameter');
   let route = op.route;
-  for (const p of op.parameters) {
+  for (const parameter of op.parameters) {
     const values =
-      p.in === 'path' ? pathValues : p.in === 'query' ? query : null;
+      parameter.in === 'path'
+        ? pathValues
+        : parameter.in === 'query'
+          ? query
+          : null;
     if (!values) continue;
-    const value = values[p.name];
-    if (p.required && value === undefined)
-      throw failure('REST_INPUT_INVALID', p.in + '.' + p.name + ' is required');
-    if (value !== undefined)
-      validateValue(value, p.schema, p.in + '.' + p.name);
-    if (p.in === 'path' && value !== undefined) {
-      if (
-        typeof value !== 'string' ||
-        value.includes('/') ||
-        value.includes('\\') ||
-        [...value].some((char) => char.charCodeAt(0) < 32) ||
-        value === '.' ||
-        value === '..'
-      )
-        throw failure('REST_INPUT_INVALID', 'Invalid path parameter');
-      route = route.replace('{' + p.name + '}', encodeURIComponent(value));
-    }
+    const value = values[parameter.name],
+      where = parameter.in + '.' + parameter.name;
+    if (parameter.required && value === undefined)
+      throw failure('REST_INPUT_INVALID', where + ' is required');
+    if (value === undefined) continue;
+    validateValue(value, parameter.schema, where);
+    if (parameter.in === 'path')
+      route = route.replace('{' + parameter.name + '}', pathParameter(value));
   }
   const known = new Map(
     op.parameters.filter((p) => p.in === 'query').map((p) => [p.name, p]),
   );
-  if (Object.keys(query).some((k) => !known.has(k)))
+  if (Object.keys(query).some((key) => !known.has(key)))
     throw failure('REST_INPUT_INVALID', 'Unknown query parameter');
   const url = new URL(route, op.baseUrl || 'https://api.figma.com');
-  for (const [key, value] of Object.entries(query))
-    if (value !== undefined && value !== null) {
-      if (Array.isArray(value)) {
-        const p = known.get(key);
-        if (p.explode === false) url.searchParams.set(key, value.join(','));
-        else
-          for (const item of value) url.searchParams.append(key, String(item));
-      } else url.searchParams.set(key, String(value));
-    }
-  const requestBody = op.requestBody?.$ref
-    ? resolve(op.requestBody.$ref)
-    : op.requestBody;
-  if (requestBody?.required && input.body === undefined)
+  for (const [key, value] of Object.entries(query)) {
+    if (value === undefined || value === null) continue;
+    if (!Array.isArray(value)) url.searchParams.set(key, String(value));
+    else if (known.get(key).explode === false)
+      url.searchParams.set(key, value.join(','));
+    else for (const item of value) url.searchParams.append(key, String(item));
+  }
+  return url.href;
+}
+function validateBody(body, requestBody) {
+  const definition = requestBody?.$ref
+    ? resolve(requestBody.$ref)
+    : requestBody;
+  if (definition?.required && body === undefined)
     throw failure('REST_INPUT_INVALID', 'body is required');
-  if (input.body !== undefined) {
-    if (!requestBody)
-      throw failure('REST_INPUT_INVALID', 'This endpoint has no request body');
-    validateValue(
-      input.body,
-      requestBody.content?.['application/json']?.schema,
-      'body',
+  if (body === undefined) return;
+  if (!definition)
+    throw failure('REST_INPUT_INVALID', 'This endpoint has no request body');
+  validateValue(body, definition.content?.['application/json']?.schema, 'body');
+}
+function validateDiscovery(query) {
+  const start = Date.parse(query.start_date),
+    end =
+      query.end_date === undefined
+        ? start + 3600000
+        : Date.parse(query.end_date);
+  if (
+    !Number.isFinite(start) ||
+    !Number.isFinite(end) ||
+    start > Date.now() - 3600000 ||
+    end <= start ||
+    end - start > 86400000
+  )
+    throw failure(
+      'REST_INPUT_INVALID',
+      'Discovery requires an ISO date at least one hour in the past and a range up to 24 hours',
     );
-  }
-  if (op.operationId === 'getDiscovery') {
-    const start = Date.parse(query.start_date),
-      end =
-        query.end_date === undefined
-          ? start + 3600000
-          : Date.parse(query.end_date);
-    if (
-      !Number.isFinite(start) ||
-      !Number.isFinite(end) ||
-      start > Date.now() - 3600000 ||
-      end <= start ||
-      end - start > 86400000
-    )
-      throw failure(
-        'REST_INPUT_INVALID',
-        'Discovery requires an ISO date at least one hour in the past and a range up to 24 hours',
-      );
-  }
-  const readOnly =
-    op.readOnly ??
-    (op.method === 'GET' || op.operationId === 'getDeveloperLogs');
+}
+function affectedFiles(input, pathValues, query) {
   const fileKeys = [
     ...new Set(
       [
@@ -591,6 +609,19 @@ function prepare(input) {
     )
   )
     throw failure('REST_INPUT_INVALID', 'Invalid affected file key');
+  return fileKeys;
+}
+function prepare(input) {
+  const op = operation(input.endpoint),
+    pathValues = input.pathParams || {},
+    query = input.query || {};
+  const url = requestUrl(op, pathValues, query);
+  validateBody(input.body, op.requestBody);
+  if (op.operationId === 'getDiscovery') validateDiscovery(query);
+  const readOnly =
+    op.readOnly ??
+    (op.method === 'GET' || op.operationId === 'getDeveloperLogs');
+  const fileKeys = affectedFiles(input, pathValues, query);
   if (!readOnly && !/^[A-Za-z0-9_-]{8,100}$/.test(input.operationId || ''))
     throw failure(
       'REST_INPUT_INVALID',
@@ -602,7 +633,7 @@ function prepare(input) {
       input.credentialProfile || op.credentialProfile || 'default',
     tenantId: pathValues.tenant_id,
     method: op.method,
-    url: url.href,
+    url,
     body: input.body,
     readOnly,
     scope: op.security,
@@ -668,10 +699,7 @@ function assertAuthentication(request, auth) {
       { phase: 'preflight' },
     );
 }
-async function execute(
-  request,
-  { fetch: send = fetch, auth = credentials() } = {},
-) {
+function requestHeaders(request, auth) {
   if (!auth.token)
     throw failure(
       'REST_AUTH_REQUIRED',
@@ -691,7 +719,7 @@ async function execute(
       'REST credential expired; refresh OAuth or replace the credential',
       { phase: 'preflight' },
     );
-  const headers = {
+  return {
     Accept: 'application/json',
     ...(['oauth', 'org_oauth', 'scim'].includes(auth.type)
       ? { Authorization: 'Bearer ' + auth.token }
@@ -700,9 +728,11 @@ async function execute(
       ? { 'Content-Type': 'application/json' }
       : {}),
   };
-  let response;
+}
+async function sendRequest(request, auth, send) {
+  const headers = requestHeaders(request, auth);
   try {
-    response = await send(request.url, {
+    return await send(request.url, {
       method: request.method,
       headers,
       body:
@@ -718,6 +748,8 @@ async function execute(
       { outcomeUnknown: !request.readOnly },
     );
   }
+}
+async function readResponse(response, request) {
   const chunks = [];
   let size = 0;
   try {
@@ -738,14 +770,16 @@ async function execute(
     );
   }
   const text = Buffer.concat(chunks).toString();
-  let body,
-    invalidJson = false;
   try {
-    body = text ? JSON.parse(text) : null;
+    return { body: text ? JSON.parse(text) : null, invalidJson: false };
   } catch {
-    invalidJson = response.ok;
-    body = { text: text.slice(0, 8192), truncated: text.length > 8192 };
+    return {
+      body: { text: text.slice(0, 8192), truncated: text.length > 8192 },
+      invalidJson: response.ok,
+    };
   }
+}
+function responseResult(request, response, { body, invalidJson }) {
   const resourceErrors =
     ['postDevResources', 'putDevResources'].includes(request.endpoint) &&
     Array.isArray(body?.errors)
@@ -784,6 +818,17 @@ async function execute(
         (resourceErrors.length > 0 && appliedResources.length > 0)),
     pagination: body?.pagination || null,
   };
+}
+async function execute(
+  request,
+  { fetch: send = fetch, auth = credentials() } = {},
+) {
+  const response = await sendRequest(request, auth, send);
+  return responseResult(
+    request,
+    response,
+    await readResponse(response, request),
+  );
 }
 module.exports = {
   list,

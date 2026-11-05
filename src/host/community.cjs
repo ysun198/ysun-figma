@@ -4,36 +4,56 @@ const {
 } = require('./desktop.cjs');
 const { createCommunityReader } = require('./community-reader.js');
 const HOSTS = new Set(['www.figma.com', 'figma.com']);
+function validateSearch(input) {
+  if (
+    typeof input.query !== 'string' ||
+    !input.query.trim() ||
+    input.query.length > 200 ||
+    input.communityUrl ||
+    input.communityFileId ||
+    input.previewIndex !== undefined
+  )
+    throw new Error(
+      'Community search requires only a query and paging/sort options',
+    );
+  for (const [key, value, maximum] of [
+    ['page', input.page ?? 1, 100],
+    ['pageSize', input.pageSize ?? 12, 50],
+  ])
+    if (!Number.isInteger(value) || value < 1 || value > maximum)
+      throw new Error('Invalid community ' + key);
+  if (
+    input.sortBy &&
+    !['relevancy', 'popular', 'all_time', 'published_at'].includes(input.sortBy)
+  )
+    throw new Error('Invalid community sortBy');
+  return { ...input, query: input.query.trim() };
+}
+function communityFileId(input) {
+  let id = input.communityFileId;
+  if (input.communityUrl) {
+    const url = new URL(input.communityUrl);
+    if (
+      url.protocol !== 'https:' ||
+      !HOSTS.has(url.hostname) ||
+      url.port ||
+      url.username ||
+      url.password ||
+      !/^\/community\/file\/\d{6,30}(?:\/[^/]*)?\/?$/.test(url.pathname)
+    )
+      throw new Error(
+        'Use an exact https://www.figma.com/community/file/ID URL',
+      );
+    id = url.pathname.split('/')[3];
+  }
+  if (typeof id !== 'string' || !/^\d{6,30}$/.test(id))
+    throw new Error('Invalid Community file ID; this is not a cloud fileKey');
+  return id;
+}
 function validateResearch(input) {
   if (!input || !['search', 'detail', 'preview'].includes(input.action))
     throw new Error('Choose community search, detail or preview');
-  if (input.action === 'search') {
-    if (
-      typeof input.query !== 'string' ||
-      !input.query.trim() ||
-      input.query.length > 200 ||
-      input.communityUrl ||
-      input.communityFileId ||
-      input.previewIndex !== undefined
-    )
-      throw new Error(
-        'Community search requires only a query and paging/sort options',
-      );
-    for (const [key, value, maximum] of [
-      ['page', input.page ?? 1, 100],
-      ['pageSize', input.pageSize ?? 12, 50],
-    ])
-      if (!Number.isInteger(value) || value < 1 || value > maximum)
-        throw new Error('Invalid community ' + key);
-    if (
-      input.sortBy &&
-      !['relevancy', 'popular', 'all_time', 'published_at'].includes(
-        input.sortBy,
-      )
-    )
-      throw new Error('Invalid community sortBy');
-    return { ...input, query: input.query.trim() };
-  }
+  if (input.action === 'search') return validateSearch(input);
   if (
     input.query !== undefined ||
     input.page !== undefined ||
@@ -43,24 +63,7 @@ function validateResearch(input) {
     (input.action === 'detail' && input.previewIndex !== undefined)
   )
     throw new Error('Choose one exact Community file URL or Community file ID');
-  let id = input.communityFileId;
-  if (input.communityUrl) {
-    const u = new URL(input.communityUrl);
-    if (
-      u.protocol !== 'https:' ||
-      !HOSTS.has(u.hostname) ||
-      u.port ||
-      u.username ||
-      u.password ||
-      !/^\/community\/file\/\d{6,30}(?:\/[^/]*)?\/?$/.test(u.pathname)
-    )
-      throw new Error(
-        'Use an exact https://www.figma.com/community/file/ID URL',
-      );
-    id = u.pathname.split('/')[3];
-  }
-  if (typeof id !== 'string' || !/^\d{6,30}$/.test(id))
-    throw new Error('Invalid Community file ID; this is not a cloud fileKey');
+  const id = communityFileId(input);
   if (
     input.previewIndex !== undefined &&
     (!Number.isInteger(input.previewIndex) ||

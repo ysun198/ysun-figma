@@ -31,15 +31,122 @@ function serve(input = process.stdin, output = process.stdout) {
     }
     return runtime;
   }
-  async function handle(message) {
+  function notification(message) {
     if (
-      !message ||
-      Array.isArray(message) ||
-      message.jsonrpc !== '2.0' ||
-      typeof message.method !== 'string' ||
-      (Object.hasOwn(message, 'id') &&
-        !['number', 'string'].includes(typeof message.id))
+      message.method === 'notifications/initialized' &&
+      phase === 'initializing'
     ) {
+      phase = 'ready';
+      const packageRoot = path.resolve(__dirname, '../..');
+      const report = (error) =>
+        process.stderr.write('Update discovery: ' + error.message + '\n');
+      try {
+        // Managed updates atomically replace packageRoot; watch its stable parent.
+        updateWatch = fs.watch(
+          path.dirname(packageRoot),
+          { persistent: false },
+          (_event, name) => {
+            if (!name || name.toString() === path.basename(packageRoot))
+              try {
+                currentRuntime();
+              } catch (error) {
+                report(error);
+              }
+          },
+        );
+        updateWatch.on('error', report);
+      } catch (error) {
+        report(error);
+      }
+    }
+    if (message.method === 'notifications/cancelled')
+      pending.get(message.params && message.params.requestId)?.abort();
+  }
+  function initialize(api, params) {
+    if (phase !== 'new')
+      throw Object.assign(new Error('already initialized'), {
+        code: -32600,
+      });
+    if (
+      typeof params?.protocolVersion !== 'string' ||
+      typeof params.clientInfo?.name !== 'string' ||
+      typeof params.clientInfo?.version !== 'string' ||
+      !isRecord(params.capabilities)
+    )
+      throw Object.assign(new Error('invalid initialize parameters'), {
+        code: -32602,
+      });
+    phase = 'initializing';
+    return {
+      protocolVersion: '2025-11-25',
+      capabilities: { tools: { listChanged: true } },
+      serverInfo: {
+        name: 'figma-plugin-local',
+        title: 'ysun figma',
+        version: api.version,
+      },
+      instructions:
+        'Use ysun-figma skills in this conversation. For first installation or missing local tools, use the packaged ysun-figma-setup skill; figma_api(workflow="setup") works offline once Node is available. Ordinary connection uses figma_file open/connect with an exact fileKey, without a manual pairing code. Confirm exact file/client with figma_status; reuse one native client per file across tasks, never bind by title. Choose native capabilities from desired behavior without asking the user to name features. figma_api workflows give guides: edit for coherent or conditional edits, motion for timed animation, prototype for interactions, handoff for code. Prefer one live read/compute/write. When a decision spans tool calls, figma_snapshot its dependent fields and pass job.id as ifUnchanged; pin rootId rather than currentPage. On conflict re-read and merge; the body did not run. Keep one operationId per edit. After interruption inspect original figma_job and reconcile uncertain writes; repair delivery from original output. Use native MCP for edits/navigation/exports, GUI only for uncovered lifecycle or actual interactions. Sparse/truncated reads are incomplete; cloud-only services remain separate.',
+    };
+  }
+  async function toolResult(api, params, signal) {
+    if (
+      typeof params?.name !== 'string' ||
+      (params.arguments !== undefined && !isRecord(params.arguments))
+    )
+      throw Object.assign(new Error('invalid tools/call parameters'), {
+        code: -32602,
+      });
+    try {
+      const value = await api.callTool(
+        params?.name,
+        params?.arguments || {},
+        signal,
+      );
+      return {
+        content: [
+          { type: 'text', text: JSON.stringify(value) },
+          ...(value[api.images] || []),
+        ],
+        structuredContent: value,
+        isError: false,
+      };
+    } catch (error) {
+      if (error.code === -32602) throw error;
+      const value = api.toolError(error, params?.arguments);
+      return {
+        content: [{ type: 'text', text: JSON.stringify(value) }],
+        structuredContent: value,
+        isError: true,
+      };
+    }
+  }
+  function request(api, message, signal) {
+    if (message.params !== undefined && !isRecord(message.params))
+      throw Object.assign(new Error('invalid request parameters'), {
+        code: -32602,
+      });
+    if (message.method === 'initialize') return initialize(api, message.params);
+    if (message.method === 'ping') return {};
+    if (phase !== 'ready')
+      throw Object.assign(new Error('initialize first'), { code: -32000 });
+    if (message.method === 'tools/list') return { tools: api.tools };
+    if (message.method === 'tools/call')
+      return toolResult(api, message.params, signal);
+    throw Object.assign(new Error('Method not found'), { code: -32601 });
+  }
+  function validRequest(message) {
+    return (
+      message &&
+      !Array.isArray(message) &&
+      message.jsonrpc === '2.0' &&
+      typeof message.method === 'string' &&
+      (!Object.hasOwn(message, 'id') ||
+        ['number', 'string'].includes(typeof message.id))
+    );
+  }
+  async function handle(message) {
+    if (!validRequest(message)) {
       send({
         jsonrpc: '2.0',
         id: null,
@@ -48,112 +155,17 @@ function serve(input = process.stdin, output = process.stdout) {
       return;
     }
     if (!Object.hasOwn(message, 'id')) {
-      if (
-        message.method === 'notifications/initialized' &&
-        phase === 'initializing'
-      ) {
-        phase = 'ready';
-        const packageRoot = path.resolve(__dirname, '../..');
-        const report = (error) =>
-          process.stderr.write('Update discovery: ' + error.message + '\n');
-        try {
-          // Managed updates atomically replace packageRoot; watch its stable parent.
-          updateWatch = fs.watch(
-            path.dirname(packageRoot),
-            { persistent: false },
-            (_event, name) => {
-              if (!name || name.toString() === path.basename(packageRoot))
-                try {
-                  currentRuntime();
-                } catch (error) {
-                  report(error);
-                }
-            },
-          );
-          updateWatch.on('error', report);
-        } catch (error) {
-          report(error);
-        }
-      }
-      if (message.method === 'notifications/cancelled')
-        pending.get(message.params && message.params.requestId)?.abort();
+      notification(message);
       return;
     }
     const controller = new AbortController();
     pending.set(message.id, controller);
     try {
-      const api = currentRuntime();
-      let result;
-      if (message.params !== undefined && !isRecord(message.params))
-        throw Object.assign(new Error('invalid request parameters'), {
-          code: -32602,
-        });
-      if (message.method === 'initialize') {
-        if (phase !== 'new')
-          throw Object.assign(new Error('already initialized'), {
-            code: -32600,
-          });
-        if (
-          typeof message.params?.protocolVersion !== 'string' ||
-          typeof message.params.clientInfo?.name !== 'string' ||
-          typeof message.params.clientInfo?.version !== 'string' ||
-          !isRecord(message.params.capabilities)
-        )
-          throw Object.assign(new Error('invalid initialize parameters'), {
-            code: -32602,
-          });
-        phase = 'initializing';
-        result = {
-          protocolVersion: '2025-11-25',
-          capabilities: { tools: { listChanged: true } },
-          serverInfo: {
-            name: 'figma-plugin-local',
-            title: 'ysun figma',
-            version: api.version,
-          },
-          instructions:
-            'Use ysun-figma skills in this conversation. For first installation or missing local tools, use the packaged ysun-figma-setup skill; figma_api(workflow="setup") works offline once Node is available. Ordinary connection uses figma_file open/connect with an exact fileKey, without a manual pairing code. Confirm exact file/client with figma_status; reuse one native client per file across tasks, never bind by title. Choose native capabilities from desired behavior without asking the user to name features. figma_api workflows give guides: edit for coherent or conditional edits, motion for timed animation, prototype for interactions, handoff for code. Prefer one live read/compute/write. When a decision spans tool calls, figma_snapshot its dependent fields and pass job.id as ifUnchanged; pin rootId rather than currentPage. On conflict re-read and merge; the body did not run. Keep one operationId per edit. After interruption inspect original figma_job and reconcile uncertain writes; repair delivery from original output. Use native MCP for edits/navigation/exports, GUI only for uncovered lifecycle or actual interactions. Sparse/truncated reads are incomplete; cloud-only services remain separate.',
-        };
-      } else if (message.method === 'ping') result = {};
-      else {
-        if (phase !== 'ready')
-          throw Object.assign(new Error('initialize first'), { code: -32000 });
-        if (message.method === 'tools/list') result = { tools: api.tools };
-        else if (message.method === 'tools/call') {
-          if (
-            typeof message.params?.name !== 'string' ||
-            (message.params.arguments !== undefined &&
-              !isRecord(message.params.arguments))
-          )
-            throw Object.assign(new Error('invalid tools/call parameters'), {
-              code: -32602,
-            });
-          try {
-            const value = await api.callTool(
-              message.params?.name,
-              message.params?.arguments || {},
-              controller.signal,
-            );
-            result = {
-              content: [
-                { type: 'text', text: JSON.stringify(value) },
-                ...(value[api.images] || []),
-              ],
-              structuredContent: value,
-              isError: false,
-            };
-          } catch (error) {
-            if (error.code === -32602) throw error;
-            const value = api.toolError(error, message.params?.arguments);
-            result = {
-              content: [{ type: 'text', text: JSON.stringify(value) }],
-              structuredContent: value,
-              isError: true,
-            };
-          }
-        } else
-          throw Object.assign(new Error('Method not found'), { code: -32601 });
-      }
+      const result = await request(
+        currentRuntime(),
+        message,
+        controller.signal,
+      );
       if (!controller.signal.aborted)
         send({ jsonrpc: '2.0', id: message.id, result });
     } catch (error) {

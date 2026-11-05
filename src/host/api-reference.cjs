@@ -117,12 +117,38 @@ function findFeatures(query, limit) {
     .slice(0, limit)
     .map(({ score, ...entry }) => entry);
 }
-function readAPIReference({ query, topic, workflow, limit = 5 } = {}) {
-  if (topic && (query || workflow))
-    throw new Error('Choose an API query/workflow or a topic');
+function declarationExcerpt(match, lines, length, includeSymbol) {
+  let start = match.i;
+  // Include the immediately preceding documentation without returning a type-sized manual.
+  if (lines[start - 1]?.trim() === '*/') {
+    let j = start - 2;
+    while (j >= 0 && start - j < 60 && lines[j].trim() !== '/**') j--;
+    if (lines[j]?.trim() === '/**') start = j;
+  } else start = Math.max(0, start - 2);
+  let end = Math.min(lines.length, match.i + 13);
+  const originalStart = start,
+    originalEnd = end;
+  let text = lines.slice(start, end).join('\n');
+  // Keep the matched declaration visible even when its preceding JSDoc is long.
+  while (text.length > length && start < match.i)
+    text = lines.slice(++start, end).join('\n');
+  while (text.length > length && end > match.i + 1)
+    text = lines.slice(start, --end).join('\n');
+  return {
+    ...(includeSymbol ? { symbol: match.symbol } : {}),
+    owner: match.owner,
+    line: match.i + 1,
+    startLine: start + 1,
+    endLine: end,
+    text: text.slice(0, length),
+    truncated:
+      start !== originalStart || end !== originalEnd || text.length > length,
+  };
+}
+function workflowReference(workflow) {
   if (workflow && !Object.hasOwn(workflows, workflow))
     throw new Error('Unknown workflow');
-  const selected = workflow
+  return workflow
     ? {
         workflow: {
           id: workflow,
@@ -131,6 +157,11 @@ function readAPIReference({ query, topic, workflow, limit = 5 } = {}) {
         },
       }
     : {};
+}
+function readAPIReference({ query, topic, workflow, limit = 5 } = {}) {
+  if (topic && (query || workflow))
+    throw new Error('Choose an API query/workflow or a topic');
+  const selected = workflowReference(workflow);
   const availableTopics = Object.entries(topics)
     .filter(([, value]) => !workflow || value[2].includes(workflow))
     .map(([id, [file, description]]) => ({
@@ -190,35 +221,15 @@ function readAPIReference({ query, topic, workflow, limit = 5 } = {}) {
   let remaining = 12000;
   for (const match of matches) {
     if (used.has(match.i)) continue;
-    let start = match.i;
-    // Include the immediately preceding documentation without returning a type-sized manual.
-    if (lines[start - 1]?.trim() === '*/') {
-      let j = start - 2;
-      while (j >= 0 && start - j < 60 && lines[j].trim() !== '/**') j--;
-      if (lines[j]?.trim() === '/**') start = j;
-    } else start = Math.max(0, start - 2);
-    let end = Math.min(lines.length, match.i + 13);
-    const originalStart = start,
-      originalEnd = end;
-    const length = Math.min(5000, remaining);
-    let text = lines.slice(start, end).join('\n');
-    // Keep the matched declaration visible even when its preceding JSDoc is long.
-    while (text.length > length && start < match.i)
-      text = lines.slice(++start, end).join('\n');
-    while (text.length > length && end > match.i + 1)
-      text = lines.slice(start, --end).join('\n');
-    for (let j = start; j < end; j++) used.add(j);
-    excerpts.push({
-      ...(resolvedSymbols.length ? { symbol: match.symbol } : {}),
-      owner: match.owner,
-      line: match.i + 1,
-      startLine: start + 1,
-      endLine: end,
-      text: text.slice(0, length),
-      truncated:
-        start !== originalStart || end !== originalEnd || text.length > length,
-    });
-    remaining -= Math.min(text.length, length);
+    const excerpt = declarationExcerpt(
+      match,
+      lines,
+      Math.min(5000, remaining),
+      resolvedSymbols.length > 0,
+    );
+    excerpts.push(excerpt);
+    for (let j = excerpt.startLine - 1; j < excerpt.endLine; j++) used.add(j);
+    remaining -= excerpt.text.length;
     if (excerpts.length === limit || remaining < 1000) break;
   }
   return {

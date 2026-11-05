@@ -47,6 +47,63 @@ function startNativePlugin() {
     void watchPage(figma.currentPage).catch(() => {});
   });
   void watchPage(figma.currentPage).catch(() => {});
+  async function runNativeJob(message) {
+    if (executing || awaitingReceipt) {
+      figma.ui.postMessage({
+        type: 'ERROR',
+        requestId: message.requestId,
+        message: 'An operation or receipt is still pending.',
+      });
+      return;
+    }
+    executing = true;
+    awaitingReceipt = true;
+    try {
+      if (message.kind !== 'exec')
+        throw new Error('Only native scripts are supported.');
+      figma.ui.postMessage({
+        type: 'APPLYING',
+        requestId: message.requestId,
+      });
+      const result = await executeScript(
+        message.source,
+        message.args,
+        message.assets,
+        { ...message.options, documentId, documentRevision },
+      );
+      // Reads can load additional pages. Observe those too, so manual edits
+      // invalidate their previews without changing the user's active page.
+      for (const page of figma.root.children) {
+        try {
+          // Reading children creates native wrappers for every root. Probe only
+          // unobserved pages; an accessible empty array is also a loaded page.
+          if (!watchedPages.has(page.id) && page.children)
+            await watchPage(page);
+        } catch (_) {
+          /* Unloaded pages remain lazy. */
+        }
+      }
+      if (message.options?.readOnly !== true) documentRevision++;
+      figma.ui.postMessage({
+        type: 'APPLIED',
+        requestId: message.requestId,
+        result,
+        context: context(),
+      });
+    } catch (error) {
+      if (error.outcomeUnknown === true) documentRevision++;
+      figma.ui.postMessage({
+        type: 'ERROR',
+        requestId: message.requestId,
+        outcomeUnknown: error.outcomeUnknown === true,
+        message: formatBridgeError(error),
+        result: error.receipt,
+        context: context(),
+      });
+    } finally {
+      executing = false;
+    }
+  }
   figma.ui.onmessage = async (message) => {
     if (!message || typeof message !== 'object') return;
     if (message.type === 'UI_READY') {
@@ -91,63 +148,7 @@ function startNativePlugin() {
       await storageTask;
       savedConnection = null;
     }
-    if (message.type === 'RUN_JOB') {
-      if (executing || awaitingReceipt) {
-        figma.ui.postMessage({
-          type: 'ERROR',
-          requestId: message.requestId,
-          message: 'An operation or receipt is still pending.',
-        });
-        return;
-      }
-      executing = true;
-      awaitingReceipt = true;
-      try {
-        if (message.kind !== 'exec')
-          throw new Error('Only native scripts are supported.');
-        figma.ui.postMessage({
-          type: 'APPLYING',
-          requestId: message.requestId,
-        });
-        const result = await executeScript(
-          message.source,
-          message.args,
-          message.assets,
-          { ...message.options, documentId, documentRevision },
-        );
-        // Reads can load additional pages. Observe those too, so manual edits
-        // invalidate their previews without changing the user's active page.
-        for (const page of figma.root.children) {
-          try {
-            // Reading children creates native wrappers for every root. Probe only
-            // unobserved pages; an accessible empty array is also a loaded page.
-            if (!watchedPages.has(page.id) && page.children)
-              await watchPage(page);
-          } catch (_) {
-            /* Unloaded pages remain lazy. */
-          }
-        }
-        if (message.options?.readOnly !== true) documentRevision++;
-        figma.ui.postMessage({
-          type: 'APPLIED',
-          requestId: message.requestId,
-          result,
-          context: context(),
-        });
-      } catch (error) {
-        if (error.outcomeUnknown === true) documentRevision++;
-        figma.ui.postMessage({
-          type: 'ERROR',
-          requestId: message.requestId,
-          outcomeUnknown: error.outcomeUnknown === true,
-          message: formatBridgeError(error),
-          result: error.receipt,
-          context: context(),
-        });
-      } finally {
-        executing = false;
-      }
-    }
+    if (message.type === 'RUN_JOB') await runNativeJob(message);
     if (message.type === 'RECEIPT_DELIVERED') awaitingReceipt = false;
     if (message.type === 'CLOSE') {
       await storageTask;

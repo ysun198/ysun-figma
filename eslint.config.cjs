@@ -20,13 +20,9 @@ module.exports = [
     },
   },
   {
-    files: [
-      'src/host/bridge-server.cjs',
-      'src/host/file-tools.cjs',
-      'src/figma/queries/**/*.js',
-    ],
-    // Keep HTTP controllers, file lifecycle actions and native query helpers
-    // reviewable on their own instead of accumulating branching dispatchers.
+    files: ['src/**/*.js', 'src/**/*.cjs'],
+    // Keep production functions reviewable; a growing dispatcher should expose
+    // its actual responsibilities before it becomes another branching monolith.
     rules: { complexity: ['error', 25], 'max-depth': ['error', 4] },
   },
   {

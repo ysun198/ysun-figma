@@ -173,11 +173,7 @@ function reusableReceipt(current, requested) {
     throw new Error('This version has different contents. Use a new version');
   return active;
 }
-async function prepareManagedCompanion(source, options = {}) {
-  recoverInstallation(bridgeStateDirectory());
-  const requested = receiptFor(source),
-    current = currentPath();
-  privateDirectory(directory());
+async function acquireInstallation(current, requested) {
   // A symlink publishes the owner atomically, including when its process dies
   // before reaching an exit handler. Codex may launch several transports at once.
   const lock = path.join(directory(), '.install-lock'),
@@ -224,10 +220,10 @@ async function prepareManagedCompanion(source, options = {}) {
       // Atomic activation changes the directory inode. Retry if an installer
       // crossed this read; never combine files from different activations.
       if (lockOwner() || generation() !== before) continue;
-      if (ready) return ready;
+      if (ready) return { ready };
       try {
         fs.symlinkSync(owner, lock);
-        break;
+        return { lock, owner };
       } catch (error) {
         if (error.code !== 'EEXIST') throw error;
         continue;
@@ -248,6 +244,15 @@ async function prepareManagedCompanion(source, options = {}) {
       throw new Error('Another installation is still running');
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
+}
+async function prepareManagedCompanion(source, options = {}) {
+  recoverInstallation(bridgeStateDirectory());
+  const requested = receiptFor(source),
+    current = currentPath();
+  privateDirectory(directory());
+  const admission = await acquireInstallation(current, requested);
+  if (admission.ready) return admission.ready;
+  const { lock, owner } = admission;
   try {
     const active = reusableReceipt(current, requested);
     if (active) {
@@ -279,14 +284,7 @@ async function prepareManagedCompanion(source, options = {}) {
         if (fs.existsSync(current)) fs.renameSync(current, backup);
         fs.renameSync(next, current);
         installPlugin(current);
-        if (options.healthCheck) {
-          try {
-            await checkActivatedRuntime(requested.version);
-          } catch (error) {
-            error.code = 'UPDATE_UNHEALTHY';
-            throw error;
-          }
-        }
+        if (options.healthCheck) await verifyActivation(requested.version);
         fs.unlinkSync(journal);
       } catch (error) {
         try {
@@ -306,6 +304,14 @@ async function prepareManagedCompanion(source, options = {}) {
     }
   } finally {
     if (fs.readlinkSync(lock) === owner) fs.unlinkSync(lock);
+  }
+}
+async function verifyActivation(version) {
+  try {
+    await checkActivatedRuntime(version);
+  } catch (error) {
+    error.code = 'UPDATE_UNHEALTHY';
+    throw error;
   }
 }
 async function checkActivatedRuntime(expectedVersion) {

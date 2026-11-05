@@ -68,7 +68,7 @@ function sameFile(left, right) {
     !!(left.documentId && left.documentId === right.documentId)
   );
 }
-function resolveTarget(input, clients) {
+function targetLink(input) {
   if (input.clientId && input.fileName)
     throw new Error('choose clientId or fileName');
   const link = input.figmaUrl ? parseFigmaUrl(input.figmaUrl) : null;
@@ -82,10 +82,9 @@ function resolveTarget(input, clients) {
     (link?.nodeId && input.nodeIds?.length)
   )
     throw new Error('choose the URL node or explicit node IDs');
-  let matches = matchingClients(
-    { ...input, fileKey: input.fileKey || link?.fileKey },
-    clients,
-  );
+  return link;
+}
+function preferOrdinaryProfile(input, matches) {
   if (!input.profile && !input.clientId && matches.length > 1) {
     const profiles = require('./native-profiles.cjs').profiles;
     const owned = new Set(
@@ -102,6 +101,15 @@ function resolveTarget(input, clients) {
     )
       matches = primary;
   }
+  return matches;
+}
+function resolveTarget(input, clients) {
+  const link = targetLink(input);
+  let matches = matchingClients(
+    { ...input, fileKey: input.fileKey || link?.fileKey },
+    clients,
+  );
+  matches = preferOrdinaryProfile(input, matches);
   if (!matches.length)
     throw new Error(
       'No matching connected Figma file. Open the file and run the plugin.',
