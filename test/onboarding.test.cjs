@@ -19,6 +19,7 @@ test('a fresh standalone package loads its setup guide and prepares native conne
     fs.readFileSync(path.join(bundle, '.agents/plugins/marketplace.json')),
   );
   assert.equal(path.resolve(bundle, catalog.plugins[0].source.path), extracted);
+  assert.equal(catalog.plugins[0].policy.authentication, 'ON_USE');
   assert.equal(fs.existsSync(state), false);
   assert.equal(fs.existsSync(path.join(extracted, 'node_modules')), false);
   const child = spawn(

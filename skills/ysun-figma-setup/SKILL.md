@@ -5,7 +5,7 @@ description: Set up or repair ysun figma on macOS after installation, including 
 
 # Set up ysun figma
 
-Reach one useful native read in the user's intended Figma file. Handle routine installation and connection work yourself, keeping the current conversation. Ordinary canvas work needs no REST token, credential JSON, new OAuth app or server. Enable the host's official Figma connection only when the requested task needs cloud authoring.
+Reach one useful native read in the user's intended Figma file. Handle routine installation and connection work yourself, keeping the current conversation. Ordinary canvas work needs no REST token, credential JSON, new OAuth app or server. Enable the host's official Figma connection only when the requested task needs cloud authoring. The package uses the host's ON_USE policy so cloud authorization is deferred beyond installation.
 
 ## Before MCP is available
 

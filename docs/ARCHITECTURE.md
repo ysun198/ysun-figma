@@ -66,7 +66,7 @@ Codex 只接收普通 MCP 工具调用，不注册 MCP App 资源或全局页面
 
 ## 多入口与云端接口
 
-默认接入使用本地画布工具；云端创作复用宿主的 Figma 官方连接。`mcp.json` 的 `figma` 服务与 `apps.json` 的已注册 Figma 连接使用同一别名，由宿主负责实际授权，不另建公共授权服务器、OAuth 中转或账号数据库。本机伴随服务继续只监听回环地址。直接 REST、SCIM/Discovery 和 Embed API 按实际需求独立配置，不要求每位安装用户先配置全部接口。
+默认接入使用本地画布工具；云端创作复用宿主的 Figma 官方连接。`mcp.json` 的 `figma` 服务与 `apps.json` 的已注册 Figma 连接使用同一别名，授权策略统一为 `ON_USE`，由宿主在使用时处理实际授权，不另建公共授权服务器、OAuth 中转或账号数据库。本机伴随服务继续只监听回环地址。直接 REST、SCIM/Discovery 和 Embed API 按实际需求独立配置，不要求每位安装用户先配置全部接口。
 
 默认入口与 Dev、Widget 入口共用原生内核、伴随服务和 SQLite 账本。Dev 单独启用 inspect/codegen/textreview，避免 Figma 禁止的 Dev/FigJam manifest 组合；codegen 在真实 generate 回调中返回 CSS/JSON。Widget 使用实际 widget.register、Hooks 和持久状态；本地可信 render 模块保存在私有目录，更新后保留，不从云端 synced state 执行代码。Widget 身份使用公开 widgetId；准备 Widget 不改动其他入口的文件，避免触发无关插件热重载。
 

@@ -52,13 +52,10 @@ test(
     fs.writeFileSync(
       catalog,
       JSON.stringify({
+        ...require('../src/host/codex-refresh.cjs').marketplaceDefinition(
+          './current',
+        ),
         name: 'figma-parser-test',
-        plugins: [
-          {
-            name: 'figma-plugin-local',
-            source: { source: 'local', path: './current' },
-          },
-        ],
       }),
     );
     const child = spawn(codex, ['app-server', '--stdio'], {
@@ -99,6 +96,7 @@ test(
       pluginName: 'figma-plugin-local',
     });
     assert(!response.error, JSON.stringify(response.error));
+    assert.equal(response.result.plugin.summary.authPolicy, 'ON_USE');
     assert.deepEqual(response.result.plugin.mcpServers, [
       'figma',
       'figma-local',

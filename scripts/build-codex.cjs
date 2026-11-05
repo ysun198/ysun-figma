@@ -2,18 +2,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { auditRelease, inspectPublicFiles } = require('./audit-release.cjs');
-const marketplace = {
-  name: 'figma-local',
-  interface: { displayName: 'ysun figma' },
-  plugins: [
-    {
-      name: 'figma-plugin-local',
-      source: { source: 'local', path: './plugin' },
-      policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
-      category: 'Productivity',
-    },
-  ],
-};
+const marketplace =
+  require('../src/host/codex-refresh.cjs').marketplaceDefinition('./plugin');
 function filesUnder(directory, prefix = '') {
   return fs.readdirSync(path.join(directory, prefix)).flatMap((name) => {
     const relative = prefix ? prefix + '/' + name : name;
