@@ -15,7 +15,9 @@ function parseFigmaUrl(value) {
     throw new Error('figmaUrl must be a Figma HTTPS link');
   const parts = url.pathname.split('/').filter(Boolean);
   if (
-    !['design', 'file', 'board', 'slides', 'proto'].includes(parts[0]) ||
+    !['design', 'file', 'board', 'slides', 'buzz', 'proto'].includes(
+      parts[0],
+    ) ||
     !/^[A-Za-z0-9]{6,100}$/.test(parts[1] || '')
   )
     throw new Error('unsupported Figma file link');
@@ -38,6 +40,9 @@ function matchingClients(input, clients) {
     (client) =>
       client.connected &&
       (!input.clientId || client.id === input.clientId) &&
+      (!input.profile ||
+        client.pluginId ===
+          require('./native-profiles.cjs').profiles[input.profile]?.pluginId) &&
       (!input.fileName || client.fileName === input.fileName) &&
       (!input.fileKey || client.fileKey === input.fileKey),
   );
@@ -49,9 +54,14 @@ function targetIdentity(client) {
     documentId: client.documentId || null,
     instanceId: client.instanceId || null,
     editorType: client.editorType || null,
+    ...(client.fileKeys?.length ? { fileKeys: client.fileKeys } : {}),
   };
 }
 function sameFile(left, right) {
+  const leftKeys = [left.fileKey, ...(left.fileKeys || [])].filter(Boolean);
+  const rightKeys = [right.fileKey, ...(right.fileKeys || [])].filter(Boolean);
+  if (leftKeys.length && rightKeys.length)
+    return leftKeys.some((key) => rightKeys.includes(key));
   if (left.fileKey && right.fileKey) return left.fileKey === right.fileKey;
   return (
     left.clientId === right.clientId ||
@@ -72,10 +82,26 @@ function resolveTarget(input, clients) {
     (link?.nodeId && input.nodeIds?.length)
   )
     throw new Error('choose the URL node or explicit node IDs');
-  const matches = matchingClients(
+  let matches = matchingClients(
     { ...input, fileKey: input.fileKey || link?.fileKey },
     clients,
   );
+  if (!input.profile && !input.clientId && matches.length > 1) {
+    const profiles = require('./native-profiles.cjs').profiles;
+    const owned = new Set(
+      Object.values(profiles).map((profile) => profile.pluginId),
+    );
+    const primary = matches.filter(
+      (client) => client.pluginId === profiles.default.pluginId,
+    );
+    if (
+      primary.length === 1 &&
+      new Set(matches.map((client) => client.fileKey)).size === 1 &&
+      matches[0].fileKey &&
+      matches.every((client) => owned.has(client.pluginId))
+    )
+      matches = primary;
+  }
   if (!matches.length)
     throw new Error(
       'No matching connected Figma file. Open the file and run the plugin.',

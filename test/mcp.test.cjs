@@ -1,5 +1,4 @@
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 const test = require('node:test');
@@ -25,6 +24,102 @@ function isolatedRuntime(t, overrides) {
   });
   return runtime;
 }
+test('opening a file preserves a failed native connection receipt instead of reporting success', async (t) => {
+  let attempts = 0;
+  const api = isolatedRuntime(t, {
+    companion: { ensureCompanion: async () => ({}) },
+    'bridge-client': {
+      bridgeRequest: async (_connection, route) => {
+        if (route === '/v1/catalog') return { files: [] };
+        if (route === '/v1/status?summary=1') return { clients: [] };
+        if (route === '/v1/desktop') return { state: 'opened' };
+        if (route === '/v1/desktop/connect') {
+          attempts++;
+          return {
+            job: {
+              id: 'widget-connect-once',
+              status: 'outcome_unknown',
+              error: 'widget connection was interrupted',
+            },
+          };
+        }
+        if (route === '/v1/files') return { files: [] };
+        assert.fail('unexpected route: ' + route);
+      },
+    },
+  });
+  await assert.rejects(
+    api.callTool('figma_file', {
+      action: 'open',
+      fileKey: 'CloudFile12',
+      profile: 'widget',
+      operationId: 'widget-connect-once',
+    }),
+    (error) =>
+      error.phase === 'execution' &&
+      error.receipt.job.status === 'outcome_unknown' &&
+      api.toolError(error).safeToRetryWithoutCanvasRead === false,
+  );
+  assert.equal(attempts, 1);
+});
+test('file-directory failure after Widget connection preserves the successful original receipt', async (t) => {
+  const api = isolatedRuntime(t, {
+    companion: { ensureCompanion: async () => ({}) },
+    'bridge-client': {
+      bridgeRequest: async (_connection, route) => {
+        if (route === '/v1/desktop/connect')
+          return {
+            job: { id: 'widget-connect-done', status: 'succeeded', result: {} },
+          };
+        if (route === '/v1/files')
+          throw new Error('file directory unavailable');
+        assert.fail('unexpected route: ' + route);
+      },
+    },
+  });
+  await assert.rejects(
+    api.callTool('figma_file', {
+      action: 'connect',
+      fileKey: 'CloudFile12',
+      profile: 'widget',
+      operationId: 'widget-connect-done',
+    }),
+    (error) =>
+      error.phase === 'delivery' &&
+      error.receipt.job.status === 'succeeded' &&
+      api.toolError(error).safeToRetryWithoutCanvasRead === false,
+  );
+});
+test('unavailable cloud receipts cannot be reported as unsubmitted or safe to replay', async (t) => {
+  const api = isolatedRuntime(t, {
+    companion: { ensureCompanion: async () => ({}) },
+    'bridge-client': {
+      bridgeRequest: async () => {
+        throw Object.assign(new Error('cloud result could not be recorded'), {
+          statusCode: 500,
+          body: { code: 'CLOUD_RECEIPT_UNAVAILABLE' },
+        });
+      },
+    },
+  });
+  await assert.rejects(
+    api.callTool('figma_rest', {
+      action: 'request',
+      endpoint: 'postComment',
+      pathParams: { file_key: 'CloudFile12' },
+      body: { message: 'Fixture' },
+      operationId: 'cloud-receipt-once',
+    }),
+    (error) => {
+      const hint = api.toolError(error);
+      assert.equal(hint.operationId, 'cloud-receipt-once');
+      assert.equal(hint.phase, 'receipt');
+      assert.equal(hint.safeToRetryWithoutCanvasRead, false);
+      assert.match(hint.next, /Inspect this original operation/);
+      return true;
+    },
+  );
+});
 test('stdio pressure preserves fragmented UTF-8 messages, IDs and error boundaries', async (t) => {
   const { PassThrough } = require('node:stream');
   const api = isolatedRuntime(t, {}),
@@ -223,51 +318,6 @@ test('submission rejects an instance changed while assets were being uploaded', 
     'no operation may bind to the replacement instance',
   );
 });
-test('resource I/O failures remain valid JSON-RPC errors rather than leaking filesystem error codes', async (t) => {
-  const { PassThrough } = require('node:stream');
-  const api = isolatedRuntime(t, {
-    app: {
-      readResource() {
-        throw Object.assign(new Error('resource unavailable'), {
-          code: 'ENOENT',
-        });
-      },
-    },
-  });
-  const input = new PassThrough(),
-    output = new PassThrough();
-  const messages = [];
-  output.on('data', (value) => messages.push(JSON.parse(value.toString())));
-  api.serve(input, output);
-  input.write(
-    JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'initialize',
-      params: {
-        protocolVersion: '2025-11-25',
-        capabilities: {},
-        clientInfo: { name: 'test', version: '1' },
-      },
-    }) + '\n',
-  );
-  input.write(
-    JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) +
-      '\n',
-  );
-  input.write(
-    JSON.stringify({
-      jsonrpc: '2.0',
-      id: 2,
-      method: 'resources/read',
-      params: { uri: 'ui://figma-plugin/files' },
-    }) + '\n',
-  );
-  input.end();
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(messages[1].error.code, -32603);
-  assert.equal(messages[1].error.message, 'resource unavailable');
-});
 test('native success retains its receipt and generated ID when preview delivery fails', async (t) => {
   const job = {
     id: 'generated-preview-id',
@@ -393,6 +443,7 @@ test('file opening leaves duplicate native sessions for the agent to disambiguat
     id,
     connected: true,
     fileKey: 'CloudFile1',
+    pluginId: '1675211139174009382',
   }));
   const api = isolatedRuntime(t, {
     companion: { ensureCompanion: async () => ({}) },
@@ -410,7 +461,7 @@ test('file opening leaves duplicate native sessions for the agent to disambiguat
   const value = api.toolError(error);
   assert.equal(value.code, 'FILE_AMBIGUOUS');
   assert.equal(value.clients.length, 2);
-  const { fileList } = require('../src/host/app.cjs');
+  const { fileList } = require('../src/host/file-list.cjs');
   const data = fileList(
     { clients },
     {
@@ -470,19 +521,7 @@ test('stdio MCP negotiates, lists tools and reports invalid calls without stdout
   assert.equal(result.result.protocolVersion, '2025-11-25');
   assert.deepEqual(result.result.capabilities, {
     tools: { listChanged: true },
-    resources: { listChanged: true },
   });
-  const serverIcons = result.result.serverInfo.icons;
-  assert.equal(serverIcons.length, 1);
-  const decoded = Buffer.from(
-    serverIcons[0].src.split(',')[1],
-    'base64',
-  ).toString();
-  assert.equal(
-    decoded,
-    fs.readFileSync(path.join(__dirname, '../assets/icon.svg'), 'utf8'),
-  );
-  assert.match(decoded, /@media\(prefers-color-scheme:dark\)/);
   child.stdin.write('{"jsonrpc":"2.0","method":"notifications/initialized"}\n');
   result = await call({ id: 3, method: 'tools/list' });
   assert.deepEqual(
@@ -492,11 +531,6 @@ test('stdio MCP negotiates, lists tools and reports invalid calls without stdout
       .sort(),
     'the built transport must expose the current source tool catalogue',
   );
-  for (const name of ['figma_canvas', 'figma_watch']) {
-    const tool = result.result.tools.find((tool) => tool.name === name);
-    assert.deepEqual(tool._meta.ui.visibility, ['app']);
-    assert.equal(tool.annotations.readOnlyHint, true);
-  }
   assert(
     result.result.tools.every((tool) => tool.outputSchema?.type === 'object'),
   );
@@ -538,45 +572,16 @@ test('stdio MCP negotiates, lists tools and reports invalid calls without stdout
   assert.deepEqual(result.result, {});
   assert.equal(stderr, '');
   const entry = await call({ id: 7, method: 'tools/list' });
-  const browser = entry.result.tools.find((tool) => tool.name === 'figma_open');
-  assert.deepEqual(browser._meta['openai/ui'].entrypoints, [
-    { type: 'global' },
-  ]);
-  assert.deepEqual(browser.icons, serverIcons);
-  result = await call({ id: 8, method: 'resources/list' });
-  assert.equal(result.result.resources[0].uri, browser._meta.ui.resourceUri);
-  assert.equal(browser._meta.ui.resourceUri, 'ui://figma-plugin/files');
-  result = await call({
-    id: 9,
-    method: 'resources/read',
-    params: { uri: browser._meta.ui.resourceUri },
-  });
-  assert.equal(result.result.contents[0].mimeType, 'text/html;profile=mcp-app');
-  assert.match(result.result.contents[0].text, /aria-label="文件预览"/);
-  assert.match(
-    result.result.contents[0].text,
-    /<input\b[^>]*\bid="search"[^>]*\btype="search"/,
+  assert(
+    entry.result.tools.every(
+      (tool) => !tool._meta?.ui && !tool._meta?.['openai/ui'],
+    ),
   );
-  assert.doesNotMatch(result.result.contents[0].text, /<textarea\b/);
-  assert.deepEqual(result.result.contents[0]._meta.ui.csp, {
-    connectDomains: [],
-    resourceDomains: ['https://s3-alpha.figma.com'],
-  });
-  result = await call({
-    id: 10,
-    method: 'resources/read',
-    params: { uri: 'file:///private-state' },
-  });
-  assert.equal(result.error.code, -32002);
-  result = await call({
-    id: 11,
-    method: 'resources/read',
-    params: { uri: 'ui://figma-plugin/unknown' },
-  });
-  assert.equal(result.error.code, -32002);
+  result = await call({ id: 8, method: 'resources/list' });
+  assert.equal(result.error.code, -32601);
 });
 test('app file data excludes grants, disconnected files, operation receipts and filesystem state', () => {
-  const { fileList } = require('../src/host/app.cjs');
+  const { fileList } = require('../src/host/file-list.cjs');
   const state = {
     version: 'test',
     adminToken: 'private',
@@ -686,6 +691,36 @@ test('tool errors give the view a recovery message while retaining original oper
   const unknown = toolError(failure, { operationId: 'original-write' });
   assert.equal(unknown.safeToRetryWithoutCanvasRead, false);
   assert.equal(unknown.receipt.job.id, 'original-write');
+});
+test('file status reads Desktop readiness without launching, syncing, pairing or creating native jobs', async (t) => {
+  const routes = [];
+  const api = isolatedRuntime(t, {
+    companion: { ensureCompanion: async () => ({}) },
+    'bridge-client': {
+      bridgeRequest: async (_connection, route, options) => {
+        routes.push({ route, options });
+        if (route === '/v1/files')
+          return { files: [], catalog: { status: 'empty' } };
+        if (route === '/v1/desktop/files?fileKey=CloudFile12')
+          return {
+            files: [{ fileKey: 'CloudFile12', editorLoaded: false }],
+            complete: true,
+            issues: [],
+          };
+        assert.fail('Unexpected lifecycle action: ' + route);
+      },
+    },
+  });
+  const result = await api.callTool('figma_file', {
+    action: 'status',
+    fileKey: 'CloudFile12',
+  });
+  assert.equal(result.desktop.files[0].editorLoaded, false);
+  assert.deepEqual(
+    routes.map((r) => r.route),
+    ['/v1/files', '/v1/desktop/files?fileKey=CloudFile12'],
+  );
+  assert(routes.every((r) => !r.options?.method || r.options.method === 'GET'));
 });
 test('desktop launcher uses exact native URLs, also opens home, and surfaces failures', async () => {
   const { launchDesktop } = require('../src/host/desktop.cjs');

@@ -80,6 +80,37 @@ async function setup(t, options = {}) {
     call(`/v1/jobs/next?clientId=${client.id}&wait=1`, null, client.token);
   return { bridge, url, call, pair, submit, claim };
 }
+test('a same-version stale native build is detected before any job is accepted', async (t) => {
+  const expected = 'b'.repeat(64);
+  const api = await setup(t, { nativeBuild: expected });
+  const paired = await api.pair('build-mismatch-client', 'QA', {
+    nativeBuild: 'a'.repeat(64),
+  });
+  let state = (await api.call('/v1/status?summary=1')).body;
+  assert.equal(state.clients[0].needsPluginUpdate, true);
+  assert.equal((await api.submit(paired.id)).status, 409);
+  assert.equal((await api.call('/v1/status?summary=1')).body.jobCount, 0);
+  await api.call(
+    '/v1/clients/heartbeat',
+    { nativeBuild: expected },
+    paired.token,
+  );
+  state = (await api.call('/v1/status?summary=1')).body;
+  assert.equal(state.clients[0].needsPluginUpdate, false);
+  const accepted = await api.submit(paired.id);
+  assert.equal(accepted.status, 202);
+  await api.call(
+    '/v1/clients/heartbeat',
+    { nativeBuild: 'a'.repeat(64) },
+    paired.token,
+  );
+  assert.equal(
+    (await api.submit(paired.id, { operationId: accepted.body.job.id })).status,
+    200,
+  );
+  assert.equal((await api.claim(paired)).status, 204);
+  assert.equal((await api.submit(paired.id)).status, 409);
+});
 test('verified cloud identities separate copied documents and preserve unknown-write barriers across connections', async (t) => {
   const api = await setup(t);
   const original = await api.pair('scope-original-client', 'Original', {
@@ -329,105 +360,28 @@ test('a plugin can disconnect itself without gaining access to another paired fi
     200,
   );
 });
-test('workbench waits follow native revisions and write receipts through the same ledger, without native polling jobs', async (t) => {
+test('file list returns catalog and connection state through the admin API', async (t) => {
   const api = await setup(t);
   const client = await api.pair();
-  await api.call(
-    '/v1/clients/heartbeat',
-    { fileKey: 'CloudFile1', pageId: '0:1', documentRevision: 1 },
-    client.token,
-  );
-  await api.call('/v1/catalog', {
-    status: 'ready',
-    accountId: '123',
-    files: [{ fileKey: 'CloudFile1', name: 'Native file' }],
-  });
-  const initial = (await api.call('/v1/app')).body;
-  assert.match(initial.cursor, /^sha256:[a-f0-9]{64}$/);
-  assert.equal(initial.files[0].sessions[0].writing, false);
-  let settled = false;
-  const wait = api
-    .call('/v1/app?waitMs=1000&cursor=' + initial.cursor)
-    .then((response) => {
-      settled = true;
-      return response;
-    });
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  await api.call('/v1/clients/heartbeat', {}, client.token);
-  assert.equal((await api.call('/v1/app')).body.cursor, initial.cursor);
-  assert.equal(
-    settled,
-    false,
-    'ordinary presence heartbeats do not fabricate a document change',
-  );
-  await api.call(
-    '/v1/clients/heartbeat',
-    { documentRevision: 2 },
-    client.token,
-  );
-  const changed = (await wait).body;
-  assert.notEqual(changed.cursor, initial.cursor);
-  assert.equal(changed.files[0].sessions[0].documentRevision, 2);
-  assert.equal((await api.call('/v1/status')).body.jobs.length, 0);
-  const queued = await api.submit(client.id, {
-    operationId: 'workbench-write',
-  });
-  assert.equal(queued.status, 202);
-  const writing = (await api.call('/v1/app')).body;
-  assert.equal(writing.files[0].sessions[0].writing, true);
-  await api.claim(client);
-  assert.equal((await api.call('/v1/app')).body.cursor, writing.cursor);
-  const receiptWait = api.call('/v1/app?waitMs=1000&cursor=' + writing.cursor);
-  const receipt = await api.call(
-    '/v1/jobs/workbench-write/result',
-    {
-      clientId: client.id,
-      ok: true,
-      result: { value: { nodeId: '1:1' } },
-      context: { documentRevision: 3 },
-    },
-    client.token,
-  );
-  assert.equal(receipt.status, 200);
-  const finished = (await receiptWait).body;
-  assert.equal(finished.files[0].sessions[0].writing, false);
-  assert.equal(finished.files[0].sessions[0].documentRevision, 3);
-  assert.notEqual(finished.cursor, writing.cursor);
-  assert.equal((await api.call('/v1/status')).body.jobs.length, 1);
-  assert.equal(JSON.stringify(finished).includes(client.token), false);
-});
-test('workbench cursors wake on catalog account changes and disconnects, time out unchanged and remain admin-only', async (t) => {
-  const api = await setup(t);
-  const client = await api.pair();
-  const initial = (await api.call('/v1/app')).body;
-  const pending = api.call('/v1/app?cursor=' + initial.cursor + '&waitMs=1000');
   await api.call('/v1/catalog', {
     status: 'ready',
     accountId: '321',
     files: [{ fileKey: 'CloudFile1', name: 'Account file' }],
   });
-  const updated = (await pending).body;
-  assert.equal(updated.catalog.accountId, '321');
-  assert.equal(updated.files[0].fileKey, 'CloudFile1');
-  assert.deepEqual(
-    (await api.call('/v1/app?cursor=' + updated.cursor + '&waitMs=10')).body,
-    updated,
-  );
-  assert.equal((await api.call('/v1/app', null, client.token)).status, 403);
-  assert.equal((await api.call('/v1/app?cursor=invalid&waitMs=1')).status, 400);
-  assert.equal((await api.call('/v1/app?waitMs=25001')).status, 400);
+  const listed = await api.call('/v1/files');
+  assert.equal(listed.body.catalog.accountId, '321');
+  assert.equal(listed.body.files[0].fileKey, 'CloudFile1');
+  assert.equal(listed.body.files[0].connected, false);
+  assert.equal((await api.call('/v1/files', null, client.token)).status, 403);
   await api.call(
     '/v1/clients/heartbeat',
     { fileKey: 'CloudFile1' },
     client.token,
   );
-  const connected = (await api.call('/v1/app')).body;
+  const connected = (await api.call('/v1/files')).body;
   assert.equal(connected.files[0].connected, true);
-  const disconnected = api.call(
-    '/v1/app?cursor=' + connected.cursor + '&waitMs=1000',
-  );
   await api.call('/v1/clients/' + client.id, null, client.token, {}, 'DELETE');
-  assert.equal((await disconnected).body.files[0].connected, false);
+  assert.equal((await api.call('/v1/files')).body.files[0].connected, false);
 });
 test('same-name sessions are rejected and explicit client binding cannot be claimed by another file', async (t) => {
   const api = await setup(t);
@@ -1086,4 +1040,16 @@ test('Community research requires the local MCP credential and creates no native
   assert.equal(response.status, 200);
   assert.deepEqual(seen, [input]);
   assert.equal((await api.call('/v1/status?summary=1')).body.jobCount, 0);
+});
+
+test('Buzz native metadata survives pairing and is retained in exact operation targets', async (t) => {
+  const api = await setup(t);
+  const client = await api.pair('buzz-native-client', 'Buzz QA', {
+    editorType: 'buzz',
+  });
+  const result = await api.submit(client.id, {
+    operationId: 'buzz-exact-target',
+  });
+  assert.equal(result.status, 202);
+  assert.equal(result.body.job.target.editorType, 'buzz');
 });

@@ -2,13 +2,15 @@
 
 日常安装只需把[仓库链接](https://github.com/ysun198/ysun-figma)发给 Codex。本页记录首次接入和发布时需要的细节，供 Codex 与维护者查阅。
 
+默认接入只配置本地画布能力。需要云端创作时，复用宿主已有的 Figma 官方连接；尚未连接时由宿主引导完成官方登录授权。无需为此创建 OAuth 应用、准备令牌 JSON 或部署公共服务器。直接 REST、SCIM/Discovery 和 Embed API 是按需启用的独立接口，不作为安装验收的前置条件。
+
 ## 首次接入
 
 Codex 先检查 Node.js 24 或更高版本，优先复用已有运行时。插件会检查指定的 `FIGMA_PLUGIN_NODE`、PATH、Homebrew 常见路径和 `~/.canvas-bridge/node/bin/node`；不假定每台安装 Codex 的电脑都已安装 Node.js。
 
 缺少运行时时，由 Codex 从 [Node.js 官方发布目录](https://nodejs.org/download/release/latest-v24.x/)下载适合当前 Mac 架构的 Node.js 24 LTS，核对官方 `SHASUMS256.txt` 和二进制代码签名，将 `bin/node` 和许可证放入 `~/.canvas-bridge/node/`。无需管理员权限，也无需为运行插件安装 npm 开发依赖。使用其他稳定路径时，在 MCP 环境中指定 `FIGMA_PLUGIN_NODE`。
 
-未安装 Figma 桌面端时，插件返回 `desktop_required`，工作台提示让 Codex 安装。Codex 从 [Figma 官网](https://www.figma.com/downloads/)下载当前稳定版，核验代码签名后安装；可放在 `~/Applications/Figma.app`，无需管理员密码。首次使用 Figma 的用户仍需完成 Figma 自己的登录，已登录的账号直接复用。安装和登录完成后继续连接，无需重装插件。
+未安装 Figma 桌面端时，插件返回 `desktop_required`。Codex 从 [Figma 官网](https://www.figma.com/downloads/)下载当前稳定版，核验代码签名后安装；可放在 `~/Applications/Figma.app`，无需管理员密码。首次使用 Figma 的用户仍需完成 Figma 自己的登录，已登录的账号直接复用。安装和登录完成后继续连接，无需重装插件。
 
 然后下载最新已发布版本的 ZIP，核对随包提供的 `SHA256SUMS`，解压到稳定目录，再注册插件：
 
@@ -19,7 +21,9 @@ codex plugin add figma-plugin-local@figma-local --json
 
 保留其他插件和配置。如果 `figma-local` 已注册到不同目录，只移除它自己的旧注册，再添加新路径：`codex plugin marketplace remove figma-local --json`。
 
-调用 `figma_connect`，在 Figma 桌面端导入返回的 `manifestPath`，运行 **ysun figma → Connect**，填入一次性连接码。已导入的 manifest 和有效授权应直接复用。为该开发插件开启 **Plugins → Development → Hot reload plugin**，让原生代码更新后能重新连接。
+调用 `figma_file(action="open", fileKey=...)` 直接连接目标文件。已有开发插件注册时，启动、恢复有效授权和一次性配对由本机接口完成，无需菜单或手工输入连接码。仅 manifest 确实缺失时，从 `figma_connect` 返回的稳定路径导入一次，再继续相同直接连接流程。为该开发插件开启 **Plugins → Development → Hot reload plugin**，让原生代码更新后能重新连接。
+
+Dev 与 Widget 各有独立注册的 manifest；需要这些能力时由 Codex 完成一次性导入，后续使用 `profile="dev"` 或 `profile="widget"` 直接连接。Widget 重新连接须复用实际节点 ID 和稳定操作 ID，避免生成重复节点。
 
 用 `figma_status` 核对目标文件和客户端。云文件绑定必须来自实际打开的文件 URL，不能按标题匹配。安装、运行插件和连接由 Codex 借助原生应用自动化完成；自动化不可用时，说明还缺少哪一步。
 
@@ -37,7 +41,7 @@ codex plugin add figma-plugin-local@figma-local --json
 
 更新先验证发布者签名和文件完整性，等操作空闲后再切换。启动检查失败会回滚，授权、操作记录和导出文件保留。调度、校验与恢复的实现见[架构](ARCHITECTURE.md#自动更新)。
 
-工作台和技能随安装包更新。原生代码通过 [Figma 热重载](https://developers.figma.com/docs/plugins/plugin-quickstart-guide/#hot-reloading)更新；未变化的原生内核无需重启。重启后由 Codex 核验实际文件 URL，恢复确切的云文件绑定。manifest 的权限或编辑器类型变化时，重新导入同一个稳定 manifest。
+工具元数据和技能随安装包更新。原生代码通过 [Figma 热重载](https://developers.figma.com/docs/plugins/plugin-quickstart-guide/#hot-reloading)更新；未变化的原生内核无需重启。重启后由 Codex 核验实际文件 URL，恢复确切的云文件绑定。manifest 的权限或编辑器类型变化时，重新导入同一个稳定 manifest。
 
 源码提交不会推送更新。维护者运行 **Publish release** 工作流后，完整的签名发行版才会公开。宿主安装命令见 [OpenAI 本地插件指南](https://developers.openai.com/plugins/build/plugins#install-a-local-plugin-manually)。
 

@@ -71,6 +71,8 @@ async function connected(t) {
     },
   });
   const native = vm.createContext({
+    setTimeout,
+    clearTimeout,
     figma: f.figma,
     __html__: '',
     Uint8Array,

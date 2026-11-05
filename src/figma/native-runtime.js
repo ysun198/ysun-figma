@@ -13,7 +13,7 @@ function startNativePlugin() {
     pageName: figma.currentPage.name,
     pageId: figma.currentPage.id,
     selection: figma.currentPage.selection.slice(0, 100).map((node) => node.id),
-    pluginId: figma.pluginId || '',
+    pluginId: figma.pluginId || figma.widgetId || '',
     documentId,
     runtimeVersion: BRIDGE_RUNTIME_VERSION,
     nativeBuild:
@@ -163,4 +163,12 @@ function startNativePlugin() {
     if (message.type === 'HIDE_UI') figma.ui.hide();
   };
 }
-if (typeof figma !== 'undefined') startNativePlugin();
+if (typeof figma !== 'undefined') {
+  if (figma.mode === 'codegen') startCodegenPlugin();
+  else if (
+    figma.editorType !== 'dev' &&
+    typeof figma.widget?.register === 'function'
+  )
+    startWidgetPlugin();
+  else startNativePlugin();
+}

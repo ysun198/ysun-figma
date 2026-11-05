@@ -41,8 +41,16 @@ const source = JSON.parse(
   fs.readFileSync(path.join(directory, 'API-SOURCE.json'), 'utf8'),
 );
 const reference = { ...source, path: path.join(directory, source.file) };
-let declarations;
-function matchingLines(term) {
+const widgetSource = JSON.parse(
+  fs.readFileSync(path.join(directory, 'WIDGET-API-SOURCE.json'), 'utf8'),
+);
+const widgetReference = {
+  ...widgetSource,
+  path: path.join(directory, widgetSource.file),
+};
+const declarationCache = new Map();
+function matchingLines(term, reference) {
+  let declarations = declarationCache.get(reference.path);
   if (!declarations) {
     const lines = fs.readFileSync(reference.path, 'utf8').split('\n');
     let owner = 'Global API';
@@ -60,6 +68,7 @@ function matchingLines(term) {
         };
       }),
     };
+    declarationCache.set(reference.path, declarations);
   }
   const needle = term.toLowerCase();
   const exact = new RegExp(
@@ -161,12 +170,20 @@ function readAPIReference({ query, topic, workflow, limit = 5 } = {}) {
   const term = query.trim().split('.').at(-1);
   if (!term) throw new Error('Choose a non-empty API symbol or phrase');
   const features = findFeatures(query, limit);
-  let matches = matchingLines(term);
+  const selectedReference =
+    /^figma\.widget(?:\.|$)/i.test(query) ||
+    features.some((feature) => feature.topic === 'widget')
+      ? widgetReference
+      : reference;
+  let matches = matchingLines(term, selectedReference);
   const resolvedSymbols = matches.length
     ? []
     : [...new Set(features.flatMap((feature) => feature.symbols))].slice(0, 12);
-  if (resolvedSymbols.length) matches = resolvedSymbols.flatMap(matchingLines);
-  const lines = declarations.lines;
+  if (resolvedSymbols.length)
+    matches = resolvedSymbols.flatMap((symbol) =>
+      matchingLines(symbol, selectedReference),
+    );
+  const lines = declarationCache.get(selectedReference.path).lines;
   matches.sort((a, b) => b.score - a.score || a.i - b.i);
   const excerpts = [],
     used = new Set();
@@ -205,7 +222,7 @@ function readAPIReference({ query, topic, workflow, limit = 5 } = {}) {
     if (excerpts.length === limit || remaining < 1000) break;
   }
   return {
-    reference,
+    reference: selectedReference,
     ...selected,
     query,
     symbol: term,

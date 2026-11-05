@@ -24,18 +24,20 @@ a Community title or URL.
 Use `action="preview"` with the same exact reference and an optional
 `previewIndex`. The tool prefers the published file's own cover, followed by
 the Community promotional cover and carousel images. These are distinct sources:
-`file-cover`, `community-cover`, and `carousel`. It returns the provided public image
-(PNG/JPEG/GIF/WebP, up to 2 MiB), plus metadata and source URL. Inspect the
-image before recommending a layout. Covers can be promotional composites;
+`file-cover`, `community-cover`, and `carousel`. With the default index, an
+unavailable or incompatible cover falls back to the next listed public image and
+returns `previewFallback` with the skipped source and reason. An explicit
+`previewIndex` remains exact and reports that image's failure. It returns the
+provided public image (PNG/JPEG/GIF/WebP, up to 2 MiB), plus metadata and source
+URL. Inspect the image before recommending a layout. Covers can be promotional composites;
 they do not prove every frame's content, editable layers or fonts. Real
 document inspection still uses the normal exact-file/native workflow.
 The public image request uses Desktop's client information without cookies or
 authorization headers. File covers and Community promotional images use different
 Figma-provided URLs; do not synthesize or rewrite CDN URLs. A promotional image's
 202 response with `x-amzn-waf-action: challenge` is an AWS WAF challenge, not an
-image being generated. Investigate the returned file-cover path before declaring
-the resource unviewable. Never solve or bypass a challenge; an explicitly selected
-blocked carousel remains a failure, not a substituted image.
+image being generated. Never solve or bypass a challenge; explicitly selected
+blocked images remain failures and are not substituted.
 
 Research returns public fields only. It never duplicates a resource, buys,
 likes, saves, subscribes or changes a Figma document. A missing monetization

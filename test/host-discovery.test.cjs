@@ -4,6 +4,28 @@ const os = require('node:os');
 const { spawn } = require('node:child_process');
 const assert = require('node:assert/strict');
 const test = require('node:test');
+test('native build identity comes from the packaged kernel and rejects malformed installed code', (t) => {
+  const { readNativeBuild } = require('../src/host/state.cjs');
+  const directory = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'figma-native-build-'),
+  );
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  assert.equal(readNativeBuild(directory), null);
+  fs.writeFileSync(
+    path.join(directory, 'plugin-runtime.js'),
+    'const FIGMA_PLUGIN_BUILD = "' + 'a'.repeat(64) + '";\n',
+  );
+  assert.equal(readNativeBuild(directory), 'a'.repeat(64));
+  fs.writeFileSync(
+    path.join(directory, 'plugin-runtime.js'),
+    'const FIGMA_PLUGIN_BUILD = "broken";\n',
+  );
+  assert.throws(() => readNativeBuild(directory), /build identity/);
+  assert.match(
+    readNativeBuild(require('../scripts/build.cjs').output),
+    /^[a-f0-9]{64}$/,
+  );
+});
 const codex = [
   '/Applications/Codex.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex',
   '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex',
@@ -77,7 +99,10 @@ test(
       pluginName: 'figma-plugin-local',
     });
     assert(!response.error, JSON.stringify(response.error));
-    assert.deepEqual(response.result.plugin.mcpServers, ['figma-local']);
+    assert.deepEqual(response.result.plugin.mcpServers, [
+      'figma',
+      'figma-local',
+    ]);
     const presentation = response.result.plugin.summary.interface;
     assert.equal(
       presentation.displayName,

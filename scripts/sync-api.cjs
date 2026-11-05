@@ -27,7 +27,11 @@ function readSource() {
 function checkLocal() {
   const source = readSource();
   const types = fs.readFileSync(path.join(directory, referenceFile), 'utf8');
-  const declarations = types.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, '');
+  const declarations = (
+    types +
+    '\n' +
+    fs.readFileSync(path.join(directory, 'widget-api.d.ts'), 'utf8')
+  ).replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, '');
   assert.equal(
     hash(types),
     source.sha256,
@@ -39,8 +43,20 @@ function checkLocal() {
       fs.existsSync(path.resolve(directory, file)),
       'Missing topic: ' + file,
     );
-  const tools = new Set(
-    require('../src/host/mcp.cjs').tools.map((tool) => tool.name),
+  const toolDefinitions = require('../src/host/mcp.cjs').tools;
+  const tools = new Set(toolDefinitions.map((tool) => tool.name));
+  const variableTypes = declarations.match(
+    /type VariableResolvedDataType\s*=\s*((?:'[^']+'\s*\|?\s*)+)/,
+  );
+  assert.ok(variableTypes, 'Official variable types were not found');
+  assert.deepEqual(
+    toolDefinitions
+      .find((tool) => tool.name === 'figma_variables')
+      .inputSchema.properties.type.enum.toSorted(),
+    [...variableTypes[1].matchAll(/'([^']+)'/g)]
+      .map((match) => match[1])
+      .toSorted(),
+    'Variable query filters must cover every official resolved data type',
   );
   for (const [id, workflow] of Object.entries(workflows)) {
     assert.ok(
@@ -93,10 +109,22 @@ async function refresh(update = false) {
   const revision = encodeURIComponent(commit);
   const documentationUrl = 'https://developers.figma.com/docs/plugins/updates/';
   async function get(url) {
-    const response = await fetch(url, {
-      redirect: 'error',
-      signal: AbortSignal.timeout(20000),
-    });
+    let response;
+    try {
+      response = await fetch(url, {
+        redirect: 'error',
+        signal: AbortSignal.timeout(20000),
+      });
+    } catch (error) {
+      throw new Error(
+        'Official reference request failed: ' +
+          url +
+          ': ' +
+          error.message +
+          (error.cause?.code ? ' (' + error.cause.code + ')' : ''),
+        { cause: error },
+      );
+    }
     if (!response.ok)
       throw new Error(
         'Official reference HTTP ' + response.status + ': ' + url,

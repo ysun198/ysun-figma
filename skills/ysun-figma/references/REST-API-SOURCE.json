@@ -1,0 +1,11 @@
+{
+  "repository": "https://github.com/figma/rest-api-spec",
+  "commit": "af027cd20aca8326a41115e4d15bbdf875158e81",
+  "file": "openapi/openapi.yaml",
+  "sha256": "490cc17e98f72b8e5eff8f3cfcf8df2e059a67d89993c607761c2e9d6234fb7f",
+  "packagedFile": "rest-api.json",
+  "packagedSha256": "03588737b7411e57bd0e73e34fb495ff6685a009021e16edc20d933634fc160a",
+  "retrieved": "2026-11-05",
+  "license": "MIT",
+  "licenseFile": "REST-API-LICENSE"
+}

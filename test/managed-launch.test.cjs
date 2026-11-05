@@ -110,7 +110,7 @@ test('twelve parallel Codex refreshes initialize through the shell launcher usin
   assert.deepEqual(fs.readdirSync(path.join(state, 'companion')), ['current']);
 });
 
-test('a running managed MCP survives host cache deletion and serves activated UI without a new conversation', async (t) => {
+test('a running managed MCP survives host cache deletion and serves an activated package', async (t) => {
   const root = require('../scripts/build.cjs').output,
     temp = fs.mkdtempSync(path.join(os.tmpdir(), 'figma-managed-cache-'));
   const state = path.join(temp, 'state'),
@@ -135,10 +135,6 @@ test('a running managed MCP survives host cache deletion and serves activated UI
       fs.writeFileSync(
         path.join(destination, 'package.json'),
         JSON.stringify(pkg),
-      );
-      fs.appendFileSync(
-        path.join(destination, 'app.html'),
-        '\n<!-- activated-ui:' + version + ' -->',
       );
     }
   }
@@ -185,6 +181,10 @@ test('a running managed MCP survives host cache deletion and serves activated UI
     stderr = '';
   const pending = new Map(),
     notifications = [];
+  let resolveToolsChanged;
+  const toolsChanged = new Promise((resolve) => {
+    resolveToolsChanged = resolve;
+  });
   child.stderr.on('data', (value) => {
     stderr += value;
   });
@@ -196,6 +196,8 @@ test('a running managed MCP survives host cache deletion and serves activated UI
       buffer = buffer.slice(end + 1);
       if (message.id === undefined) {
         notifications.push(message.method);
+        if (message.method === 'notifications/tools/list_changed')
+          resolveToolsChanged();
         continue;
       }
       pending.get(message.id)?.(message);
@@ -243,7 +245,9 @@ test('a running managed MCP survives host cache deletion and serves activated UI
     ).error,
   );
   child.stdin.write('{"jsonrpc":"2.0","method":"notifications/initialized"}\n');
-  const uri = (await call('resources/list')).result.resources[0].uri;
+  const originalTools = (await call('tools/list')).result.tools.map(
+    (tool) => tool.name,
+  );
   const initialStatus = await call('tools/call', {
     name: 'figma_status',
     arguments: {},
@@ -277,24 +281,27 @@ test('a running managed MCP survives host cache deletion and serves activated UI
       protocolVersion: PROTOCOL_VERSION,
     }),
   );
-  const promotedUri = (await call('resources/list')).result.resources[0].uri;
-  assert.equal(promotedUri, uri);
-  assert.deepEqual(notifications, [
-    'notifications/tools/list_changed',
-    'notifications/resources/list_changed',
+  await Promise.race([
+    toolsChanged,
+    new Promise((_, reject) => {
+      const timeout = setTimeout(
+        () => reject(new Error('MCP did not announce the activated tool list')),
+        2000,
+      );
+      timeout.unref();
+    }),
   ]);
+  assert.deepEqual(notifications, ['notifications/tools/list_changed']);
   const tools = await call('tools/list');
-  assert.equal(
-    tools.result.tools.find((tool) => tool.name === 'figma_open')._meta.ui
-      .resourceUri,
-    promotedUri,
+  assert.deepEqual(
+    tools.result.tools.map((tool) => tool.name),
+    originalTools,
   );
-  const resource = await call('resources/read', { uri });
-  assert(
-    resource.result.contents[0].text.includes(
-      'activated-ui:' + parts.join('.'),
-    ),
-  );
+  const reference = await call('tools/call', {
+    name: 'figma_api',
+    arguments: {},
+  });
+  assert.equal(reference.result.structuredContent.version, parts.join('.'));
   assert.equal(
     (await call('tools/call', { name: 'figma_status', arguments: {} })).result
       .isError,

@@ -255,6 +255,11 @@ function createExecution({
             'no matching connected Figma session; open the plugin and pair it first',
             { clients },
           );
+        if (client.needsPluginUpdate)
+          throw problem(
+            409,
+            'The native plugin is outdated; reconnect it before submitting new operations',
+          );
         const actual = targetIdentity(client);
         if (digest(actual) !== digest(expected))
           throw problem(
@@ -333,7 +338,7 @@ function createExecution({
         }
         const job = {
           id: input.id,
-          kind: 'exec',
+          kind: input.kind || 'exec',
           payloadHash,
           sourceHash: digest(input.source),
           status: 'queued',

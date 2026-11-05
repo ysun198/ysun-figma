@@ -470,8 +470,11 @@ async function run() {
       void run();
   }
 }
-async function pair() {
-  const code = byId('pair-code').value.trim();
+async function pair(suppliedCode) {
+  const code =
+    typeof suppliedCode === 'string'
+      ? suppliedCode
+      : byId('pair-code').value.trim();
   if (!code || !direct.context || direct.pending) return;
   byId('pair').disabled = true;
   try {
@@ -537,6 +540,37 @@ function closePlugin() {
   if (direct.pollController) direct.pollController.abort();
   post({ type: 'CLOSE' });
 }
+// The private Desktop pipe invokes this exact owned frame; no credential getter,
+// generic evaluator, postMessage command or new network endpoint is exposed.
+Object.defineProperty(globalThis, '__ysunFigmaLifecycle', {
+  value: Object.freeze({
+    identity: () => ({
+      clientId: direct.clientId,
+      instanceId: direct.instanceId,
+      documentId: direct.context?.documentId || null,
+      pluginId: direct.context?.pluginId || null,
+      connected: !!direct.token,
+      busy: !!direct.pending || !!direct.blockedJobId,
+      closed: direct.closed,
+    }),
+    pair: async (code) => {
+      if (
+        typeof code !== 'string' ||
+        !/^\w{32}$/.test(code) ||
+        direct.token ||
+        direct.pending
+      )
+        throw new Error('Invalid native lifecycle pairing');
+      await pair(code);
+      return !!direct.token;
+    },
+    closeIdle: () => {
+      if (direct.pending || direct.blockedJobId) return false;
+      closePlugin();
+      return true;
+    },
+  }),
+});
 byId('close').addEventListener('click', closePlugin);
 byId('disconnect').addEventListener('click', async () => {
   if (direct.pending || !direct.token) return;

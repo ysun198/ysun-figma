@@ -5,13 +5,13 @@ description: Create, restyle or edit a native Figma Slides deck with ysun figma,
 
 # Native Slides
 
-Use [files](../ysun-figma-files/SKILL.md) and [native execution](../ysun-figma/references/native-execution.md). Check the actual editor/capabilities. Create a cloud deck through normal authenticated Figma UI when needed.
+Use [files](../ysun-figma-files/SKILL.md) and [native execution](../ysun-figma/references/native-execution.md). Check the actual editor/capabilities. Cloud creation is a separate bootstrap capability; prefer an already authorized official creator over GUI when available.
 
 Read [Slides API recipes](../ysun-figma/references/slides.md) for native grid/row/slide ownership and editable content. Use `figma_api(query=...)` to distinguish actual native methods from official remote conveniences.
 
-Use `figma.getSlideGrid()` to discover the deck, and `createSlide`/`createSlideRow` only when available. Grid rows are arrays of slides, not SLIDE_ROW nodes. Newly inserted rows/slides can appear only after the creation script returns; inspect in a following operation. Figma can normalize section names back to Section, even after a later setter. Read persisted state and use the actual editor when a section name matters.
+Use `figma.getCanvasGrid()` to discover the deck, and `createSlide`/`createSlideRow` only when available. `getSlideGrid()`/`setSlideGrid()` are deprecated. Canvas grid rows can include slides and other supported assets; preserve all existing nodes when rearranging. Newly inserted rows/slides can appear only after the creation script returns; inspect in a following operation. Figma can normalize section names back to Section, even after a later setter. Read persisted state and use the actual editor when a section name matters.
 
-`getSlideGrid()` returns a read-only outer array. For explicit ordering, copy its rows with `grid.map(row => [...row])`, modify that copy, then call `setSlideGrid(nextGrid)`. A native created slide can exist under a row while still absent from the returned grid; confirm its exact ID and parent before adding that same slide to the intended grid. Do not recreate it or invent its position from its name.
+`getCanvasGrid()` returns a read-only outer array. For explicit ordering, copy its rows with `grid.map(row => [...row])`, modify that copy, then call `setCanvasGrid(nextGrid)`. A native created slide can exist under a row while still absent from the returned grid; confirm its exact ID and parent before adding that same slide to the intended grid. Do not recreate it or invent its position from its name.
 
 Do not create Design pages or style the opaque slide grid as a frame. A slide is the editable content container; reuse its actual size, theme variables and text styles. Preserve existing slides during a restyle. Append each nested node to its destination before assigning x/y; do not hardcode hidden grid-origin compensation. Asset imports need the destination slide's parentId. Use native text/vector/image structure rather than a screenshot as the whole slide.
 

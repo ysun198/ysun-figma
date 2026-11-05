@@ -35,6 +35,8 @@ The easing of a keyframe describes the transition from the preceding keyframe. U
 
 ## Fields and presets
 
+`figma_variables(type="EASING")` and `figma_variables(type="TIMING")` read local motion variables with their original typed values and modes. Native authoring uses `figma.variables.createVariable(name, collection, type)` and `variable.setValueForMode(modeId, value)`: EASING values use `MotionEasing`; TIMING values are seconds. Keep aliases and composed values intact when reading all variable types. Query the exact declared binding field before applying one to a track or style; a supported variable type does not make every native property bindable.
+
 The typed field union is the allowlist. It includes property tracks such as translation, rotation, scale, opacity, sizes, corners and supported trim fields; fills, strokes and effects have separate typed field/value structures. Do not invent vector-path, 3D-transform or internal scenegraph keyframe fields. A static supported property is not automatically animatable.
 
 Read `figma.motion.figmaAnimationStyles()` before applying a preset. Its documentation/schema describes controls; it is not a ready-to-copy setter value. Record an applied style's returned ID and use that application ID for edits/removal; a preset definition ID is not an application ID.

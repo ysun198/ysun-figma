@@ -10,9 +10,15 @@
       "command": "connect"
     }
   ],
-  "editorType": ["figma", "figjam", "slides"],
+  "editorType": ["figma", "figjam", "slides", "buzz"],
   "documentAccess": "dynamic-page",
-  "permissions": ["teamlibrary"],
+  "permissions": [
+    "teamlibrary",
+    "currentuser",
+    "activeusers",
+    "fileusers",
+    "payments"
+  ],
   "networkAccess": {
     "allowedDomains": ["http://localhost:38491"],
     "reasoning": "Connects only to the user's local companion for paired script execution. No remote service is used."

@@ -169,6 +169,40 @@ test('variable pagination preserves values, modes and aliases', async () => {
   });
   assert.equal(second.nextOffset, null);
 });
+test('motion variable filters reach the native API and retain typed easing and timing values', async () => {
+  const f = fixture();
+  const schema = tools.find(
+    (tool) => tool.name === 'figma_variables',
+  ).inputSchema;
+  for (const [type, value] of [
+    [
+      'EASING',
+      {
+        type: 'CUSTOM_CUBIC_BEZIER',
+        easingFunctionCubicBezier: { x1: 0.2, y1: 0, x2: 0.8, y2: 1 },
+      },
+    ],
+    ['TIMING', 0.35],
+  ]) {
+    validate({ type }, schema);
+    f.figma.variables.getLocalVariablesAsync = async (actualType) => {
+      assert.equal(actualType, type);
+      return [
+        {
+          id: type,
+          name: 'Motion/' + type,
+          resolvedType: type,
+          variableCollectionId: 'collection',
+          valuesByMode: { light: value },
+        },
+      ];
+    };
+    const result = await f.queries.variables({ type });
+    assert.equal(result.total, 1);
+    assert.equal(result.variables[0].resolvedType, type);
+    assert.deepEqual(result.variables[0].valuesByMode.light, value);
+  }
+});
 test('native preview caps raster dimensions and refuses ambiguous targets or page export', async () => {
   const f = fixture();
   await f.queries.screenshot({ nodeId: '2:2', maxDimension: 1600 });
@@ -178,64 +212,6 @@ test('native preview caps raster dimensions and refuses ambiguous targets or pag
   await assert.rejects(f.queries.screenshot({}), /Choose one/);
   await assert.rejects(f.queries.screenshot({ nodeId: '0:1' }), /Choose one/);
   await assert.rejects(f.queries.context({ nodeId: '1:999' }), /not found/);
-});
-test('canvas renders the whole native page, including sections with null render bounds; preserves active page and selection', async () => {
-  const f = fixture();
-  f.page.selection = [f.frame];
-  f.frame.type = 'SECTION';
-  f.frame.absoluteRenderBounds = null;
-  f.page.children.push({
-    visible: false,
-    absoluteBoundingBox: { x: 1e6, y: 0, width: 100, height: 100 },
-  });
-  const value = await f.queries.canvas({
-    pageId: f.page.id,
-    maxDimension: 2000,
-  });
-  assert.equal(value.scale, 0.25);
-  assert.deepEqual(value.bounds, { x: -100, y: 20, width: 8000, height: 2000 });
-  assert.equal(value.revision, 5);
-  assert.equal(value.pages[0].id, f.page.id);
-  assert.equal(f.files[0].name, 'preview-canvas.png');
-  assert.deepEqual(f.exports[0], {
-    format: 'PNG',
-    constraint: { type: 'SCALE', value: 0.25 },
-  });
-  assert.deepEqual(f.page.selection, [f.frame]);
-  assert.equal(f.figma.currentPage, f.page);
-  assert.equal(f.loads, 1);
-  await assert.rejects(
-    f.queries.canvas({ pageId: f.frame.id }),
-    /must identify a page/,
-  );
-});
-test('empty canvas skips exports, and reading another page never activates it', async () => {
-  const f = fixture();
-  const active = f.figma.currentPage;
-  f.page.children = [];
-  const value = await f.queries.canvas();
-  assert.equal(value.empty, true);
-  assert.equal(f.exports.length, 0);
-  const other = { ...f.page, id: '0:2', children: [f.frame] };
-  f.figma.root.children.push(other);
-  f.figma.getNodeByIdAsync = async () => other;
-  const next = await f.queries.canvas({ pageId: '0:2' });
-  assert.equal(next.page.id, '0:2');
-  assert.equal(f.figma.currentPage, active);
-});
-test('canvas is an app-only read with exact client and file identity required', () => {
-  const tool = tools.find((tool) => tool.name === 'figma_canvas');
-  assert.deepEqual(tool._meta.ui.visibility, ['app']);
-  assert.equal(tool.annotations.readOnlyHint, true);
-  assert.throws(() => validate({}, tool.inputSchema), /required/);
-  assert.throws(
-    () => validate({ clientId: 'client-123' }, tool.inputSchema),
-    /required/,
-  );
-  validate(
-    { clientId: 'client-123', fileKey: 'Abc123456', pageId: '0:1' },
-    tool.inputSchema,
-  );
 });
 test('Figma URL targeting rejects unsafe URLs and refuses title guesses or cross-file links', () => {
   const url = 'https://www.figma.com/design/Abc123456/Example?node-id=2-3';

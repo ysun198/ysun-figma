@@ -4,25 +4,30 @@ Confirm `editorType === 'slides'`. Look up `SlideNode`, `SlideRowNode`, `SlideGr
 
 ## Grid lifecycle
 
-`getSlideGrid()` returns rows of slide nodes. `createSlide()` automatically inserts into the grid; `createSlide(rowIndex, columnIndex)` chooses an actual position. `createSlideRow()` creates a section row, and its `name` is the section title. Use `setSlideGrid` with the inspected slide identities to reorder existing slides rather than deleting/recreating the deck.
+Use the current `getCanvasGrid()` / `setCanvasGrid()` APIs for the Slides canvas grid. The grid can contain slides and other supported canvas assets, so preserve every existing node when rearranging it. `getSlideGrid()` / `setSlideGrid()` are deprecated compatibility APIs. `createSlide()` inserts into the grid; `createSlide(rowIndex, columnIndex)` chooses an actual position. `createSlideRow()` creates a section row, and Figma may normalize its title back to `Section` after creation.
 
 A new deck may have an empty grid. Do not assume grid[0][0], a theme source or a first slide exists. Create a requested slide or handle the empty case before reading its properties. Retain the actual native slide dimensions; do not impose a fixed canvas size or design theme.
 
 ```js
 if (figma.editorType !== 'slides') throw new Error('Expected Slides');
-const before = figma.getSlideGrid();
+const before = figma.getCanvasGrid();
 const slide = figma.createSlide();
 await figma.loadFontAsync(args.font);
 const label = figma.createText();
 label.fontName = args.font;
 slide.appendChild(label);
 label.characters = args.title;
-label.x = args.x; label.y = args.y;
-return { slideId: slide.id, textId: label.id,
-  previousRows: before.length, size: [slide.width, slide.height] };
+label.x = args.x;
+label.y = args.y;
+return {
+  slideId: slide.id,
+  textId: label.id,
+  previousRows: before.length,
+  size: [slide.width, slide.height],
+};
 ```
 
-Read `getSlideGrid()` in a following operation: native insertion can become visible in the grid only after the creation script returns. An existing returned slide ID must not be recreated merely because it is temporarily absent from that grid.
+Read `getCanvasGrid()` in a following operation: native insertion can become visible in the grid only after the creation script returns. An existing returned slide ID must not be recreated merely because it is temporarily absent from that grid.
 
 ## Content and properties
 

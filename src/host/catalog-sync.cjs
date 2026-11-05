@@ -1,5 +1,5 @@
 const {
-  connectDesktop,
+  queuedDesktop: connectDesktop,
   runtimeResult,
   createPageReader,
 } = require('./desktop.cjs');

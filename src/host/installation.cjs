@@ -51,6 +51,9 @@ function recoverInstallation(state) {
         path.join(current, name),
         path.join(state, 'plugin', name),
       );
+    const profiles = path.join(current, 'src/host/native-profiles.cjs');
+    if (fs.existsSync(profiles))
+      require(profiles).installExtraProfiles(current);
   }
   fs.unlinkSync(journal);
   fs.rmSync(staging, { recursive: true, force: true });

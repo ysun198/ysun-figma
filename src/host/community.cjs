@@ -1,4 +1,7 @@
-const { connectDesktop, createPageReader } = require('./desktop.cjs');
+const {
+  queuedDesktop: connectDesktop,
+  createPageReader,
+} = require('./desktop.cjs');
 const { createCommunityReader } = require('./community-reader.js');
 const HOSTS = new Set(['www.figma.com', 'figma.com']);
 function validateResearch(input) {
@@ -225,17 +228,49 @@ async function researchCommunity(
     await reader.close();
   }
   if (args.action === 'preview') {
-    const index = args.previewIndex ?? 0,
-      preview = result.resource.previews[index];
-    if (!preview) throw new Error('community_preview_unavailable');
-    const image = await readPreview(preview.url, {
-      fetcher,
-      userAgent: reader.userAgent,
-    });
+    const requestedIndex = args.previewIndex ?? 0;
+    const previews = result.resource.previews;
+    const candidates =
+      input.previewIndex === undefined
+        ? previews.slice(requestedIndex)
+        : [previews[requestedIndex]].filter(Boolean);
+    if (!candidates.length) throw new Error('community_preview_unavailable');
+    const skipped = [];
+    let preview, image, lastError;
+    for (const candidate of candidates) {
+      try {
+        image = await readPreview(candidate.url, {
+          fetcher,
+          userAgent: reader.userAgent,
+        });
+        preview = candidate;
+        break;
+      } catch (error) {
+        lastError = error;
+        // The default preview should survive an expired or incompatible cover.
+        // Every candidate has already passed the Community reader's URL allowlist.
+        if (candidate === candidates.at(-1)) throw error;
+        skipped.push({
+          index: candidate.index,
+          kind: candidate.kind,
+          error: String(error.message || error).slice(0, 160),
+        });
+      }
+    }
+    if (!preview) throw lastError || new Error('community_preview_unavailable');
     result = {
       ...result,
       preview: { ...preview, mimeType: image.mimeType, size: image.size },
       image,
+      ...(skipped.length
+        ? {
+            previewFallback: {
+              requestedIndex,
+              usedIndex: preview.index,
+              skipped,
+            },
+          }
+        : {}),
     };
   }
   return {

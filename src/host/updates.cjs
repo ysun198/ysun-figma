@@ -29,11 +29,17 @@ function readUpdateState() {
     throw error;
   }
 }
-function updateStatus() {
+function updateStatus(installedVersion) {
   const state = readUpdateState();
   if (!state) return null;
   const { feed, ...status } = state;
-  return status;
+  return installedVersion && status.installedVersion !== installedVersion
+    ? {
+        ...status,
+        checkedInstalledVersion: status.installedVersion ?? null,
+        installedVersion,
+      }
+    : status;
 }
 function repository(pkg) {
   const match = /^https:\/\/github\.com\/([\w-]+\/[\w.-]+)\.git$/.exec(
