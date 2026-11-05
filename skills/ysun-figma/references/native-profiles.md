@@ -4,6 +4,8 @@
 
 Codegen mode registers `figma.codegen.on('generate')` and returns real native CSS or a compact node JSON projection. It does not open the normal connection UI in a generate callback. Inspect/default mode can use the native MCP executor. Codegen preferences, text review callbacks and payment APIs have their own mode and authorization rules; namespace access does not permit checkout or override plan requirements.
 
+Switching profiles can replace the native iframe in this exact editor. Use the client/instance returned by the connection and read current status again; a recently connected old profile is not proof it is still running. The companion retires an observed destroyed iframe immediately and blocks new work during a file's connection change. Finish or reconcile its accepted operations before changing profiles.
+
 ## Widgets
 
 Widget APIs require a real `containsWidget: true`, `widgetApi: "1.0.0"` entrypoint. A `figma.widget` object in a classic plugin does not provide `register` or hooks. The package includes a separately registered Widget profile for Design and FigJam, using the same native MCP kernel. It registers one functional widget; a normal Widget effect starts its local connection. Its indefinite task exists only while that native Widget instance is running and closes with the instance.

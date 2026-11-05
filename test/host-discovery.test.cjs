@@ -141,6 +141,7 @@ test(
       'figma-plugin-local:ysun-figma-files',
       'figma-plugin-local:ysun-figma-motion',
       'figma-plugin-local:ysun-figma-prototype',
+      'figma-plugin-local:ysun-figma-setup',
       'figma-plugin-local:ysun-figma-slides',
     ]);
     assert(response.result.plugin.skills.every((s) => s.enabled));

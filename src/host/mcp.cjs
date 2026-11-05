@@ -163,18 +163,27 @@ async function callConnect(name, input, { connection, request, signal }) {
     bridgeStateDirectory(),
     'plugin/manifest.json',
   );
+  if (input.manualPairing)
+    return {
+      state: 'pairing_required',
+      manifestPath,
+      ...(await request('/v1/pairings', { method: 'POST', body: '{}' })),
+      next: 'Manual fallback only after the direct Desktop lifecycle is diagnosed as unavailable. Import this stable manifest only if absent, run its Connect command and enter this one-time code using available app automation. Verify the exact file/client with figma_status. Ordinary setup uses figma_file(action="open" or "connect", fileKey=...) without a connection code.',
+    };
   if (files.length && !input.newFile)
     return {
-      state: 'connected',
+      state: files.some((file) => !file.needsPluginUpdate)
+        ? 'connected'
+        : 'connection_required',
       manifestPath,
       files,
-      next: 'Reuse the intended connected file. If needsPluginUpdate, wait until no job is queued/running and reopen the native plugin yourself; saved authorization restores. For an additional file call with newFile=true. Do not re-pair a working file.',
+      next: 'Reuse the exact intended file/client, without a new pairing. If needsPluginUpdate, finish or reconcile its original operations, then use figma_file(action="connect", fileKey=...) to verify and recover its actual native instance. Dev/Widget profile changes can replace the previous iframe; read the returned client identity again before submitting work. For an additional existing file, use figma_file(action="open", fileKey=...).',
     };
   return {
-    state: 'pairing_required',
+    state: 'connection_required',
     manifestPath,
-    ...(await request('/v1/pairings', { method: 'POST', body: '{}' })),
-    next: 'Use available native app automation: open Figma Desktop and the intended file, import this stable manifest only if missing, run ysun figma → Connect, fill the one-time code and click 连接. Verify figma_status. Reopened plugins restore saved authorization without a new code. If automation or a dialog is blocked, state the actual blocker and ask only for the remaining action. The connection panel hides after pairing.',
+    files,
+    next: 'Use the requested Figma URL/fileKey with figma_file(action="open", fileKey=...), or inspect actual open editors with figma_file(action="status") and connect the intended exact file. Direct connection handles saved authorization and owned-frame pairing without GUI or a code. Only desktop_plugin_not_imported requires a one-time import of this stable manifest using app automation; retry the same direct connection afterward. This preparation does not create a Figma file. See the packaged ysun-figma-setup skill for missing Node/Desktop, sign-in or safe Desktop restart.',
   };
 }
 

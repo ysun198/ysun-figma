@@ -98,7 +98,10 @@ const outputSchemas = {
     globalUnresolvedJobCount: { type: 'integer' },
   }),
   figma_connect: resultSchema({
-    state: { type: 'string', enum: ['connected', 'pairing_required'] },
+    state: {
+      type: 'string',
+      enum: ['connected', 'connection_required', 'pairing_required'],
+    },
     manifestPath: { type: 'string' },
   }),
   figma_file: {
@@ -136,6 +139,15 @@ function classifyError(error, detail, precondition) {
     return 'OUTCOME_NEEDS_REVIEW';
   if (error.receipt?.job.status === 'failed') return 'FIGMA_OPERATION_FAILED';
   const patterns = [
+    [/desktop_required/, 'FIGMA_DESKTOP_REQUIRED'],
+    [/desktop_restart_required/, 'FIGMA_DESKTOP_RESTART_REQUIRED'],
+    [/login_required/, 'FIGMA_LOGIN_REQUIRED'],
+    [/desktop_plugin_not_imported/, 'FIGMA_NATIVE_IMPORT_REQUIRED'],
+    [
+      /desktop_\w*schema_changed|desktop_(?:launcher|state|widget)_ambiguous/,
+      'FIGMA_DESKTOP_ADAPTER_UNAVAILABLE',
+    ],
+    [/desktop_file_ambiguous|desktop_native_frame_ambiguous/, 'FILE_AMBIGUOUS'],
     [
       /No matching connected|no matching connected|open the plugin and pair/,
       'FIGMA_NOT_CONNECTED',
@@ -165,15 +177,50 @@ function recoveryAdvice(
   if (error.phase === 'preflight')
     return (
       'No native job was submitted. ' +
-      (error.toolName
-        ? `Correct the concrete error; figma_api(query=${JSON.stringify(error.toolName)}) gives its current inputSchema.`
-        : 'Correct the request before retrying.')
+      (setupRecovery(String(error.message || error)) ||
+        (error.toolName
+          ? `Correct the concrete error; figma_api(query=${JSON.stringify(error.toolName)}) gives its current inputSchema.`
+          : 'Correct the request before retrying.'))
     );
   if (error.phase === 'delivery')
     return 'Read figma_job with includePreviews=false for this original operation ID, or retry figma_export to an empty directory. Do not rerun the native script.';
   if (submitted) return 'Inspect this original operation ID before retrying.';
   if (operationId)
     return 'No native job was submitted. Correct the request before retrying.';
+}
+
+function setupRecovery(detail) {
+  const actions = [
+    [
+      /desktop_required/,
+      'Install signed Figma Desktop from its official download for this user, then use figma_file(action="launch") and reconnect the intended exact file. See the packaged setup skill.',
+    ],
+    [
+      /desktop_restart_required/,
+      'Inspect pending operations and Desktop save state, quit normally only when safe, then relaunch through figma_file(action="launch") and reconnect the exact file. Preserve the login and designs.',
+    ],
+    [
+      /login_required/,
+      'Have the user complete ordinary Figma sign-in, then resume this file connection. Native work needs no REST credential JSON or custom OAuth app.',
+    ],
+    [
+      /desktop_plugin_not_imported/,
+      'Read figma_connect for the stable manifest path, import only that missing manifest once through app automation, then retry figma_file(action="connect", fileKey=...). No manual pairing code is needed.',
+    ],
+    [
+      /desktop_\w*schema_changed|desktop_(?:launcher|state|widget)_ambiguous/,
+      'Keep the exact Desktop adapter diagnostic and observed file/target identities; use the setup/files skill to repair or choose a supported fallback. Do not guess module IDs or bind by title.',
+    ],
+    [
+      /outdated|version mismatch|update the plugin/i,
+      'Read original pending/uncertain operations first. When they are finished or reconciled, use figma_file(action="connect", fileKey=...) and its returned current client/instance.',
+    ],
+    [
+      /No matching connected|no matching connected/,
+      'Read figma_status and figma_file(action="status") for current exact identities, then open/connect the intended file with figma_file. A profile switch can retire the previous client.',
+    ],
+  ];
+  return actions.find(([pattern]) => pattern.test(detail))?.[1];
 }
 
 function toolError(error, input = {}) {
@@ -186,7 +233,12 @@ function toolError(error, input = {}) {
     FIGMA_NOT_CONNECTED: '目标 Figma 文件尚未连接。',
     FILE_AMBIGUOUS: '存在多个可能的 Figma 实例，需要明确目标文件和客户端。',
     OUTCOME_NEEDS_REVIEW: '上次操作的结果尚未确认，需要先核对设计。',
-    PLUGIN_UPDATE_REQUIRED: 'Figma 中的 ysun figma 需要更新并重新打开。',
+    PLUGIN_UPDATE_REQUIRED: 'Figma 中的 ysun figma 需要更新并恢复连接。',
+    FIGMA_DESKTOP_REQUIRED: '需要先安装 Figma 桌面端。',
+    FIGMA_DESKTOP_RESTART_REQUIRED: '需要由 Codex 安全重连 Figma 桌面端。',
+    FIGMA_LOGIN_REQUIRED: '需要先完成 Figma 自己的登录。',
+    FIGMA_NATIVE_IMPORT_REQUIRED: '需要先导入一次原生插件。',
+    FIGMA_DESKTOP_ADAPTER_UNAVAILABLE: '当前 Figma 桌面接口需要兼容性处理。',
     CONNECTION_UNAVAILABLE: '连接暂时不可用，可以重试或让 Codex 恢复连接。',
     FIGMA_OPERATION_FAILED: '操作未完成，请查看原始错误和执行回执。',
     ARTIFACT_DELIVERY_FAILED: '预览或文件交付失败，原始 Figma 执行回执已保留。',
@@ -331,8 +383,11 @@ const tools = [
   ],
   [
     'figma_connect',
-    'Prepare the stable native plugin for agent-managed first connection or recovery. Reuse a connected file by default; newFile=true prepares a code for another file. Reopen the plugin to restore saved authorization before requesting a new code.',
-    object({ newFile: { type: 'boolean', default: false } }),
+    'Prepare the stable manifest and report connected files without allocating a pairing code. Ordinary setup uses figma_file open/connect with an exact fileKey and handles pairing directly. newFile=true prepares an additional existing file, never creates one. manualPairing=true allocates a one-time GUI fallback code only after a diagnosed unavailable Desktop lifecycle. See the packaged setup skill for first installation.',
+    object({
+      newFile: { type: 'boolean', default: false },
+      manualPairing: { type: 'boolean', default: false },
+    }),
     false,
   ],
   [

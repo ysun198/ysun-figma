@@ -28,6 +28,8 @@ Copy this into Codex:
 Install ysun figma: https://github.com/ysun198/ysun-figma
 ```
 
+Codex prepares the local prerequisites, connects your intended Figma file and verifies it with a real read. Existing sign-in is reused; first Figma sign-in or permission acceptance remains yours. A missing native manifest is imported once. Ordinary use needs no connection code.
+
 Keep Codex Desktop and Figma Desktop updated to the latest versions.
 
 ## Contact and feedback

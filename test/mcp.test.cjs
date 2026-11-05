@@ -24,6 +24,42 @@ function isolatedRuntime(t, overrides) {
   });
   return runtime;
 }
+for (const [reason, code] of [
+  ['desktop_required', 'FIGMA_DESKTOP_REQUIRED'],
+  ['desktop_restart_required', 'FIGMA_DESKTOP_RESTART_REQUIRED'],
+  ['login_required', 'FIGMA_LOGIN_REQUIRED'],
+  ['desktop_plugin_not_imported', 'FIGMA_NATIVE_IMPORT_REQUIRED'],
+  ['desktop_launcher_schema_changed', 'FIGMA_DESKTOP_ADAPTER_UNAVAILABLE'],
+]) {
+  test(`first connection reports a specific recoverable prerequisite: ${reason}`, async (t) => {
+    const calls = [];
+    const api = isolatedRuntime(t, {
+      companion: { ensureCompanion: async () => ({}) },
+      'bridge-client': {
+        bridgeRequest: async (_connection, route) => {
+          calls.push(route);
+          throw new Error(reason);
+        },
+      },
+    });
+    await assert.rejects(
+      api.callTool('figma_file', {
+        action: 'connect',
+        fileKey: 'CloudFile12',
+        operationId: 'first-use-check',
+      }),
+      (error) => {
+        const result = api.toolError(error, { operationId: 'first-use-check' });
+        assert.equal(result.code, code);
+        assert.equal(result.phase, 'preflight');
+        assert.equal(result.safeToRetryWithoutCanvasRead, true);
+        assert.equal(result.receipt, undefined);
+        return true;
+      },
+    );
+    assert.deepEqual(calls, ['/v1/desktop/connect']);
+  });
+}
 test('opening a file preserves a failed native connection receipt instead of reporting success', async (t) => {
   let attempts = 0;
   const api = isolatedRuntime(t, {
@@ -619,7 +655,7 @@ test('app file data excludes grants, disconnected files, operation receipts and 
     /private|sessionToken|grantToken|adminToken/,
   );
 });
-test('compatible native builds need no update or new pairing; explicit additional-file connection does', async (t) => {
+test('native setup reuses healthy files and prepares direct connection without allocating GUI pairing codes', async (t) => {
   const fs = require('node:fs'),
     os = require('node:os');
   const {
@@ -630,7 +666,7 @@ test('compatible native builds need no update or new pairing; explicit additiona
   const state = fs.mkdtempSync(path.join(os.tmpdir(), 'figma-connect-reuse-')),
     before = process.env.FIGMA_PLUGIN_STATE_DIR;
   process.env.FIGMA_PLUGIN_STATE_DIR = state;
-  const bridge = createBridgeServer({ port: 0 });
+  const bridge = createBridgeServer({ port: 0, nativeBuild: 'a'.repeat(64) });
   const { url } = await bridge.start();
   t.after(async () => {
     await bridge.stop();
@@ -646,6 +682,10 @@ test('compatible native builds need no update or new pairing; explicit additiona
       token: bridge.token,
     }),
   );
+  const { callTool } = require('../src/host/mcp.cjs');
+  const initial = await callTool('figma_connect', {});
+  assert.equal(initial.state, 'connection_required');
+  assert.equal(initial.code, undefined);
   const code = bridge.createPairing().code;
   const response = await fetch(url + '/v1/pair', {
     method: 'POST',
@@ -659,17 +699,29 @@ test('compatible native builds need no update or new pairing; explicit additiona
     }),
   });
   assert.equal(response.status, 200);
-  const { callTool } = require('../src/host/mcp.cjs');
   const reused = await callTool('figma_connect', {});
   assert.equal(reused.state, 'connected');
   assert.equal(reused.code, undefined);
   assert.equal(reused.files[0].needsPluginUpdate, false);
   const fresh = await callTool('figma_connect', { newFile: true });
-  assert.equal(fresh.state, 'pairing_required');
-  assert.equal(typeof fresh.code, 'string');
+  assert.equal(fresh.state, 'connection_required');
+  assert.equal(fresh.code, undefined);
+  for (let i = 0; i < 12; i++)
+    assert.equal(
+      (await callTool('figma_connect', { newFile: true })).code,
+      undefined,
+    );
+  const manual = await callTool('figma_connect', { manualPairing: true });
+  assert.equal(manual.state, 'pairing_required');
+  assert.equal(typeof manual.code, 'string');
   const status = await callTool('figma_status', {});
   assert.equal(status.clients[0].needsPluginUpdate, false);
   assert.equal(status.clients[0].nativeBuild, 'a'.repeat(64));
+  bridge.clients.get('connected-fixture').nativeBuild = 'b'.repeat(64);
+  const stale = await callTool('figma_connect', {});
+  assert.equal(stale.state, 'connection_required');
+  assert.equal(stale.files[0].needsPluginUpdate, true);
+  assert.equal(stale.code, undefined);
 });
 test('tool errors give the view a recovery message while retaining original operation IDs for the agent', () => {
   const { toolError } = require('../src/host/mcp.cjs');

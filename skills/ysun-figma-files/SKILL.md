@@ -7,6 +7,8 @@ description: Create, open, connect or recover an exact Figma Design, FigJam or S
 
 Use [ysun-figma](../ysun-figma/SKILL.md) for the shared tool/runtime contract. Handle installation, native launch, binding and recovery yourself. Keep an ordinary design task in its current Codex conversation.
 
+For a first installation or missing Node/Desktop, use [setup](../ysun-figma-setup/SKILL.md). `figma_connect()` prepares the stable manifest; ordinary connection and pairing use `figma_file` directly. Request `manualPairing=true` only for a diagnosed unavailable Desktop lifecycle.
+
 ## Open or create
 
 Prefer the requested file. Read `figma_status`, retain its current clients/instance IDs, and call `figma_file(action="open", fileKey=...)` using the exact key from Figma's actual URL. A newly created file need not wait for account sync or already exist in the directory. `verifiedUrl` can carry its observed Design, board or Slides URL. `launch` brings Desktop forward without pairing.
@@ -26,6 +28,8 @@ For Dev/Widget connections, pass `profile="dev"` or `profile="widget"`; see [nat
 Before `figma_file(action="bind", fileKey, clientId, documentId, verifiedUrl)`, verify that the actual foreground file URL and live instance are the intended target. Use only declared arguments; instanceId is checked by the server, not passed as a bind argument. Error messages distinguish URL, document and client failures. Titles and copied document plugin data do not prove cloud identity. Reopening creates a fresh native instance and requires renewed exact binding when native fileKey is absent.
 
 The job target records the actual file key, document/instance, editor and native versions at submission; use it to compare launch, write and visible file identities. `fileKeyVerified` reports whether this request constrained the target by fileKey/URL; false on a clientId-only call does not imply the catalog binding disappeared. Pass both the known fileKey and clientId when verifying that constraint matters. `editorType=figma` names the Design editor, not proof of Desktop versus browser. The public API does not identify that surface or confirm cloud save completion. Use the actual application URL/sync warning when these distinctions matter; do not declare native edits cloud-synced from a successful receipt.
+
+After Dev/Widget profile switches, use the returned client and instance again: Figma can replace the previous native iframe, and that old instance is immediately retired. Reconnecting an existing Widget retains its exact node ID. Accepted operations keep their original target; never resubmit them against the new instance to recover a receipt.
 
 ## Directory and recovery
 

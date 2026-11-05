@@ -26,6 +26,8 @@ Widget 与 Dev 扩展使用各自真实运行入口，与普通设计操作共�
 帮我安装 ysun figma：https://github.com/ysun198/ysun-figma
 ```
 
+Codex 会检查并准备运行环境，连接你指定的 Figma 文件，再用一次真实读取确认可用。已有登录直接复用；首次 Figma 登录或权限确认仍由你完成，缺失的原生插件只需导入一次。日常使用无需连接码。
+
 请将 Codex 桌面端和 Figma 桌面端更新至最新版本。
 
 ## 联系与反馈

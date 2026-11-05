@@ -4,7 +4,7 @@
   "description": "调研 Figma 社区模板，连接文件并读取、编辑和导出设计。",
   "extensions": {
     "com.openai": {
-      "onboardingSkill": "./skills/ysun-figma/SKILL.md",
+      "onboardingSkill": "./skills/ysun-figma-setup/SKILL.md",
       "interface": {
         "displayName": "ysun figma",
         "shortDescription": "连接 Figma，读取、编辑和导出设计",
@@ -16,6 +16,5 @@
       },
       "apps": "./apps.json"
     }
-  },
-  "version": "0.34.4"
+  }
 }
