@@ -105,6 +105,134 @@ test('same-version changes, modified code, symlinks and hidden public paths are 
   fs.writeFileSync(path.join(hidden, 'package.json'), JSON.stringify(pkg));
   await assert.rejects(prepareManagedCompanion(hidden), /public package path/);
 });
+test('a reusable current package cannot bypass an unfinished activation journal', async (t) => {
+  const f = fixture(t),
+    older = f.source('1.0.0');
+  await prepareManagedCompanion(older);
+  const staging = path.join(f.state, 'companion/.install-uncommitted');
+  fs.mkdirSync(staging);
+  fs.cpSync(currentPath(), path.join(staging, 'replaced'), { recursive: true });
+  await prepareManagedCompanion(f.source('1.1.0'));
+  fs.writeFileSync(
+    path.join(f.state, 'companion/.activation.json'),
+    JSON.stringify({ staging }),
+  );
+  assert.equal((await prepareManagedCompanion(older)).version, '1.0.0');
+  assert.equal(verify(currentPath()).version, '1.0.0');
+  assert.deepEqual(fs.readdirSync(path.join(f.state, 'companion')), [
+    'current',
+  ]);
+});
+test('recovery holds the installation lock before reading the journal and serializes a newer installation', async (t) => {
+  const f = fixture(t),
+    { spawn } = require('node:child_process');
+  await prepareManagedCompanion(f.source('1.0.0'));
+  const newer = f.source('1.1.0'),
+    staging = path.join(f.state, 'companion/.install-interrupted'),
+    release = path.join(f.root, 'release-recovery');
+  fs.mkdirSync(staging);
+  fs.renameSync(currentPath(), path.join(staging, 'replaced'));
+  fs.writeFileSync(
+    path.join(f.state, 'companion/.activation.json'),
+    JSON.stringify({ staging }),
+  );
+  let locked, failed;
+  const entered = new Promise((resolve, reject) => {
+    locked = resolve;
+    failed = reject;
+  });
+  async function worker() {
+    const fs = require('node:fs'),
+      path = require('node:path'),
+      assert = require('node:assert/strict');
+    const [modulePath, source, role, release] = process.argv.slice(1),
+      state = process.env.FIGMA_PLUGIN_STATE_DIR,
+      journal = path.join(state, 'companion/.activation.json'),
+      read = fs.readFileSync;
+    let held = false;
+    fs.readFileSync = (file, ...options) => {
+      if (file === journal) {
+        assert.equal(
+          Number(
+            fs
+              .readlinkSync(path.join(state, 'companion/.install-lock'))
+              .split('-')[0],
+          ),
+          process.pid,
+          'Recovery must own the installation lock before reading its journal',
+        );
+        if (role === 'recover' && !held) {
+          held = true;
+          process.send('locked');
+          const deadline = Date.now() + 5000,
+            pause = new Int32Array(new SharedArrayBuffer(4));
+          while (!fs.existsSync(release)) {
+            if (Date.now() >= deadline)
+              throw new Error('Recovery barrier timed out');
+            Atomics.wait(pause, 0, 0, 10);
+          }
+        }
+      }
+      return read(file, ...options);
+    };
+    const installation = require(modulePath);
+    process.send('started');
+    if (role === 'recover') await installation.recoverInstallation(state);
+    else await installation.prepareManagedCompanion(source);
+  }
+  const run = (role) => {
+    const child = spawn(
+      process.execPath,
+      [
+        '-e',
+        `(${worker.toString()})().then(()=>process.exit(0),e=>{console.error(e.stack);process.exit(1)});`,
+        path.resolve(__dirname, '../src/host/installation.cjs'),
+        newer,
+        role,
+        release,
+      ],
+      { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] },
+    );
+    t.after(() => child.kill());
+    let error = '';
+    child.stderr.on('data', (chunk) => {
+      error += chunk;
+    });
+    child.on('message', (message) => {
+      if (role === 'recover' && message === 'locked') locked();
+      if (role === 'install' && message === 'started')
+        fs.writeFileSync(release, 'go');
+    });
+    const done = new Promise((resolve, reject) => {
+      child.once('error', reject);
+      child.once('exit', (code) => {
+        if (code === 0) resolve();
+        else {
+          const failure = new Error(error || 'worker exited ' + code);
+          failed(failure);
+          reject(failure);
+        }
+      });
+    });
+    void done.catch(() => {});
+    return done;
+  };
+  const recovering = run('recover');
+  await entered;
+  await Promise.all([recovering, run('install')]);
+  assert.equal(verify(currentPath()).version, '1.1.0');
+  assert.equal(
+    fs.readFileSync(path.join(f.state, 'plugin/ui.html'), 'utf8'),
+    '1.1.0',
+  );
+  assert.deepEqual(fs.readdirSync(path.join(f.state, 'companion')), [
+    'current',
+  ]);
+  assert.equal(
+    readLedger(path.join(f.state, 'operations.sqlite')).jobs[0].result.proof,
+    'original receipts',
+  );
+});
 test('unrecorded installation files are preserved instead of being silently deleted by an update', async (t) => {
   const f = fixture(t);
   await prepareManagedCompanion(f.source('1.0.0'));
