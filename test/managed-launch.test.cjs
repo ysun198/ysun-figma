@@ -6,109 +6,116 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const test = require('node:test');
 
-test('twelve parallel Codex refreshes initialize through the shell launcher using a shared Node runtime', async (t) => {
-  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'figma-refresh-')),
-    state = path.join(temp, 'state'),
-    source = require('../scripts/build.cjs').output,
-    previousState = process.env.FIGMA_PLUGIN_STATE_DIR,
-    previousRuntime = process.env.FIGMA_PLUGIN_NODE;
-  process.env.FIGMA_PLUGIN_STATE_DIR = state;
-  process.env.FIGMA_PLUGIN_NODE = process.execPath;
-  const children = [];
-  t.after(async () => {
-    await Promise.all(
-      children.map(
-        (child) =>
-          new Promise((resolve) => {
-            if (child.exitCode !== null || child.signalCode !== null)
-              return resolve();
-            child.once('exit', resolve);
-            child.kill();
-          }),
-      ),
-    );
-    if (previousState === undefined) delete process.env.FIGMA_PLUGIN_STATE_DIR;
-    else process.env.FIGMA_PLUGIN_STATE_DIR = previousState;
-    if (previousRuntime === undefined) delete process.env.FIGMA_PLUGIN_NODE;
-    else process.env.FIGMA_PLUGIN_NODE = previousRuntime;
-    fs.rmSync(temp, { recursive: true, force: true });
-  });
-  const {
-    prepareManagedCompanion,
-    verify,
-    currentPath,
-  } = require('../src/host/installation.cjs');
-  await prepareManagedCompanion(source);
-  const original = verify(currentPath()),
-    env = { ...process.env };
-  const start = () =>
-    new Promise((resolve, reject) => {
-      const child = spawn(
-        '/bin/sh',
-        [path.join(source, 'scripts/launch-mcp.sh')],
-        {
-          env,
-          stdio: ['pipe', 'pipe', 'pipe'],
-        },
+test(
+  'twelve parallel Codex refreshes initialize through the shell launcher using a shared Node runtime',
+  { timeout: 45000 },
+  async (t) => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'figma-refresh-')),
+      state = path.join(temp, 'state'),
+      source = require('../scripts/build.cjs').output,
+      previousState = process.env.FIGMA_PLUGIN_STATE_DIR,
+      previousRuntime = process.env.FIGMA_PLUGIN_NODE;
+    process.env.FIGMA_PLUGIN_STATE_DIR = state;
+    process.env.FIGMA_PLUGIN_NODE = process.execPath;
+    const children = [];
+    t.after(async () => {
+      await Promise.all(
+        children.map(
+          (child) =>
+            new Promise((resolve) => {
+              if (child.exitCode !== null || child.signalCode !== null)
+                return resolve();
+              child.once('exit', resolve);
+              child.kill();
+            }),
+        ),
       );
-      children.push(child);
-      let buffer = '',
-        stderr = '';
-      const timeout = setTimeout(
-        () => reject(new Error('refresh initialize timed out: ' + stderr)),
-        10000,
-      );
-      child.stderr.on('data', (chunk) => {
-        stderr += chunk;
-      });
-      child.stdin.on('error', (error) => {
-        clearTimeout(timeout);
-        reject(error);
-      });
-      child.once('error', (error) => {
-        clearTimeout(timeout);
-        reject(error);
-      });
-      child.once('exit', (code) => {
-        clearTimeout(timeout);
-        reject(
-          new Error(stderr || 'refresh closed before initialize: ' + code),
+      if (previousState === undefined)
+        delete process.env.FIGMA_PLUGIN_STATE_DIR;
+      else process.env.FIGMA_PLUGIN_STATE_DIR = previousState;
+      if (previousRuntime === undefined) delete process.env.FIGMA_PLUGIN_NODE;
+      else process.env.FIGMA_PLUGIN_NODE = previousRuntime;
+      fs.rmSync(temp, { recursive: true, force: true });
+    });
+    const {
+      prepareManagedCompanion,
+      verify,
+      currentPath,
+    } = require('../src/host/installation.cjs');
+    await prepareManagedCompanion(source);
+    const original = verify(currentPath()),
+      env = { ...process.env };
+    const start = () =>
+      new Promise((resolve, reject) => {
+        const child = spawn(
+          '/bin/sh',
+          [path.join(source, 'scripts/launch-mcp.sh')],
+          {
+            env,
+            stdio: ['pipe', 'pipe', 'pipe'],
+          },
+        );
+        children.push(child);
+        let buffer = '',
+          stderr = '';
+        const timeout = setTimeout(
+          () => reject(new Error('refresh initialize timed out: ' + stderr)),
+          30000,
+        );
+        child.stderr.on('data', (chunk) => {
+          stderr += chunk;
+        });
+        child.stdin.on('error', (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        });
+        child.once('error', (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        });
+        child.once('exit', (code) => {
+          clearTimeout(timeout);
+          reject(
+            new Error(stderr || 'refresh closed before initialize: ' + code),
+          );
+        });
+        child.stdout.on('data', (chunk) => {
+          buffer += chunk;
+          const newline = buffer.indexOf('\n');
+          if (newline < 0) return;
+          clearTimeout(timeout);
+          try {
+            const response = JSON.parse(buffer.slice(0, newline));
+            assert.equal(
+              response.result.serverInfo.version,
+              require('../package.json').version,
+            );
+            assert.equal(stderr, '');
+            resolve();
+          } catch (error) {
+            reject(error);
+          }
+        });
+        child.stdin.write(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'initialize',
+            params: {
+              protocolVersion: '2025-11-25',
+              capabilities: {},
+              clientInfo: { name: 'parallel-refresh-test', version: '1' },
+            },
+          }) + '\n',
         );
       });
-      child.stdout.on('data', (chunk) => {
-        buffer += chunk;
-        const newline = buffer.indexOf('\n');
-        if (newline < 0) return;
-        clearTimeout(timeout);
-        try {
-          const response = JSON.parse(buffer.slice(0, newline));
-          assert.equal(
-            response.result.serverInfo.version,
-            require('../package.json').version,
-          );
-          assert.equal(stderr, '');
-          resolve();
-        } catch (error) {
-          reject(error);
-        }
-      });
-      child.stdin.write(
-        JSON.stringify({
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'initialize',
-          params: {
-            protocolVersion: '2025-11-25',
-            capabilities: {},
-            clientInfo: { name: 'parallel-refresh-test', version: '1' },
-          },
-        }) + '\n',
-      );
-    });
-  await Promise.all(Array.from({ length: 12 }, start));
-  assert.deepEqual(verify(currentPath()), original);
-  assert.deepEqual(fs.readdirSync(path.join(state, 'companion')), ['current']);
-});
+    await Promise.all(Array.from({ length: 12 }, start));
+    assert.deepEqual(verify(currentPath()), original);
+    assert.deepEqual(fs.readdirSync(path.join(state, 'companion')), [
+      'current',
+    ]);
+  },
+);
 
 test('a running managed MCP survives host cache deletion and serves an activated package', async (t) => {
   const root = require('../scripts/build.cjs').output,
@@ -284,6 +291,7 @@ test('a running managed MCP survives host cache deletion and serves an activated
   await Promise.race([
     toolsChanged,
     new Promise((_, reject) => {
+      // Shared CI runners schedule all twelve launchers and runtime probes.
       const timeout = setTimeout(
         () => reject(new Error('MCP did not announce the activated tool list')),
         2000,

@@ -14,28 +14,74 @@ const directory = () => path.join(bridgeStateDirectory(), 'companion');
 const currentPath = () => path.join(directory(), 'current');
 const hash = (file) =>
   crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
-function recoverInstallation(state) {
-  // This small recovery entrypoint is embedded in launchd's generated command,
-  // so a process dying between the directory renames cannot strand the receiver.
+// Kept self-contained for launchd recovery while current/ is between renames.
+async function acquireInstallationLock(state) {
+  const fs = require('node:fs'),
+    path = require('node:path'),
+    crypto = require('node:crypto');
+  const directory = path.join(state, 'companion');
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  if (fs.lstatSync(directory).isSymbolicLink())
+    throw new Error('Private state directory cannot be a symlink');
+  fs.chmodSync(directory, 0o700);
+  const lock = path.join(directory, '.install-lock'),
+    owner = process.pid + '-' + crypto.randomUUID(),
+    deadline = Date.now() + 15000;
+  function readOwner() {
+    try {
+      const active = fs.readlinkSync(lock);
+      if (!/^\d+-[a-f0-9-]{36}$/.test(active))
+        throw new Error('Invalid installation lock; it was preserved');
+      return active;
+    } catch (error) {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    }
+  }
+  while (true) {
+    try {
+      fs.symlinkSync(owner, lock);
+      return {
+        close() {
+          if (readOwner() === owner) fs.unlinkSync(lock);
+        },
+      };
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+    }
+    const active = readOwner();
+    if (!active) continue;
+    try {
+      process.kill(Number(active.split('-')[0]), 0);
+    } catch (error) {
+      if (error.code !== 'ESRCH') throw error;
+      if (readOwner() !== active) continue;
+      try {
+        fs.unlinkSync(lock);
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+      continue;
+    }
+    if (Date.now() >= deadline)
+      throw new Error('Another installation is still running');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+function restoreInstallation(state) {
   const fs = require('node:fs'),
     path = require('node:path');
   const directory = path.join(state, 'companion'),
     journal = path.join(directory, '.activation.json');
-  if (!fs.existsSync(journal)) return;
+  let record;
   try {
-    const owner = Number(
-      fs.readlinkSync(path.join(directory, '.install-lock')).split('-')[0],
-    );
-    try {
-      process.kill(owner, 0);
-      return;
-    } catch (error) {
-      if (error.code !== 'ESRCH') throw error;
-    }
+    record = fs.readFileSync(journal, 'utf8');
   } catch (error) {
-    if (error.code !== 'ENOENT') throw error;
+    if (error.code === 'ENOENT') return;
+    throw error;
   }
-  const { staging } = JSON.parse(fs.readFileSync(journal));
+  const { staging } = JSON.parse(record);
   if (
     path.dirname(staging) !== directory ||
     !/^\.install-[\w]+$/.test(path.basename(staging))
@@ -57,6 +103,15 @@ function recoverInstallation(state) {
   }
   fs.unlinkSync(journal);
   fs.rmSync(staging, { recursive: true, force: true });
+}
+
+async function recoverInstallation(state) {
+  const lock = await acquireInstallationLock(state);
+  try {
+    restoreInstallation(state);
+  } finally {
+    lock.close();
+  }
 }
 
 function publicEntries(root, entries) {
@@ -173,22 +228,17 @@ function reusableReceipt(current, requested) {
     throw new Error('This version has different contents. Use a new version');
   return active;
 }
-async function acquireInstallation(current, requested) {
-  // A symlink publishes the owner atomically, including when its process dies
-  // before reaching an exit handler. Codex may launch several transports at once.
+function reusableInstallation(current, requested) {
   const lock = path.join(directory(), '.install-lock'),
-    owner = process.pid + '-' + crypto.randomUUID();
-  function lockOwner() {
-    let active;
+    journal = path.join(directory(), '.activation.json');
+  function busy() {
     try {
-      active = fs.readlinkSync(lock);
+      fs.lstatSync(lock);
+      return true;
     } catch (error) {
-      if (error.code === 'ENOENT') return null;
-      throw error;
+      if (error.code !== 'ENOENT') throw error;
+      return fs.existsSync(journal);
     }
-    if (!/^\d+-[a-f0-9-]{36}$/.test(active))
-      throw new Error('Invalid installation lock; it was preserved');
-    return active;
   }
   function generation() {
     try {
@@ -198,62 +248,30 @@ async function acquireInstallation(current, requested) {
       throw error;
     }
   }
-  const deadline = Date.now() + 10000;
-  while (true) {
-    const active = lockOwner();
-    if (!active) {
-      // Normal starts only read verified files, without serializing every
-      // Codex conversation on the installation lock.
-      const before = generation();
-      let ready;
-      try {
-        const receipt = reusableReceipt(current, requested);
-        if (receipt && pluginInstalled(current))
-          ready = {
-            version: receipt.version,
-            changed: false,
-          };
-      } catch (error) {
-        if (lockOwner() || generation() !== before) continue;
-        throw error;
-      }
-      // Atomic activation changes the directory inode. Retry if an installer
-      // crossed this read; never combine files from different activations.
-      if (lockOwner() || generation() !== before) continue;
-      if (ready) return { ready };
-      try {
-        fs.symlinkSync(owner, lock);
-        return { lock, owner };
-      } catch (error) {
-        if (error.code !== 'EEXIST') throw error;
-        continue;
-      }
-    }
-    try {
-      process.kill(Number(active.split('-')[0]), 0);
-    } catch (error) {
-      if (error.code !== 'ESRCH') throw error;
-      try {
-        if (fs.readlinkSync(lock) === active) fs.unlinkSync(lock);
-      } catch (error) {
-        if (error.code !== 'ENOENT') throw error;
-      }
-      continue;
-    }
-    if (Date.now() >= deadline)
-      throw new Error('Another installation is still running');
-    await new Promise((resolve) => setTimeout(resolve, 50));
+  if (busy()) return null;
+  const before = generation();
+  let ready;
+  try {
+    const receipt = reusableReceipt(current, requested);
+    if (receipt && pluginInstalled(current))
+      ready = { version: receipt.version, changed: false };
+  } catch (error) {
+    if (busy() || generation() !== before) return null;
+    throw error;
   }
+  // Normal starts read without a lock; any concurrent activation invalidates
+  // the observation and sends the caller through the shared critical section.
+  return busy() || generation() !== before ? null : ready;
 }
 async function prepareManagedCompanion(source, options = {}) {
-  recoverInstallation(bridgeStateDirectory());
   const requested = receiptFor(source),
     current = currentPath();
   privateDirectory(directory());
-  const admission = await acquireInstallation(current, requested);
-  if (admission.ready) return admission.ready;
-  const { lock, owner } = admission;
+  const ready = reusableInstallation(current, requested);
+  if (ready) return ready;
+  const lock = await acquireInstallationLock(bridgeStateDirectory());
   try {
+    restoreInstallation(bridgeStateDirectory());
     const active = reusableReceipt(current, requested);
     if (active) {
       installPlugin(current);
@@ -303,7 +321,7 @@ async function prepareManagedCompanion(source, options = {}) {
       fs.rmSync(staging, { recursive: true, force: true });
     }
   } finally {
-    if (fs.readlinkSync(lock) === owner) fs.unlinkSync(lock);
+    lock.close();
   }
 }
 async function verifyActivation(version) {
@@ -357,4 +375,6 @@ module.exports = {
   stopForMaintenance,
   prepareManagedCompanion,
   recoverInstallation,
+  acquireInstallationLock,
+  restoreInstallation,
 };

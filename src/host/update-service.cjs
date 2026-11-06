@@ -11,7 +11,11 @@ const {
   privateDirectory,
   writePrivateJson,
 } = require('./state.cjs');
-const { currentPath, recoverInstallation } = require('./installation.cjs');
+const {
+  currentPath,
+  acquireInstallationLock,
+  restoreInstallation,
+} = require('./installation.cjs');
 const label = 'com.ysun.figma.updates';
 const xml = (value) =>
   value.replace(
@@ -31,7 +35,7 @@ function serviceDefinition(state) {
     'utf8',
   );
   const engine = require(path.join(currentPath(), 'package.json')).engines.node;
-  const bootstrap = `(${recoverInstallation.toString()})(${JSON.stringify(state)});require(${JSON.stringify(path.join(currentPath(), 'src/host/update-service.cjs'))}).receive().catch(e=>{console.error(e.message);process.exitCode=1;});`;
+  const bootstrap = `(async()=>{const lock=await(${acquireInstallationLock.toString()})(${JSON.stringify(state)});try{(${restoreInstallation.toString()})(${JSON.stringify(state)});}finally{lock.close();}await require(${JSON.stringify(path.join(currentPath(), 'src/host/update-service.cjs'))}).receive();})().catch(e=>{console.error(e.message);process.exitCode=1;});`;
   return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>
 <key>Label</key><string>${label}</string>
 <key>ProgramArguments</key><array><string>/bin/sh</string><string>-c</string><string>${xml(launcher)}</string><string>ysun-figma-node</string><string>-e</string><string>${xml(bootstrap)}</string></array>

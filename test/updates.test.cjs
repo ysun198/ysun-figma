@@ -731,7 +731,7 @@ test('an interrupted activation restores the last working package without modify
     path.join(state, 'companion/.activation.json'),
     JSON.stringify({ staging }),
   );
-  recoverInstallation(state);
+  await recoverInstallation(state);
   assert.equal(
     JSON.parse(fs.readFileSync(path.join(currentPath(), 'package.json')))
       .version,
