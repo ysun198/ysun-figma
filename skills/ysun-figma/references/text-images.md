@@ -20,6 +20,8 @@ Use range methods for mixed formatting (`setRangeFontName`, `setRangeFontSize`, 
 
 Before setting wrapping width, load fonts, set `textAutoResize: 'HEIGHT'`, resize to a fixed width, then apply any valid parent sizing mode. Check the rendered lines and clipping; a successful character assignment is not visual acceptance.
 
+Apply `textWrapStyle` or its range setter after establishing that wrapping geometry. A live WIDTH_AND_HEIGHT title normalized BALANCE to AUTO; a fixed-width HEIGHT paragraph retained BALANCE and PRETTY in both whole-node and range reads. Read back the actual paragraph behavior rather than treating a setter return as proof.
+
 ## Styles and font variables
 
 Create or reuse actual `TextStyle` IDs when the source has shared text roles. Apply styles through the async native setter. Font-family/style/weight variables and explicit mode changes can affect several faces: load the faces that the relevant mode values select before applying those bindings. Preserve scopes, aliases and code syntax rather than reducing a token to a literal.

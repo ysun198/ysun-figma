@@ -318,6 +318,7 @@ test('public previews use Desktop client context, no credentials, no redirects, 
   for (const [type, bytes, code] of [
     ['image/svg+xml', '<svg/>', 'type_not_allowed'],
     ['image/png', '<html/>', 'invalid_image'],
+    ['image/jpeg', png, 'invalid_image'],
     ['image/png', Buffer.alloc(2 * 1024 * 1024 + 1), 'too_large'],
   ])
     await assert.rejects(
@@ -335,6 +336,21 @@ test('public previews use Desktop client context, no credentials, no redirects, 
     }),
     /community_preview_http_403/,
   );
+});
+test('Figma covers with a generic CDN content type use their raster signature', async () => {
+  for (const type of ['binary/octet-stream', 'application/octet-stream']) {
+    const read = (bytes) =>
+      readPreview(imageUrl, {
+        userAgent,
+        fetcher: async () =>
+          new Response(bytes, { headers: { 'content-type': type } }),
+      });
+    const image = await read(png);
+    assert.equal(image.mimeType, 'image/png');
+    assert.equal(image.data, png.toString('base64'));
+    await assert.rejects(read('<html/>'), /community_preview_invalid_image/);
+    await assert.rejects(read('<svg/>'), /community_preview_invalid_image/);
+  }
 });
 test('preview URLs cannot send requests to arbitrary hosts or accept absent client context', async () => {
   const fetcher = () => assert.fail('must reject before network');
@@ -451,5 +467,53 @@ test('default preview reads the provided file cover when the separate promotiona
       },
     ),
     /community_preview_waf_challenge: HTTP 202/,
+  );
+});
+test('default preview falls back when the published file cover is unavailable', async () => {
+  const promotional =
+    'https://s3-figma-hubfile-images-production-cdn-cgi.figma.com/cdn-cgi/image/format=auto/hub/file/promo';
+  const b = browser({
+    handler: () => {
+      const m = model();
+      m.thumbnail_src_set = { 1200: promotional };
+      m.content.hub_file.resized_thumbnail_urls = { 1200: imageUrl };
+      return Response.json({ meta: { resource: m } });
+    },
+  });
+  await b.reader.identity();
+  const readerFactory = async () => ({
+    userAgent,
+    detail: (id) => b.reader.detail(id),
+    close: async () => {},
+  });
+  const result = await researchCommunity(
+    { action: 'preview', communityFileId: fileId },
+    {
+      readerFactory,
+      fetcher: async (url) =>
+        url === imageUrl
+          ? new Response('', { status: 403 })
+          : new Response(png, { headers: { 'content-type': 'image/png' } }),
+    },
+  );
+  assert.equal(result.preview.index, 1);
+  assert.equal(result.preview.kind, 'community-cover');
+  assert.deepEqual(plain(result.previewFallback), {
+    requestedIndex: 0,
+    usedIndex: 1,
+    skipped: [
+      { index: 0, kind: 'file-cover', error: 'community_preview_http_403' },
+    ],
+  });
+
+  await assert.rejects(
+    researchCommunity(
+      { action: 'preview', communityFileId: fileId, previewIndex: 0 },
+      {
+        readerFactory,
+        fetcher: async () => new Response('', { status: 403 }),
+      },
+    ),
+    /community_preview_http_403/,
   );
 });

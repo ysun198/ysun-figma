@@ -88,6 +88,31 @@ function fixture(t) {
   });
   return { root, pkg, source, release, privateKey };
 }
+test('live update status separates the running installation from the last checked version without changing scheduling state', (t) => {
+  fixture(t);
+  const directory = path.join(process.env.FIGMA_PLUGIN_STATE_DIR, 'updates');
+  fs.mkdirSync(directory, { recursive: true });
+  const state = {
+    stage: 'current',
+    installedVersion: '1.0.0',
+    checkedAt: '2026-11-05T00:00:00.000Z',
+    nextCheckAt: '2026-11-05T01:00:00.000Z',
+    feed: { private: true },
+  };
+  const bytes = JSON.stringify(state);
+  fs.writeFileSync(path.join(directory, 'status.json'), bytes);
+  const status = updateStatus('1.1.0');
+  assert.equal(status.installedVersion, '1.1.0');
+  assert.equal(status.checkedInstalledVersion, '1.0.0');
+  assert.equal(status.nextCheckAt, state.nextCheckAt);
+  assert.equal(status.feed, undefined);
+  assert.equal(updateStatus().installedVersion, '1.0.0');
+  assert.equal(updateStatus('1.0.0').checkedInstalledVersion, undefined);
+  assert.equal(
+    fs.readFileSync(path.join(directory, 'status.json'), 'utf8'),
+    bytes,
+  );
+});
 test('published signed release updates code, native entrypoints and skills without touching private data', async (t) => {
   const f = fixture(t);
   await prepareManagedCompanion(f.source('1.0.0'));

@@ -1,52 +1,4 @@
-// MCP Apps resource. The browser receives data through the host, never bridge credentials.
-const fs = require('node:fs');
-const path = require('node:path');
 const { matchingClients, sameFile, targetIdentity } = require('./targets.cjs');
-const uri = 'ui://figma-plugin/files';
-const mimeType = 'text/html;profile=mcp-app';
-// One self-themed SVG serves image and mask consumers. Image colors follow
-// Codex's secondary foreground; opaque artwork keeps host mask tinting intact.
-const iconPath =
-  require('../../plugin.json').extensions['com.openai'].interface.composerIcon;
-const svg = fs.readFileSync(path.join(__dirname, '../..', iconPath), 'utf8');
-const icons = [
-  {
-    src: 'data:image/svg+xml;base64,' + Buffer.from(svg).toString('base64'),
-    mimeType: 'image/svg+xml',
-    sizes: ['48x48'],
-  },
-];
-const metadata = {
-  ui: { resourceUri: uri, visibility: ['app', 'model'] },
-  'openai/ui': { entrypoints: [{ type: 'global' }] },
-};
-const resource = { uri, name: 'figma-files', title: 'ysun figma', mimeType };
-function readResource(requested) {
-  if (requested !== uri)
-    throw Object.assign(new Error('Unknown resource'), { code: -32002 });
-  return {
-    contents: [
-      {
-        ...resource,
-        uri: requested,
-        text: fs.readFileSync(path.join(__dirname, '../../app.html'), 'utf8'),
-        _meta: {
-          ui: {
-            csp: {
-              connectDomains: [],
-              resourceDomains: ['https://s3-alpha.figma.com'],
-            },
-            prefersBorder: false,
-          },
-          'openai/ui': {
-            preferredDisplayMode: 'fullscreen',
-            availableDisplayModes: ['inline', 'fullscreen'],
-          },
-        },
-      },
-    ],
-  };
-}
 function fileList(state, catalog = { files: [], status: 'empty' }) {
   const clients = (state.clients || []).filter((client) => client.connected);
   const writing = (state.jobs || []).filter(
@@ -100,12 +52,4 @@ function fileList(state, catalog = { files: [], status: 'empty' }) {
     },
   };
 }
-module.exports = {
-  uri,
-  mimeType,
-  icons,
-  metadata,
-  resource,
-  readResource,
-  fileList,
-};
+module.exports = { fileList };

@@ -117,7 +117,7 @@ function createCommunityReader() {
       return null;
     }
   }
-  function resource(m, expectedId) {
+  function resourceContent(m, expectedId) {
     if (
       !m ||
       typeof m !== 'object' ||
@@ -146,6 +146,9 @@ function createCommunityReader() {
         '/community/file/' + m.content_id
     )
       fail('community_resource_identity_mismatch');
+    return content;
+  }
+  function resourcePreviews(m, content) {
     const previews = [];
     const add = (url, kind) => {
       const safe = imageUrl(url);
@@ -166,6 +169,11 @@ function createCommunityReader() {
       ))
         if (media && typeof media === 'object')
           add(media.url || media.image_url || media.thumbnail_url, 'carousel');
+    return previews;
+  }
+  function resource(m, expectedId) {
+    const content = resourceContent(m, expectedId);
+    const previews = resourcePreviews(m, content);
     const creator = m.publisher || m.creator || {};
     return {
       resourceId: m.id,

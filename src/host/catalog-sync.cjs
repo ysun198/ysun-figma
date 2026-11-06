@@ -1,5 +1,5 @@
 const {
-  connectDesktop,
+  queuedDesktop: connectDesktop,
   runtimeResult,
   createPageReader,
 } = require('./desktop.cjs');
@@ -79,8 +79,8 @@ async function desktopReader({ connect = connectDesktop } = {}) {
         // Desktop can preload Feed and file-browser pages for the same account.
         // Their authenticated identity, rather than their title, defines one source.
         sessionId = connected.id;
-        for (const home of available)
-          if (home.id !== sessionId) await detach(home.id);
+        for (const home of available.filter((home) => home.id !== sessionId))
+          await detach(home.id);
         break;
       }
       for (const home of available) await detach(home.id);

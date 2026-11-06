@@ -36,6 +36,67 @@ function createAccountReader() {
     const date = new Date(n);
     return Number.isFinite(date.getTime()) && n > 0 ? date.toISOString() : null;
   };
+  function directoryItems(data) {
+    const items =
+      data?.folderItems ??
+      data?.currentUser?.recentResources ??
+      data?.sharedWithYouResourcesV2 ??
+      data?.orgDiscoverableTeams ??
+      data?.orgJoinedTeams;
+    if (!Array.isArray(items))
+      throw new Error('account_directory_schema_changed');
+    if (
+      typeof items.hasNextPage !== 'function' ||
+      typeof items.loadNext !== 'function' ||
+      typeof items.isLoadingNextPage !== 'boolean'
+    )
+      throw new Error('account_pagination_schema_changed');
+    const more = items.hasNextPage();
+    if (typeof more !== 'boolean')
+      throw new Error('account_pagination_schema_changed');
+    return { items, more };
+  }
+  function fileEntry(item) {
+    const file =
+      item.folderItemFile?.file ||
+      item.userRecentResourceFile?.file ||
+      item.sharedWithYouFile?.file ||
+      item.sharedWithYouRepo?.repo?.sourceFile;
+    if (!file || file.deletedAt || file.trashedAt) return null;
+    if (
+      !/^[A-Za-z0-9]{6,100}$/.test(file.key || '') ||
+      typeof file.name !== 'string' ||
+      !file.name.trim()
+    )
+      throw new Error('account_file_schema_changed');
+    return {
+      fileKey: file.key,
+      name: file.name,
+      editorType: file.editorType,
+      url: file.editUrl || file.url,
+      thumbnailUrl: file.thumbnailUrl,
+      updatedAt: date(item.folderItemFile ? item.touchedAt : file.touchedAt),
+      createdAt: date(file.createdAt),
+      lastViewedAt: date(item.userRecentResourceFile ? item.actionAt : null),
+      folderId: String(file.folderId || ''),
+      teamId: String(file.teamId || ''),
+    };
+  }
+  function folderEntry(item) {
+    const folder =
+      item.folderItemFolder?.folder || item.sharedWithYouFolder?.folder;
+    if (!folder || folder.deletedAt || folder.trashedAt) return null;
+    const name = folder.name ?? folder.path;
+    if (!/^\d+$/.test(String(folder.id || '')) || typeof name !== 'string')
+      throw new Error('account_folder_schema_changed');
+    return { id: String(folder.id), name };
+  }
+  function teamEntry(item) {
+    if (!item.team || item.team.deletedAt) return null;
+    if (!/^\d+$/.test(String(item.team.id || '')))
+      throw new Error('account_team_schema_changed');
+    return String(item.team.id);
+  }
   return {
     identity() {
       check();
@@ -92,74 +153,18 @@ function createAccountReader() {
         itemCount: 0,
       };
       if (current?.status !== 'loaded') return result;
-      const data = current.data;
-      const items =
-        data?.folderItems ??
-        data?.currentUser?.recentResources ??
-        data?.sharedWithYouResourcesV2 ??
-        data?.orgDiscoverableTeams ??
-        data?.orgJoinedTeams;
-      if (!Array.isArray(items))
-        throw new Error('account_directory_schema_changed');
-      if (
-        typeof items.hasNextPage !== 'function' ||
-        typeof items.loadNext !== 'function' ||
-        typeof items.isLoadingNextPage !== 'boolean'
-      )
-        throw new Error('account_pagination_schema_changed');
-      const more = items.hasNextPage();
-      if (typeof more !== 'boolean')
-        throw new Error('account_pagination_schema_changed');
+      const { items, more } = directoryItems(current.data);
       result.hasNextPage = more;
       result.fetching = items.isLoadingNextPage;
       result.itemCount = items.length;
       result.nextOffset = Math.min(items.length, offset + 500);
       for (const item of items.slice(offset, result.nextOffset)) {
-        const file =
-          item.folderItemFile?.file ||
-          item.userRecentResourceFile?.file ||
-          item.sharedWithYouFile?.file ||
-          item.sharedWithYouRepo?.repo?.sourceFile;
-        if (file && !file.deletedAt && !file.trashedAt) {
-          if (
-            !/^[A-Za-z0-9]{6,100}$/.test(file.key || '') ||
-            typeof file.name !== 'string' ||
-            !file.name.trim()
-          )
-            throw new Error('account_file_schema_changed');
-          result.files.push({
-            fileKey: file.key,
-            name: file.name,
-            editorType: file.editorType,
-            url: file.editUrl || file.url,
-            thumbnailUrl: file.thumbnailUrl,
-            updatedAt: date(
-              item.folderItemFile ? item.touchedAt : file.touchedAt,
-            ),
-            createdAt: date(file.createdAt),
-            lastViewedAt: date(
-              item.userRecentResourceFile ? item.actionAt : null,
-            ),
-            folderId: String(file.folderId || ''),
-            teamId: String(file.teamId || ''),
-          });
-        }
-        const folder =
-          item.folderItemFolder?.folder || item.sharedWithYouFolder?.folder;
-        if (folder && !folder.deletedAt && !folder.trashedAt) {
-          const name = folder.name ?? folder.path;
-          if (
-            !/^\d+$/.test(String(folder.id || '')) ||
-            typeof name !== 'string'
-          )
-            throw new Error('account_folder_schema_changed');
-          result.folders.push({ id: String(folder.id), name });
-        }
-        if (item.team && !item.team.deletedAt) {
-          if (!/^\d+$/.test(String(item.team.id || '')))
-            throw new Error('account_team_schema_changed');
-          result.teams.push(String(item.team.id));
-        }
+        const file = fileEntry(item),
+          folder = folderEntry(item),
+          team = teamEntry(item);
+        if (file) result.files.push(file);
+        if (folder) result.folders.push(folder);
+        if (team) result.teams.push(team);
       }
       if (loadNext && more && !items.isLoadingNextPage) {
         items.loadNext();

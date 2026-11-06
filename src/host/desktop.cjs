@@ -145,7 +145,8 @@ async function connectDesktop({ start = ensureDesktop } = {}) {
     }
     throw new Error('desktop_reader_busy', { cause: error });
   }
-  const pending = new Map();
+  const pending = new Map(),
+    listeners = new Set();
   let input,
     output,
     timer,
@@ -162,6 +163,7 @@ async function connectDesktop({ start = ensureDesktop } = {}) {
       request.reject(error);
     }
     pending.clear();
+    listeners.clear();
     for (const fd of [input, output]) if (fd !== undefined) fs.closeSync(fd);
     try {
       if (fs.readlinkSync(lock) === owner) fs.unlinkSync(lock);
@@ -178,6 +180,29 @@ async function connectDesktop({ start = ensureDesktop } = {}) {
       path.join(receipt.directory, 'output'),
       fs.constants.O_RDWR | fs.constants.O_NONBLOCK,
     );
+    function acceptFrame(frame) {
+      let message;
+      try {
+        message = JSON.parse(frame.toString());
+      } catch {
+        // A killed reader may already have consumed a stale frame prefix.
+        // Its suffix has no request ID; the next frame starts at NUL.
+        return;
+      }
+      if (message.method)
+        for (const listener of listeners) {
+          try {
+            listener(message);
+          } catch {}
+        }
+      const request = pending.get(message.id);
+      if (request) {
+        pending.delete(message.id);
+        clearTimeout(request.timer);
+        if (message.error) request.reject(new Error(message.error.message));
+        else request.resolve(message.result);
+      }
+    }
     const chunk = Buffer.alloc(65536);
     timer = setInterval(() => {
       try {
@@ -198,29 +223,14 @@ async function connectDesktop({ start = ensureDesktop } = {}) {
           while ((end = buffer.indexOf(0)) !== -1) {
             const frame = buffer.subarray(0, end);
             buffer = buffer.subarray(end + 1);
-            let message;
-            try {
-              message = JSON.parse(frame.toString());
-            } catch {
-              // A killed reader may already have consumed a stale frame prefix.
-              // Its suffix has no request ID; the next frame starts at NUL.
-              continue;
-            }
-            const request = pending.get(message.id);
-            if (request) {
-              pending.delete(message.id);
-              clearTimeout(request.timer);
-              if (message.error)
-                request.reject(new Error(message.error.message));
-              else request.resolve(message.result);
-            }
+            acceptFrame(frame);
           }
         }
       } catch (error) {
         close(error);
       }
     }, 20);
-    const call = async (method, params = {}, sessionId) => {
+    const call = async (method, params = {}, sessionId, options = {}) => {
       if (closed) throw new Error('desktop_connection_closed');
       const id = ++sequence,
         bytes = Buffer.from(
@@ -236,8 +246,12 @@ async function connectDesktop({ start = ensureDesktop } = {}) {
           resolve,
           reject,
           timer: setTimeout(() => {
-            close(new Error('desktop_request_timeout'));
-          }, 15000),
+            const error = new Error('desktop_request_timeout');
+            if (options.isolatedTimeout) {
+              pending.delete(id);
+              reject(error);
+            } else close(error);
+          }, options.timeoutMs || 15000),
         };
         pending.set(id, request);
       });
@@ -265,17 +279,36 @@ async function connectDesktop({ start = ensureDesktop } = {}) {
         });
         sending = sent.catch(() => {});
         await sent;
-        return await answer;
       } catch (error) {
         close(error);
         throw error;
       }
+      return await answer;
     };
     await call('Target.getTargets');
-    return { call, close };
+    return {
+      call,
+      close,
+      onEvent(listener) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    };
   } catch (error) {
     close(error);
     throw error;
+  }
+}
+async function queuedDesktop(options = {}) {
+  const deadline = Date.now() + 20000;
+  while (true) {
+    try {
+      return await connectDesktop(options);
+    } catch (error) {
+      if (error.message !== 'desktop_reader_busy' || Date.now() >= deadline)
+        throw error;
+      await pause(50);
+    }
   }
 }
 function runtimeResult(result, unavailable = 'desktop_reader_unavailable') {
@@ -287,12 +320,24 @@ function runtimeResult(result, unavailable = 'desktop_reader_unavailable') {
     );
   return result.result;
 }
-async function createPageReader(connection, sessionId, factory, unavailable) {
+async function createPageReader(
+  connection,
+  sessionId,
+  factory,
+  unavailable,
+  input,
+) {
+  await connection.call('Runtime.enable', {}, sessionId);
   const objectId = runtimeResult(
     await connection.call(
       'Runtime.evaluate',
       {
-        expression: '(' + factory.toString() + ')()',
+        expression:
+          '(' +
+          factory.toString() +
+          ')(' +
+          (input === undefined ? '' : JSON.stringify(input)) +
+          ')',
         returnByValue: false,
       },
       sessionId,
@@ -357,10 +402,120 @@ async function launchDesktop(
   );
   return { state: 'opened', fileKey: key || null, accountConnection };
 }
+async function readDesktopFiles({ fileKey, connect = queuedDesktop } = {}) {
+  const { parseFigmaUrl } = require('./targets.cjs');
+  if (fileKey && !/^[A-Za-z0-9]{6,100}$/.test(fileKey))
+    throw new Error('Invalid Figma file key');
+  const connection = await connect();
+  const files = [],
+    issues = [];
+  const timeout = setTimeout(
+    () => connection.close(new Error('desktop_file_status_timeout')),
+    30000,
+  );
+  try {
+    const { targetInfos } = await connection.call('Target.getTargets');
+    const candidates = targetInfos.flatMap((target) => {
+      let expected;
+      try {
+        if (target.type !== 'page') return [];
+        expected = parseFigmaUrl(target.url);
+        if (new URL(target.url).pathname.startsWith('/proto/')) return [];
+        if (fileKey && expected.fileKey !== fileKey) return [];
+      } catch {
+        return [];
+      }
+      return [{ target, expected }];
+    });
+    const results = await Promise.all(
+      candidates.slice(0, 20).map(async ({ target, expected }) => {
+        let sessionId;
+        try {
+          ({ sessionId } = await connection.call('Target.attachToTarget', {
+            targetId: target.targetId,
+            flatten: true,
+          }));
+          await connection.call('Runtime.enable', {}, sessionId);
+          const state = runtimeResult(
+            await connection.call(
+              'Runtime.evaluate',
+              {
+                expression:
+                  '(' +
+                  require('./editor-reader.js').createEditorReader.toString() +
+                  ')().status()',
+                returnByValue: true,
+              },
+              sessionId,
+              { timeoutMs: 2500, isolatedTimeout: true },
+            ),
+            'desktop_file_state_unavailable',
+          ).value;
+          const actual = parseFigmaUrl(state.url);
+          if (
+            actual.fileKey !== expected.fileKey ||
+            (state.openFileKey && state.openFileKey !== actual.fileKey)
+          )
+            throw new Error('desktop_file_identity_changed');
+          const url = new URL(state.url);
+          url.search = '';
+          url.hash = '';
+          return {
+            file: {
+              targetId: target.targetId,
+              fileKey: actual.fileKey,
+              url: url.href,
+              documentReady: state.documentReady,
+              editorLoaded: state.editorLoaded,
+              saveStatus: state.saveStatus || null,
+              ...(state.desktopAdapter
+                ? { desktopAdapter: state.desktopAdapter }
+                : {}),
+            },
+          };
+        } catch (error) {
+          return {
+            issue: {
+              targetId: target.targetId,
+              fileKey: expected.fileKey,
+              error: String(error.message || error).slice(0, 200),
+            },
+          };
+        } finally {
+          if (sessionId)
+            await connection
+              .call('Target.detachFromTarget', { sessionId })
+              .catch(() => {});
+        }
+      }),
+    );
+    for (const result of results) {
+      if (result.file) files.push(result.file);
+      else issues.push(result.issue);
+    }
+    if (candidates.length > 20)
+      issues.push({
+        targetId: candidates[20].target.targetId,
+        fileKey: candidates[20].expected.fileKey,
+        error: 'desktop_file_status_limit; filter by exact fileKey',
+      });
+    return {
+      files,
+      issues,
+      complete: issues.length === 0,
+      note: 'Observed Desktop URLs, renderer load state and native save-status flags. Clean save flags are editor evidence, not an independent cloud content readback.',
+    };
+  } finally {
+    clearTimeout(timeout);
+    connection.close();
+  }
+}
 module.exports = {
   ensureDesktop,
   connectDesktop,
+  queuedDesktop,
   launchDesktop,
+  readDesktopFiles,
   runtimeResult,
   createPageReader,
 };

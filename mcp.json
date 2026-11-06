@@ -5,6 +5,10 @@
       "type": "stdio",
       "command": "sh",
       "args": ["${PLUGIN_ROOT}/scripts/launch-mcp.sh"]
+    },
+    "figma": {
+      "type": "streamable-http",
+      "url": "https://mcp.figma.com/mcp"
     }
   }
 }

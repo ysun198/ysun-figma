@@ -174,18 +174,17 @@ function fixture() {
       return node;
     };
   }
-  const context = vm.createContext({ console, Uint8Array });
+  const context = vm.createContext({
+    console,
+    Uint8Array,
+    setTimeout,
+    clearTimeout,
+  });
   vm.runInContext(
-    [
-      'shared/core.js',
-      'figma/observation.js',
-      'figma/design-queries.js',
-      'figma/script-runtime.js',
-    ]
-      .map((name) =>
-        fs.readFileSync(path.join(__dirname, '../../src', name), 'utf8'),
-      )
-      .join('\n'),
+    fs.readFileSync(
+      path.join(require('../../scripts/build.cjs').output, 'plugin-runtime.js'),
+      'utf8',
+    ),
     context,
   );
   context.figma = figma;

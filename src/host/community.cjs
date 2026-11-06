@@ -1,36 +1,59 @@
-const { connectDesktop, createPageReader } = require('./desktop.cjs');
+const {
+  queuedDesktop: connectDesktop,
+  createPageReader,
+} = require('./desktop.cjs');
 const { createCommunityReader } = require('./community-reader.js');
 const HOSTS = new Set(['www.figma.com', 'figma.com']);
+function validateSearch(input) {
+  if (
+    typeof input.query !== 'string' ||
+    !input.query.trim() ||
+    input.query.length > 200 ||
+    input.communityUrl ||
+    input.communityFileId ||
+    input.previewIndex !== undefined
+  )
+    throw new Error(
+      'Community search requires only a query and paging/sort options',
+    );
+  for (const [key, value, maximum] of [
+    ['page', input.page ?? 1, 100],
+    ['pageSize', input.pageSize ?? 12, 50],
+  ])
+    if (!Number.isInteger(value) || value < 1 || value > maximum)
+      throw new Error('Invalid community ' + key);
+  if (
+    input.sortBy &&
+    !['relevancy', 'popular', 'all_time', 'published_at'].includes(input.sortBy)
+  )
+    throw new Error('Invalid community sortBy');
+  return { ...input, query: input.query.trim() };
+}
+function communityFileId(input) {
+  let id = input.communityFileId;
+  if (input.communityUrl) {
+    const url = new URL(input.communityUrl);
+    if (
+      url.protocol !== 'https:' ||
+      !HOSTS.has(url.hostname) ||
+      url.port ||
+      url.username ||
+      url.password ||
+      !/^\/community\/file\/\d{6,30}(?:\/[^/]*)?\/?$/.test(url.pathname)
+    )
+      throw new Error(
+        'Use an exact https://www.figma.com/community/file/ID URL',
+      );
+    id = url.pathname.split('/')[3];
+  }
+  if (typeof id !== 'string' || !/^\d{6,30}$/.test(id))
+    throw new Error('Invalid Community file ID; this is not a cloud fileKey');
+  return id;
+}
 function validateResearch(input) {
   if (!input || !['search', 'detail', 'preview'].includes(input.action))
     throw new Error('Choose community search, detail or preview');
-  if (input.action === 'search') {
-    if (
-      typeof input.query !== 'string' ||
-      !input.query.trim() ||
-      input.query.length > 200 ||
-      input.communityUrl ||
-      input.communityFileId ||
-      input.previewIndex !== undefined
-    )
-      throw new Error(
-        'Community search requires only a query and paging/sort options',
-      );
-    for (const [key, value, maximum] of [
-      ['page', input.page ?? 1, 100],
-      ['pageSize', input.pageSize ?? 12, 50],
-    ])
-      if (!Number.isInteger(value) || value < 1 || value > maximum)
-        throw new Error('Invalid community ' + key);
-    if (
-      input.sortBy &&
-      !['relevancy', 'popular', 'all_time', 'published_at'].includes(
-        input.sortBy,
-      )
-    )
-      throw new Error('Invalid community sortBy');
-    return { ...input, query: input.query.trim() };
-  }
+  if (input.action === 'search') return validateSearch(input);
   if (
     input.query !== undefined ||
     input.page !== undefined ||
@@ -40,24 +63,7 @@ function validateResearch(input) {
     (input.action === 'detail' && input.previewIndex !== undefined)
   )
     throw new Error('Choose one exact Community file URL or Community file ID');
-  let id = input.communityFileId;
-  if (input.communityUrl) {
-    const u = new URL(input.communityUrl);
-    if (
-      u.protocol !== 'https:' ||
-      !HOSTS.has(u.hostname) ||
-      u.port ||
-      u.username ||
-      u.password ||
-      !/^\/community\/file\/\d{6,30}(?:\/[^/]*)?\/?$/.test(u.pathname)
-    )
-      throw new Error(
-        'Use an exact https://www.figma.com/community/file/ID URL',
-      );
-    id = u.pathname.split('/')[3];
-  }
-  if (typeof id !== 'string' || !/^\d{6,30}$/.test(id))
-    throw new Error('Invalid Community file ID; this is not a cloud fileKey');
+  const id = communityFileId(input);
   if (
     input.previewIndex !== undefined &&
     (!Number.isInteger(input.previewIndex) ||
@@ -148,6 +154,21 @@ function validPreviewUrl(value) {
     throw new Error('community_preview_url_not_allowed');
   return u.href;
 }
+function previewMimeType(bytes) {
+  if (
+    bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+  )
+    return 'image/png';
+  if (bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255)
+    return 'image/jpeg';
+  if (/^GIF8[79]a$/.test(bytes.subarray(0, 6).toString())) return 'image/gif';
+  if (
+    bytes.subarray(0, 4).toString() === 'RIFF' &&
+    bytes.subarray(8, 12).toString() === 'WEBP'
+  )
+    return 'image/webp';
+  return null;
+}
 async function readPreview(url, { fetcher = fetch, userAgent } = {}) {
   if (
     typeof userAgent !== 'string' ||
@@ -173,9 +194,18 @@ async function readPreview(url, { fetcher = fetch, userAgent } = {}) {
         r.status,
     );
   if (r.status !== 200) throw new Error('community_preview_http_' + r.status);
-  const mimeType = r.headers.get('content-type')?.split(';')[0];
+  const declaredType = r.headers
+    .get('content-type')
+    ?.split(';')[0]
+    .trim()
+    .toLowerCase();
+  const rasterTypes = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
   if (
-    !['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(mimeType)
+    ![
+      ...rasterTypes,
+      'application/octet-stream',
+      'binary/octet-stream',
+    ].includes(declaredType)
   )
     throw new Error('community_preview_type_not_allowed');
   const limit = 2 * 1024 * 1024;
@@ -195,18 +225,12 @@ async function readPreview(url, { fetcher = fetch, userAgent } = {}) {
     throw error;
   }
   const bytes = Buffer.concat(chunks);
-  const valid =
-    mimeType === 'image/png'
-      ? bytes
-          .subarray(0, 8)
-          .equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
-      : mimeType === 'image/jpeg'
-        ? bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255
-        : mimeType === 'image/gif'
-          ? /^GIF8[79]a$/.test(bytes.subarray(0, 6).toString())
-          : bytes.subarray(0, 4).toString() === 'RIFF' &&
-            bytes.subarray(8, 12).toString() === 'WEBP';
-  if (!valid) throw new Error('community_preview_invalid_image');
+  const mimeType = previewMimeType(bytes);
+  if (
+    !mimeType ||
+    (rasterTypes.includes(declaredType) && declaredType !== mimeType)
+  )
+    throw new Error('community_preview_invalid_image');
   return { mimeType, size, data: bytes.toString('base64') };
 }
 async function researchCommunity(
@@ -225,17 +249,49 @@ async function researchCommunity(
     await reader.close();
   }
   if (args.action === 'preview') {
-    const index = args.previewIndex ?? 0,
-      preview = result.resource.previews[index];
-    if (!preview) throw new Error('community_preview_unavailable');
-    const image = await readPreview(preview.url, {
-      fetcher,
-      userAgent: reader.userAgent,
-    });
+    const requestedIndex = args.previewIndex ?? 0;
+    const previews = result.resource.previews;
+    const candidates =
+      input.previewIndex === undefined
+        ? previews.slice(requestedIndex)
+        : [previews[requestedIndex]].filter(Boolean);
+    if (!candidates.length) throw new Error('community_preview_unavailable');
+    const skipped = [];
+    let preview, image, lastError;
+    for (const candidate of candidates) {
+      try {
+        image = await readPreview(candidate.url, {
+          fetcher,
+          userAgent: reader.userAgent,
+        });
+        preview = candidate;
+        break;
+      } catch (error) {
+        lastError = error;
+        // The default preview should survive an expired or incompatible cover.
+        // Every candidate has already passed the Community reader's URL allowlist.
+        if (candidate === candidates.at(-1)) throw error;
+        skipped.push({
+          index: candidate.index,
+          kind: candidate.kind,
+          error: String(error.message || error).slice(0, 160),
+        });
+      }
+    }
+    if (!preview) throw lastError || new Error('community_preview_unavailable');
     result = {
       ...result,
       preview: { ...preview, mimeType: image.mimeType, size: image.size },
       image,
+      ...(skipped.length
+        ? {
+            previewFallback: {
+              requestedIndex,
+              usedIndex: preview.index,
+              skipped,
+            },
+          }
+        : {}),
     };
   }
   return {

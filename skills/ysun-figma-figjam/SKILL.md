@@ -5,7 +5,7 @@ description: Create or edit editable FigJam boards and diagrams with ysun figma,
 
 # FigJam
 
-Use [files](../ysun-figma-files/SKILL.md) for the destination and [native execution](../ysun-figma/references/native-execution.md) before scripts. Check live editorType/capabilities; Design methods are not automatically FigJam methods. A new board requires normal authenticated Figma UI creation.
+Use [files](../ysun-figma-files/SKILL.md) for the destination and [native execution](../ysun-figma/references/native-execution.md) before scripts. Check live editorType/capabilities; Design methods are not automatically FigJam methods. Cloud creation is a separate bootstrap capability; prefer an already authorized official creator over GUI when available.
 
 Read [FigJam API recipes](../ysun-figma/references/figjam.md) for native shape/connector construction, endpoint attachment, tables and code blocks. Look up unfamiliar constructors with `figma_api`; diagram syntax is input data, not an instruction to call a cloud-only generator.
 

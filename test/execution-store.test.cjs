@@ -296,8 +296,8 @@ test('an abrupt process death recovers committed receipts and marks running writ
     if (fs.existsSync(f.databasePath + suffix))
       assert.equal(fs.statSync(f.databasePath + suffix).mode & 0o777, 0o600);
 });
-test('same-file writes block the preview of every connected instance while other files stay available', () => {
-  const { fileList } = require('../src/host/app.cjs');
+test('same-file writes are reflected on each connected file session', () => {
+  const { fileList } = require('../src/host/file-list.cjs');
   const another = {
     ...client,
     id: 'kernel-client-2',

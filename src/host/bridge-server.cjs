@@ -8,6 +8,7 @@ const {
   bridgeStateDirectory,
   connectionPath,
   writePrivateJson,
+  readNativeBuild,
 } = require('./state.cjs');
 const {
   BRIDGE_RUNTIME_VERSION,
@@ -21,9 +22,8 @@ const {
   MAX_RUN_MS,
   TERMINAL_STATES,
   resolved,
-  digest,
 } = require('./execution.cjs');
-const { fileList } = require('./app.cjs');
+const { fileList } = require('./file-list.cjs');
 const PROTOCOL_VERSION = BRIDGE_PROTOCOL_VERSION;
 const GRANT_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 const PACKAGE_VERSION = require('../../package.json').version;
@@ -47,7 +47,7 @@ function safeEqual(a, b) {
 function problem(statusCode, message) {
   return Object.assign(new Error(message), { statusCode });
 }
-function publicClient(client, now) {
+function publicClient(client, now, expectedNativeBuild) {
   const value = Object.fromEntries(
     [
       'id',
@@ -70,7 +70,9 @@ function publicClient(client, now) {
   );
   return {
     ...value,
-    needsPluginUpdate: value.runtimeVersion !== BRIDGE_RUNTIME_VERSION,
+    needsPluginUpdate:
+      value.runtimeVersion !== BRIDGE_RUNTIME_VERSION ||
+      !!(expectedNativeBuild && value.nativeBuild !== expectedNativeBuild),
     connected:
       !client.suspended &&
       now - value.lastSeenAt <= CLIENT_LEASE_MS &&
@@ -137,11 +139,21 @@ function createBridgeServer(options = {}) {
   const port = options.port === undefined ? DEFAULT_PORT : options.port;
   const token = options.token || crypto.randomBytes(32).toString('base64url');
   const now = options.now || Date.now;
+  const expectedNativeBuild = options.nativeBuild ?? readNativeBuild();
+  if (
+    expectedNativeBuild !== null &&
+    !/^[a-f0-9]{64}$/.test(expectedNativeBuild)
+  )
+    throw new Error('Invalid expected native build identity');
+  const clientStatus = (client) =>
+    publicClient(client, now(), expectedNativeBuild);
   const clients = new Map(),
     sessions = new Map(),
     pairings = new Map(),
     grants = new Map();
-  let execution;
+  let execution, externalJobs;
+  const externalClients = new Map();
+  const nativeRecoveries = new Set();
   const catalog = require('./catalog.cjs').createCatalog(options.catalogPath);
   let catalogWorker = null;
   const grantPath =
@@ -185,7 +197,7 @@ function createBridgeServer(options = {}) {
       (!body.fileKey || /^[A-Za-z0-9]{6,100}$/.test(body.fileKey))
     )
       client.fileKey = body.fileKey;
-    if (['figma', 'figjam', 'slides'].includes(body.editorType))
+    if (['figma', 'figjam', 'slides', 'buzz'].includes(body.editorType))
       client.editorType = body.editorType;
     if (Array.isArray(body.selection))
       client.selection = body.selection
@@ -209,7 +221,7 @@ function createBridgeServer(options = {}) {
       protocolVersion: PROTOCOL_VERSION,
       token: sessionToken,
       ...(grantToken ? { grantToken } : {}),
-      client: publicClient(client, now()),
+      client: clientStatus(client),
       expiresAt: client.expiresAt,
       recovery: execution.recovery(client.id),
     };
@@ -242,9 +254,7 @@ function createBridgeServer(options = {}) {
   let nextAssetCleanup = 0,
     cleanupTimer;
   const activeClients = () =>
-    [...clients.values()].filter(
-      (client) => publicClient(client, now()).connected,
-    );
+    [...clients.values()].filter((client) => clientStatus(client).connected);
   function createPairing() {
     cleanup();
     if (pairings.size >= 10)
@@ -256,7 +266,9 @@ function createBridgeServer(options = {}) {
     return { code, expiresAt };
   }
   function cleanup() {
-    let next = execution.cleanup(clients);
+    let next = execution.cleanup(new Map([...clients, ...externalClients]));
+    for (const [id, client] of externalClients)
+      if (now() >= client.expiresAt) externalClients.delete(id);
     if (now() >= nextAssetCleanup)
       nextAssetCleanup = artifacts.cleanupAssets(now(), execution.assetIds());
     next = Math.min(next, nextAssetCleanup);
@@ -341,9 +353,11 @@ function createBridgeServer(options = {}) {
     }
   }
   function claimNextJob(client) {
+    const state = clientStatus(client);
     if (
       clients.get(client.id) !== client ||
-      !publicClient(client, now()).connected
+      !state.connected ||
+      state.needsPluginUpdate
     )
       return NO_VALUE;
     return (
@@ -353,6 +367,831 @@ function createBridgeServer(options = {}) {
 
   let ready = false,
     maintenance = false;
+  function authorizeRequest(req) {
+    const authorization = req.headers.authorization || '';
+    const supplied = authorization.startsWith('Bearer ')
+      ? authorization.slice(7)
+      : '';
+    const admin = safeEqual(supplied, token);
+    const session = sessions.get(supplied);
+    if (!admin && (!session || now() >= session.expiresAt))
+      throw problem(401, 'invalid or expired bridge session');
+    const requireAdmin = () => {
+      if (!admin)
+        throw problem(403, 'this operation requires the local MCP credential');
+    };
+    const requireClient = (id) => {
+      if (!session || (id && id !== session.clientId))
+        throw problem(403, 'this operation belongs to another client');
+      return clients.get(session.clientId);
+    };
+    return { admin, session, supplied, requireAdmin, requireClient };
+  }
+
+  async function pairClientRoute({ req, res }) {
+    const body = await readJson(req);
+    if (now() - pairingFailures.since > 60000)
+      pairingFailures = { count: 0, since: now() };
+    if (pairingFailures.count >= 20)
+      throw problem(429, 'too many pairing attempts; retry after one minute');
+    if (body.runtimeVersion !== BRIDGE_RUNTIME_VERSION)
+      throw problem(
+        409,
+        `plugin runtime is outdated; expected ${BRIDGE_RUNTIME_VERSION}`,
+      );
+    if (
+      !/^[A-Za-z0-9_-]{8,100}$/.test(body.clientId || '') ||
+      typeof body.fileName !== 'string' ||
+      !body.fileName.trim()
+    )
+      throw problem(400, 'clientId and fileName are required');
+    const expiry = pairings.get(body.code);
+    if (!expiry || now() >= expiry) {
+      pairingFailures.count++;
+      throw problem(401, 'invalid or expired pairing code');
+    }
+    pairings.delete(body.code);
+    const grantToken = crypto.randomBytes(32).toString('base64url');
+    const client = {
+      id: body.clientId,
+      fileName: body.fileName.trim(),
+      pageName: String(body.pageName || ''),
+      pluginId: String(body.pluginId || ''),
+      runtimeVersion: BRIDGE_RUNTIME_VERSION,
+      startedAt: now(),
+      lastSeenAt: now(),
+      expiresAt: now() + SESSION_TTL_MS,
+    };
+    if (
+      typeof body.documentId === 'string' &&
+      /^[a-f0-9]{32}$/.test(body.documentId)
+    )
+      client.documentId = body.documentId;
+    metadata(client, body);
+    grants.set(client.id, {
+      hash: crypto.createHash('sha256').update(grantToken).digest('hex'),
+      client: { ...client },
+      expiresAt: now() + GRANT_TTL_MS,
+    });
+    saveGrants();
+    return send(res, 200, authorize(client, grantToken));
+  }
+
+  async function resumeClientRoute({ req, res }) {
+    const body = await readJson(req),
+      grant = grants.get(body.clientId);
+    if (body.runtimeVersion !== BRIDGE_RUNTIME_VERSION)
+      throw problem(409, 'update the plugin before reconnecting');
+    const hash = crypto
+      .createHash('sha256')
+      .update(String(body.grantToken || ''))
+      .digest('hex');
+    if (!grant || grant.expiresAt <= now() || !safeEqual(hash, grant.hash))
+      throw problem(
+        401,
+        'authorization was revoked or expired; enter a new pairing code',
+      );
+    if (grant.client.documentId && body.documentId !== grant.client.documentId)
+      throw problem(403, 'authorization belongs to another document');
+    const existing = clients.get(body.clientId);
+    if (
+      existing &&
+      clientStatus(existing).connected &&
+      body.instanceId &&
+      existing.instanceId &&
+      existing.instanceId !== body.instanceId
+    )
+      throw problem(
+        409,
+        'this document is already connected in another plugin window; close that window first',
+      );
+    const client = existing || { ...grant.client };
+    if (
+      existing &&
+      body.instanceId &&
+      existing.instanceId &&
+      body.instanceId !== existing.instanceId
+    ) {
+      // A forced native Cancel may destroy the iframe without beforeunload.
+      // Reopening must not inherit that instance's claimed or queued jobs.
+      execution.endInstance(
+        existing.id,
+        'the original plugin instance ended; inspect any uncertain write',
+      );
+    }
+    client.runtimeVersion = BRIDGE_RUNTIME_VERSION;
+    metadata(client, body);
+    grant.client = { ...client };
+    grant.expiresAt = now() + GRANT_TTL_MS;
+    saveGrants();
+    return send(res, 200, authorize(client));
+  }
+
+  async function createPairingRoute({ res, requireAdmin }) {
+    requireAdmin();
+    return send(res, 201, createPairing());
+  }
+
+  async function suspendClientRoute({ res, requireClient }) {
+    const client = requireClient();
+    client.suspended = true;
+    client.lastSeenAt = now() - CLIENT_LEASE_MS - 1;
+    execution.endInstance(
+      client.id,
+      'plugin closed before its receipt was delivered; inspect the original operation',
+    );
+    notifyChange();
+    return send(res, 200, { suspended: true });
+  }
+
+  async function heartbeatRoute({ req, res, requireClient }) {
+    const client = requireClient();
+    if (!client) throw problem(401, 'client must pair again');
+    client.lastSeenAt = now();
+    metadata(client, await readJson(req));
+    notifyChange();
+    // State comes from the canonical ledger, scoped to this paired client.
+    // A poll is a claim: losing its reply may leave an unknown native action.
+    return send(res, 200, {
+      client: clientStatus(client),
+      recovery: execution.recovery(client.id),
+    });
+  }
+
+  async function revokeClientRoute({
+    res,
+    admin,
+    requireClient,
+    match: revoke,
+  }) {
+    if (!admin) requireClient(revoke[1]);
+    clients.delete(revoke[1]);
+    grants.delete(revoke[1]);
+    saveGrants();
+    for (const [secret, value] of sessions)
+      if (value.clientId === revoke[1]) sessions.delete(secret);
+    cleanup();
+    notifyChange();
+    return send(res, 200, { revoked: revoke[1] });
+  }
+
+  async function maintenanceRoute({ res, requireAdmin }) {
+    requireAdmin();
+    // Admission and the ledger check share the server's synchronous turn.
+    // Never let an edit enter between the updater's idle check and stop.
+    if (
+      externalJobs?.pendingCount ||
+      execution.list().some((job) => ['queued', 'running'].includes(job.status))
+    )
+      throw problem(409, 'Finish pending operations before updating');
+    maintenance = true;
+    return send(res, 200, { idle: true });
+  }
+
+  async function statusRoute({ res, url, requireAdmin }) {
+    requireAdmin();
+    const state = {
+      version: PACKAGE_VERSION,
+      protocolVersion: PROTOCOL_VERSION,
+      runtimeVersion: BRIDGE_RUNTIME_VERSION,
+      clients: catalog.decorate(
+        activeClients().map((client) => clientStatus(client)),
+      ),
+      jobs: execution
+        .list()
+        .map((job) =>
+          url.searchParams.get('summary') === '1' ? job : execution.get(job.id),
+        ),
+    };
+    if (url.searchParams.get('summary') !== '1') return send(res, 200, state);
+    try {
+      return send(
+        res,
+        200,
+        summarizeStatus(
+          state,
+          Object.fromEntries(
+            ['scope', 'clientId', 'fileKey']
+              .filter((key) => url.searchParams.has(key))
+              .map((key) => [key, url.searchParams.get(key)]),
+          ),
+        ),
+      );
+    } catch (error) {
+      throw problem(400, formatBridgeError(error));
+    }
+  }
+
+  async function filesRoute({ res, requireAdmin }) {
+    requireAdmin();
+    return send(
+      res,
+      200,
+      fileList(
+        {
+          version: PACKAGE_VERSION,
+          clients: catalog.decorate(
+            activeClients().map((client) => clientStatus(client)),
+          ),
+          jobs: execution.list(),
+        },
+        catalog.view(),
+      ),
+    );
+  }
+
+  async function desktopFilesRoute({ res, url, requireAdmin }) {
+    requireAdmin();
+    return send(
+      res,
+      200,
+      await require('./desktop.cjs').readDesktopFiles({
+        fileKey: url.searchParams.get('fileKey') || undefined,
+      }),
+    );
+  }
+
+  async function restRoute({ req, res, url, requireAdmin }) {
+    requireAdmin();
+    const input = await readJson(req),
+      rest = require('./rest.cjs');
+    if (input.action !== 'request')
+      throw problem(400, 'REST transport requires action=request');
+    const request = rest.prepare(input),
+      auth = await rest.verifiedCredentials({
+        profile: request.credentialProfile,
+        request,
+        ...(options.restFetch ? { fetch: options.restFetch } : {}),
+      });
+    if (!auth.token)
+      throw Object.assign(
+        problem(
+          401,
+          'Configure Figma REST credentials before making this request',
+        ),
+        { code: 'REST_AUTH_REQUIRED' },
+      );
+    if (!auth.accountId)
+      throw problem(400, 'REST credential identity is missing');
+    return send(
+      res,
+      200,
+      await externalJobs.run({
+        id: request.operationId,
+        kind: 'rest',
+        accountId: auth.accountId,
+        fileKey: request.fileKey,
+        fileKeys: request.fileKeys,
+        source: 'Figma REST ' + request.method + ' ' + request.url,
+        args: request.body,
+        readOnly: request.readOnly,
+        perform: () =>
+          rest.execute(request, {
+            auth,
+            ...(options.restFetch ? { fetch: options.restFetch } : {}),
+          }),
+      }),
+    );
+  }
+
+  async function launchDesktopRoute({ req, res, requireAdmin }) {
+    requireAdmin();
+    const { fileKey } = await readJson(req);
+    return send(
+      res,
+      200,
+      await require('./desktop.cjs').launchDesktop(fileKey),
+    );
+  }
+
+  async function connectDesktopRoute({ req, res, requireAdmin }) {
+    requireAdmin();
+    const {
+      fileKey,
+      targetId,
+      profile = 'default',
+      widgetNodeId,
+      operationId,
+      restart = false,
+    } = await readJson(req);
+    const { pluginId } = require('./native-profiles.cjs').profileInfo(profile);
+    if (
+      profile === 'widget' &&
+      !/^[A-Za-z0-9_-]{8,100}$/.test(operationId || '')
+    )
+      throw problem(
+        400,
+        'Widget connection can insert a widget; supply a stable operationId and an existing widgetNodeId when reconnecting',
+      );
+    async function recoverNativeSession() {
+      const nativeClients = catalog
+        .decorate(activeClients().map((client) => clientStatus(client)))
+        .filter(
+          (c) =>
+            c.connected && c.fileKey === fileKey && c.pluginId === pluginId,
+        );
+      if (nativeClients.length > 1)
+        throw problem(
+          409,
+          'Multiple native instances match this file; select an exact client',
+        );
+      const active = nativeClients[0];
+      if (
+        execution
+          .list()
+          .some(
+            (job) =>
+              job.id !== operationId &&
+              (job.target?.fileKey === fileKey ||
+                job.target?.fileKeys?.includes(fileKey) ||
+                job.target?.clientId === active?.id) &&
+              (!resolved(job) || ['queued', 'running'].includes(job.status)),
+          )
+      )
+        throw problem(
+          409,
+          'Finish or reconcile original operations before recovering the native plugin',
+        );
+      const pairing = createPairing();
+      let result;
+      try {
+        result = await (
+          options.nativeConnect ||
+          require('./native-lifecycle.cjs').connectNativeFile
+        )({
+          fileKey,
+          targetId,
+          profile,
+          widgetNodeId,
+          pairingCode: pairing.code,
+          restart: restart || !!active?.needsPluginUpdate,
+          ...(expectedNativeBuild ? { expectedNativeBuild } : {}),
+        });
+        retireNativeClients(result.endedClients);
+      } catch (error) {
+        retireNativeClients(error.endedClients);
+        throw error;
+      } finally {
+        pairings.delete(pairing.code);
+      }
+      const client = clients.get(result.native?.clientId);
+      if (
+        !client ||
+        client.instanceId !== result.native.instanceId ||
+        client.documentId !== result.native.documentId ||
+        !clientStatus(client).connected
+      )
+        throw problem(409, 'Native lifecycle identity changed before binding');
+      catalog.bind(
+        {
+          fileKey,
+          clientId: client.id,
+          documentId: client.documentId,
+          verifiedUrl: result.verifiedUrl,
+        },
+        activeClients().map((c) => clientStatus(c)),
+      );
+      notifyChange();
+      return { ...result, clientId: client.id };
+    }
+    async function recoverNative() {
+      if (nativeRecoveries.has(fileKey))
+        throw problem(
+          409,
+          'Native connection recovery is already in progress for this file',
+        );
+      nativeRecoveries.add(fileKey);
+      try {
+        return await recoverNativeSession();
+      } finally {
+        nativeRecoveries.delete(fileKey);
+      }
+    }
+    if (profile !== 'widget') return send(res, 200, await recoverNative());
+    const record = await externalJobs.run({
+      id: operationId,
+      kind: 'widget-connect',
+      accountId: catalog.view().accountId || 'desktop',
+      fileKey,
+      source: 'Connect native Widget API',
+      args: { fileKey, targetId, widgetNodeId, restart },
+      readOnly: false,
+      perform: async () => ({ ...(await recoverNative()), ok: true }),
+    });
+    return send(res, 200, { ...(record.job.result?.value || {}), ...record });
+  }
+
+  function retireNativeClients(endedClients = []) {
+    for (const ended of endedClients) {
+      const previous = clients.get(ended.clientId);
+      if (
+        previous?.instanceId !== ended.instanceId ||
+        previous.pluginId !== ended.pluginId
+      )
+        continue;
+      previous.suspended = true;
+      execution.endInstance(
+        previous.id,
+        'the original native iframe ended during a profile change; this instance cannot receive new operations',
+      );
+    }
+    if (endedClients.length) notifyChange();
+  }
+
+  async function nativeProfileRoute({ req, res, requireAdmin }) {
+    requireAdmin();
+    const { profile, sourcePath } = await readJson(req);
+    if (profile !== 'widget' || typeof sourcePath !== 'string')
+      throw problem(
+        400,
+        'prepare requires profile=widget and an absolute sourcePath',
+      );
+    const ids = new Set(
+      activeClients()
+        .filter(
+          (c) =>
+            c.pluginId ===
+            require('./native-profiles.cjs').profiles.widget.pluginId,
+        )
+        .map((c) => c.id),
+    );
+    if (
+      execution
+        .list()
+        .some(
+          (job) =>
+            ids.has(job.target?.clientId) &&
+            (!resolved(job) || ['queued', 'running'].includes(job.status)),
+        )
+    )
+      throw problem(
+        409,
+        'Finish or reconcile Widget operations before replacing its local render module',
+      );
+    return send(
+      res,
+      200,
+      require('./native-profiles.cjs').prepareWidget(
+        sourcePath,
+        path.resolve(__dirname, '../..'),
+      ),
+    );
+  }
+
+  async function communityRoute({ req, res, requireAdmin }) {
+    requireAdmin();
+    const research =
+      options.communityResearch || require('./community.cjs').researchCommunity;
+    return send(res, 200, await research(await readJson(req)));
+  }
+
+  async function catalogRoute({ req, res, requireAdmin }) {
+    requireAdmin();
+    if (req.method === 'GET') return send(res, 200, catalog.view());
+    if (req.method === 'POST') {
+      try {
+        const value = catalog.update(await readJson(req));
+        notifyChange();
+        return send(res, 200, value);
+      } catch (error) {
+        throw problem(400, formatBridgeError(error));
+      }
+    }
+  }
+
+  async function bindCatalogRoute({ req, res, requireAdmin }) {
+    requireAdmin();
+    try {
+      const value = catalog.bind(
+        await readJson(req),
+        activeClients().map((client) => clientStatus(client)),
+      );
+      notifyChange();
+      return send(res, 200, value);
+    } catch (error) {
+      throw problem(400, formatBridgeError(error));
+    }
+  }
+
+  async function syncCatalogRoute({ req, res, requireAdmin }) {
+    requireAdmin();
+    const { force } = await readJson(req),
+      state = catalog.view();
+    if (
+      catalogWorker ||
+      (!force &&
+        Date.now() - Date.parse(state.lastAttemptAt || state.syncedAt) <
+          (state.status === 'ready' ? 5 * 60 * 1000 : 30000))
+    )
+      return send(res, 200, state);
+    catalog.update({ status: 'syncing' });
+    notifyChange();
+    const environment = {
+      ...process.env,
+      ...(options.catalogPath
+        ? { FIGMA_PLUGIN_STATE_DIR: path.dirname(options.catalogPath) }
+        : {}),
+    };
+    const worker = require('node:child_process').spawn(
+      '/bin/sh',
+      [
+        path.join(__dirname, '../../scripts/run-node.sh'),
+        path.join(__dirname, 'catalog-sync.cjs'),
+      ],
+      {
+        cwd: path.join(__dirname, '../..'),
+        env: environment,
+        stdio: 'ignore',
+      },
+    );
+    catalogWorker = worker;
+    const ended = () => {
+      if (catalogWorker === worker) {
+        catalogWorker = null;
+        if (catalog.view().status === 'syncing')
+          catalog.update({
+            status: 'incomplete',
+            error: 'account_sync_interrupted',
+          });
+        notifyChange();
+      }
+    };
+    worker.once('error', ended);
+    worker.once('exit', ended);
+    worker.unref();
+    return send(res, 200, catalog.view());
+  }
+
+  async function uploadAssetRoute({
+    req,
+    res,
+    requireAdmin,
+    match: assetUpload,
+  }) {
+    requireAdmin();
+    const result = {
+      assetId: assetUpload[1],
+      ...(await artifacts.save('assets', assetUpload[1], req)),
+    };
+    nextAssetCleanup = 0;
+    notifyChange();
+    return send(res, 201, result);
+  }
+
+  async function binaryRoute({
+    req,
+    res,
+    requireAdmin,
+    requireClient,
+    match: binary,
+  }) {
+    const job = execution.get(binary[1], { payload: true, result: false }),
+      name = decodeURIComponent(binary[3]);
+    if (!job || job.archived || !validName(name))
+      throw problem(404, 'job or artifact was not found');
+    if (req.method === 'POST' && binary[2] === 'exports') {
+      const client = requireClient();
+      if (job.clientId !== client.id)
+        throw problem(403, 'artifact belongs to another client');
+      return send(res, 200, await artifacts.save(job.id, name, req));
+    }
+    if (req.method === 'GET' && binary[2] === 'assets') {
+      const client = requireClient();
+      if (job.clientId !== client.id)
+        throw problem(403, 'asset belongs to another client');
+      const asset = job.assets && job.assets[name];
+      if (!asset || typeof asset !== 'object')
+        throw problem(404, 'asset was not found');
+      return artifacts.send('assets', asset.assetId, res);
+    }
+    if (req.method === 'GET' && binary[2] === 'exports') {
+      requireAdmin();
+      return artifacts.send(job.id, name, res);
+    }
+  }
+
+  async function claimJobRoute({ res, url, session, supplied, requireClient }) {
+    const client = requireClient(url.searchParams.get('clientId'));
+    client.lastSeenAt = now();
+    const waitMs = Math.max(
+      0,
+      Math.min(25000, Number(url.searchParams.get('wait') || 0) || 0),
+    );
+    const job = await waitForValue(
+      () => {
+        if (sessions.get(supplied) !== session)
+          throw problem(401, 'session was rotated');
+        return claimNextJob(client);
+      },
+      waitMs,
+      res,
+    );
+    client.lastSeenAt = now();
+    return job === NO_VALUE ? send(res, 204) : send(res, 200, { job });
+  }
+
+  async function submitJobRoute({ req, res, requireAdmin }) {
+    requireAdmin();
+    const body = await readJson(req);
+    if (maintenance)
+      throw problem(
+        503,
+        'The companion is activating an update; no operation was submitted',
+      );
+    const kind = body.kind || 'exec';
+    if (kind !== 'exec')
+      throw problem(400, 'only native exec jobs are supported');
+    let source, args, assets;
+    try {
+      source = body.source;
+      args = body.args === undefined ? {} : body.args;
+      assets = body.assets || {};
+      if (
+        typeof source !== 'string' ||
+        !source.trim() ||
+        Buffer.byteLength(source) > 1024 * 1024
+      )
+        throw new Error('script source must be nonempty and at most 1 MiB');
+      if (
+        !assets ||
+        typeof assets !== 'object' ||
+        Array.isArray(assets) ||
+        Object.entries(assets).some(
+          ([name, data]) =>
+            !validName(name) ||
+            !data ||
+            typeof data !== 'object' ||
+            !/^[A-Za-z0-9_-]{8,100}$/.test(data.assetId || '') ||
+            artifacts.describe('assets', data.assetId).sha256 !== data.sha256,
+        )
+      )
+        throw new Error(
+          'assets must map simple names to uploaded byte receipts',
+        );
+      const inputBytes = Object.values(assets).reduce(
+        (sum, asset) => sum + artifacts.describe('assets', asset.assetId).size,
+        0,
+      );
+      if (inputBytes > 32 * 1024 * 1024)
+        throw new Error('assets exceed 32 MiB total');
+    } catch (error) {
+      throw problem(400, formatBridgeError(error));
+    }
+    const id = body.operationId;
+    if (!/^[A-Za-z0-9_-]{8,100}$/.test(id))
+      throw problem(400, 'invalid operationId');
+    if (
+      !body.target ||
+      !/^[A-Za-z0-9_-]{8,100}$/.test(body.target.clientId || '') ||
+      !['fileKey', 'documentId', 'instanceId', 'editorType'].every((key) =>
+        Object.hasOwn(body.target, key),
+      )
+    )
+      throw problem(400, 'resolve an exact target before submission');
+    const expected = targetIdentity({
+      ...body.target,
+      id: body.target.clientId,
+    });
+    if (
+      !execution.get(id) &&
+      [expected.fileKey, ...(expected.fileKeys || [])].some((key) =>
+        nativeRecoveries.has(key),
+      )
+    )
+      throw problem(
+        503,
+        'Native connection recovery is in progress; no operation was submitted',
+      );
+    const { job, created } = execution.submit(
+      {
+        id,
+        source,
+        args,
+        assets,
+        target: expected,
+        options: body.options,
+        expiresInMs: body.expiresInMs,
+      },
+      catalog.decorate(activeClients().map((client) => clientStatus(client))),
+    );
+    return send(res, created ? 202 : 200, { job });
+  }
+
+  async function completeJobRoute({
+    req,
+    res,
+    requireClient,
+    match: resultMatch,
+  }) {
+    const body = await readJson(req);
+    const client = requireClient(body.clientId);
+    const job = execution.complete(resultMatch[1], client.id, body);
+    if (body.context) metadata(client, body.context);
+    // Context and durable receipt are visible in the same host snapshot.
+    notifyChange();
+    return send(res, 200, { job });
+  }
+
+  async function reconcileJobRoute({
+    req,
+    res,
+    requireAdmin,
+    match: resolveMatch,
+  }) {
+    requireAdmin();
+    const job = execution.reconcile(resolveMatch[1], await readJson(req));
+    return send(res, 200, { job });
+  }
+
+  async function getJobRoute({ res, url, requireAdmin, match: jobMatch }) {
+    requireAdmin();
+    const job = execution.get(jobMatch[1]);
+    if (!job) throw problem(404, 'job was not found');
+    const waitMs = Math.max(
+      0,
+      Math.min(30000, Number(url.searchParams.get('wait') || 0) || 0),
+    );
+    if (waitMs && !TERMINAL_STATES.has(job.status))
+      await waitForValue(
+        () =>
+          TERMINAL_STATES.has(execution.get(job.id, { result: false }).status)
+            ? true
+            : NO_VALUE,
+        waitMs,
+        res,
+      );
+    return send(res, 200, { job: execution.get(job.id) });
+  }
+
+  const routes = [
+    { method: 'POST', path: '/v1/pair', public: true, handle: pairClientRoute },
+    {
+      method: 'POST',
+      path: '/v1/resume',
+      public: true,
+      handle: resumeClientRoute,
+    },
+    { method: 'POST', path: '/v1/pairings', handle: createPairingRoute },
+    { method: 'POST', path: '/v1/clients/suspend', handle: suspendClientRoute },
+    { method: 'POST', path: '/v1/clients/heartbeat', handle: heartbeatRoute },
+    {
+      method: 'DELETE',
+      path: /^\/v1\/clients\/([^/]+)$/,
+      handle: revokeClientRoute,
+    },
+    { method: 'POST', path: '/v1/maintenance', handle: maintenanceRoute },
+    { method: 'GET', path: '/v1/status', handle: statusRoute },
+    { method: 'GET', path: '/v1/files', handle: filesRoute },
+    { method: 'GET', path: '/v1/desktop/files', handle: desktopFilesRoute },
+    { method: 'POST', path: '/v1/rest', handle: restRoute },
+    { method: 'POST', path: '/v1/desktop', handle: launchDesktopRoute },
+    {
+      method: 'POST',
+      path: '/v1/desktop/connect',
+      handle: connectDesktopRoute,
+    },
+    { method: 'POST', path: '/v1/native-profile', handle: nativeProfileRoute },
+    { method: 'POST', path: '/v1/community', handle: communityRoute },
+    { method: null, path: '/v1/catalog', handle: catalogRoute },
+    { method: 'POST', path: '/v1/catalog/bind', handle: bindCatalogRoute },
+    { method: 'POST', path: '/v1/catalog/sync', handle: syncCatalogRoute },
+    {
+      method: 'POST',
+      path: /^\/v1\/assets\/([A-Za-z0-9_-]{8,100})$/,
+      handle: uploadAssetRoute,
+    },
+    {
+      method: null,
+      path: /^\/v1\/jobs\/([A-Za-z0-9_-]{8,100})\/(exports|assets)\/([^/]+)$/,
+      handle: binaryRoute,
+    },
+    { method: 'GET', path: '/v1/jobs/next', handle: claimJobRoute },
+    { method: 'POST', path: '/v1/jobs', handle: submitJobRoute },
+    {
+      method: 'POST',
+      path: /^\/v1\/jobs\/([^/]+)\/result$/,
+      handle: completeJobRoute,
+    },
+    {
+      method: 'POST',
+      path: /^\/v1\/jobs\/([^/]+)\/reconcile$/,
+      handle: reconcileJobRoute,
+    },
+    { method: 'GET', path: /^\/v1\/jobs\/([^/]+)$/, handle: getJobRoute },
+  ];
+  function findRoute(method, pathname) {
+    for (const route of routes) {
+      if (route.method && route.method !== method) continue;
+      const match =
+        typeof route.path === 'string'
+          ? route.path === pathname
+            ? []
+            : null
+          : pathname.match(route.path);
+      if (match) return { ...route, match };
+    }
+    return null;
+  }
   async function handle(req, res) {
     if (!ready) throw problem(503, 'relay initialization has not completed');
     const boundPort = server.address().port;
@@ -384,530 +1223,23 @@ function createBridgeServer(options = {}) {
     if (!req.url.startsWith('/') || req.url.startsWith('//'))
       throw problem(400, 'invalid request target');
     const url = new URL(req.url, `http://${host}:${boundPort}`);
-    if (req.method === 'POST' && url.pathname === '/v1/pair') {
-      const body = await readJson(req);
-      if (now() - pairingFailures.since > 60000)
-        pairingFailures = { count: 0, since: now() };
-      if (pairingFailures.count >= 20)
-        throw problem(429, 'too many pairing attempts; retry after one minute');
-      if (body.runtimeVersion !== BRIDGE_RUNTIME_VERSION)
-        throw problem(
-          409,
-          `plugin runtime is outdated; expected ${BRIDGE_RUNTIME_VERSION}`,
-        );
-      if (
-        !/^[A-Za-z0-9_-]{8,100}$/.test(body.clientId || '') ||
-        typeof body.fileName !== 'string' ||
-        !body.fileName.trim()
-      )
-        throw problem(400, 'clientId and fileName are required');
-      const expiry = pairings.get(body.code);
-      if (!expiry || now() >= expiry) {
-        pairingFailures.count++;
-        throw problem(401, 'invalid or expired pairing code');
-      }
-      pairings.delete(body.code);
-      const grantToken = crypto.randomBytes(32).toString('base64url');
-      const client = {
-        id: body.clientId,
-        fileName: body.fileName.trim(),
-        pageName: String(body.pageName || ''),
-        pluginId: String(body.pluginId || ''),
-        runtimeVersion: BRIDGE_RUNTIME_VERSION,
-        startedAt: now(),
-        lastSeenAt: now(),
-        expiresAt: now() + SESSION_TTL_MS,
-      };
-      if (
-        typeof body.documentId === 'string' &&
-        /^[a-f0-9]{32}$/.test(body.documentId)
-      )
-        client.documentId = body.documentId;
-      metadata(client, body);
-      grants.set(client.id, {
-        hash: crypto.createHash('sha256').update(grantToken).digest('hex'),
-        client: { ...client },
-        expiresAt: now() + GRANT_TTL_MS,
-      });
-      saveGrants();
-      return send(res, 200, authorize(client, grantToken));
-    }
-    if (req.method === 'POST' && url.pathname === '/v1/resume') {
-      const body = await readJson(req),
-        grant = grants.get(body.clientId);
-      if (body.runtimeVersion !== BRIDGE_RUNTIME_VERSION)
-        throw problem(409, 'update the plugin before reconnecting');
-      const hash = crypto
-        .createHash('sha256')
-        .update(String(body.grantToken || ''))
-        .digest('hex');
-      if (!grant || grant.expiresAt <= now() || !safeEqual(hash, grant.hash))
-        throw problem(
-          401,
-          'authorization was revoked or expired; enter a new pairing code',
-        );
-      if (
-        grant.client.documentId &&
-        body.documentId !== grant.client.documentId
-      )
-        throw problem(403, 'authorization belongs to another document');
-      const existing = clients.get(body.clientId);
-      if (
-        existing &&
-        publicClient(existing, now()).connected &&
-        body.instanceId &&
-        existing.instanceId &&
-        existing.instanceId !== body.instanceId
-      )
-        throw problem(
-          409,
-          'this document is already connected in another plugin window; close that window first',
-        );
-      const client = existing || { ...grant.client };
-      if (
-        existing &&
-        body.instanceId &&
-        existing.instanceId &&
-        body.instanceId !== existing.instanceId
-      ) {
-        // A forced native Cancel may destroy the iframe without beforeunload.
-        // Reopening must not inherit that instance's claimed or queued jobs.
-        execution.endInstance(
-          existing.id,
-          'the original plugin instance ended; inspect any uncertain write',
-        );
-      }
-      client.runtimeVersion = BRIDGE_RUNTIME_VERSION;
-      metadata(client, body);
-      grant.client = { ...client };
-      grant.expiresAt = now() + GRANT_TTL_MS;
-      saveGrants();
-      return send(res, 200, authorize(client));
-    }
 
-    const authorization = req.headers.authorization || '';
-    const supplied = authorization.startsWith('Bearer ')
-      ? authorization.slice(7)
-      : '';
-    const admin = safeEqual(supplied, token);
-    const session = sessions.get(supplied);
-    if (!admin && (!session || now() >= session.expiresAt))
-      throw problem(401, 'invalid or expired bridge session');
-    const requireAdmin = () => {
-      if (!admin)
-        throw problem(403, 'this operation requires the local MCP credential');
-    };
-    const requireClient = (id) => {
-      if (!session || (id && id !== session.clientId))
-        throw problem(403, 'this operation belongs to another client');
-      return clients.get(session.clientId);
-    };
-    if (req.method === 'POST' && url.pathname === '/v1/pairings') {
-      requireAdmin();
-      return send(res, 201, createPairing());
-    }
-    if (req.method === 'POST' && url.pathname === '/v1/clients/suspend') {
-      const client = requireClient();
-      client.suspended = true;
-      client.lastSeenAt = now() - CLIENT_LEASE_MS - 1;
-      execution.endInstance(
-        client.id,
-        'plugin closed before its receipt was delivered; inspect the original operation',
-      );
-      notifyChange();
-      return send(res, 200, { suspended: true });
-    }
-    if (req.method === 'POST' && url.pathname === '/v1/clients/heartbeat') {
-      const client = requireClient();
-      if (!client) throw problem(401, 'client must pair again');
-      client.lastSeenAt = now();
-      metadata(client, await readJson(req));
-      notifyChange();
-      // State comes from the canonical ledger, scoped to this paired client.
-      // A poll is a claim: losing its reply may leave an unknown native action.
-      return send(res, 200, {
-        client: publicClient(client, now()),
-        recovery: execution.recovery(client.id),
-      });
-    }
-
-    const revoke = url.pathname.match(/^\/v1\/clients\/([^/]+)$/);
-    if (revoke && req.method === 'DELETE') {
-      if (!admin) requireClient(revoke[1]);
-      clients.delete(revoke[1]);
-      grants.delete(revoke[1]);
-      saveGrants();
-      for (const [secret, value] of sessions)
-        if (value.clientId === revoke[1]) sessions.delete(secret);
-      cleanup();
-      notifyChange();
-      return send(res, 200, { revoked: revoke[1] });
-    }
-    if (req.method === 'POST' && url.pathname === '/v1/maintenance') {
-      requireAdmin();
-      // Admission and the ledger check share the server's synchronous turn.
-      // Never let an edit enter between the updater's idle check and stop.
-      if (
-        execution
-          .list()
-          .some((job) => ['queued', 'running'].includes(job.status))
-      )
-        throw problem(409, 'Finish pending operations before updating');
-      maintenance = true;
-      return send(res, 200, { idle: true });
-    }
-    if (req.method === 'GET' && url.pathname === '/v1/status') {
-      requireAdmin();
-      const state = {
-        version: PACKAGE_VERSION,
-        protocolVersion: PROTOCOL_VERSION,
-        runtimeVersion: BRIDGE_RUNTIME_VERSION,
-        clients: catalog.decorate(
-          activeClients().map((client) => publicClient(client, now())),
-        ),
-        jobs: execution
-          .list()
-          .map((job) =>
-            url.searchParams.get('summary') === '1'
-              ? job
-              : execution.get(job.id),
-          ),
-      };
-      if (url.searchParams.get('summary') !== '1') return send(res, 200, state);
-      try {
-        return send(
-          res,
-          200,
-          summarizeStatus(
-            state,
-            Object.fromEntries(
-              ['scope', 'clientId', 'fileKey']
-                .filter((key) => url.searchParams.has(key))
-                .map((key) => [key, url.searchParams.get(key)]),
-            ),
-          ),
-        );
-      } catch (error) {
-        throw problem(400, formatBridgeError(error));
-      }
-    }
-    if (req.method === 'GET' && url.pathname === '/v1/app') {
-      requireAdmin();
-      const cursor = url.searchParams.get('cursor'),
-        waitMs = Number(url.searchParams.get('waitMs') || 0);
-      if (
-        (cursor && !/^sha256:[a-f0-9]{64}$/.test(cursor)) ||
-        !Number.isInteger(waitMs) ||
-        waitMs < 0 ||
-        waitMs > 25000
-      )
-        throw problem(400, 'invalid workbench cursor or wait');
-      const snapshot = () => {
-        const data = fileList(
-          {
-            version: PACKAGE_VERSION,
-            clients: catalog.decorate(
-              activeClients().map((client) => publicClient(client, now())),
-            ),
-            jobs: execution.list(),
-          },
-          catalog.view(),
-        );
-        return { ...data, cursor: digest(data) };
-      };
-      // Presence leases can expire without another event. Wake at that boundary
-      // as well as on the same connection, catalog and receipt events as jobs.
-      const timeout = activeClients().reduce(
-        (remaining, client) =>
-          Math.min(
-            remaining,
-            client.lastSeenAt + CLIENT_LEASE_MS + 1 - now(),
-            client.expiresAt - now(),
-          ),
-        waitMs,
-      );
-      const value = await waitForValue(
-        () => {
-          const data = snapshot();
-          return data.cursor === cursor ? NO_VALUE : data;
-        },
-        timeout,
-        res,
-      );
-      return send(res, 200, value === NO_VALUE ? snapshot() : value);
-    }
-    if (req.method === 'POST' && url.pathname === '/v1/desktop') {
-      requireAdmin();
-      const { fileKey } = await readJson(req);
-      return send(
-        res,
-        200,
-        await require('./desktop.cjs').launchDesktop(fileKey),
-      );
-    }
-    if (req.method === 'POST' && url.pathname === '/v1/community') {
-      requireAdmin();
-      const research =
-        options.communityResearch ||
-        require('./community.cjs').researchCommunity;
-      return send(res, 200, await research(await readJson(req)));
-    }
-    if (url.pathname === '/v1/catalog') {
-      requireAdmin();
-      if (req.method === 'GET') return send(res, 200, catalog.view());
-      if (req.method === 'POST') {
-        try {
-          const value = catalog.update(await readJson(req));
-          notifyChange();
-          return send(res, 200, value);
-        } catch (error) {
-          throw problem(400, formatBridgeError(error));
-        }
-      }
-    }
-    if (req.method === 'POST' && url.pathname === '/v1/catalog/bind') {
-      requireAdmin();
-      try {
-        const value = catalog.bind(
-          await readJson(req),
-          activeClients().map((client) => publicClient(client, now())),
-        );
-        notifyChange();
-        return send(res, 200, value);
-      } catch (error) {
-        throw problem(400, formatBridgeError(error));
-      }
-    }
-    if (req.method === 'POST' && url.pathname === '/v1/catalog/sync') {
-      requireAdmin();
-      const { force } = await readJson(req),
-        state = catalog.view();
-      if (
-        catalogWorker ||
-        (!force &&
-          Date.now() - Date.parse(state.lastAttemptAt || state.syncedAt) <
-            (state.status === 'ready' ? 5 * 60 * 1000 : 30000))
-      )
-        return send(res, 200, state);
-      catalog.update({ status: 'syncing' });
-      notifyChange();
-      const environment = {
-        ...process.env,
-        ...(options.catalogPath
-          ? { FIGMA_PLUGIN_STATE_DIR: path.dirname(options.catalogPath) }
-          : {}),
-      };
-      const worker = require('node:child_process').spawn(
-        '/bin/sh',
-        [
-          path.join(__dirname, '../../scripts/run-node.sh'),
-          path.join(__dirname, 'catalog-sync.cjs'),
-        ],
-        {
-          cwd: path.join(__dirname, '../..'),
-          env: environment,
-          stdio: 'ignore',
-        },
-      );
-      catalogWorker = worker;
-      const ended = () => {
-        if (catalogWorker === worker) {
-          catalogWorker = null;
-          if (catalog.view().status === 'syncing')
-            catalog.update({
-              status: 'incomplete',
-              error: 'account_sync_interrupted',
-            });
-          notifyChange();
-        }
-      };
-      worker.once('error', ended);
-      worker.once('exit', ended);
-      worker.unref();
-      return send(res, 200, catalog.view());
-    }
-    const assetUpload = url.pathname.match(
-      /^\/v1\/assets\/([A-Za-z0-9_-]{8,100})$/,
-    );
-    if (req.method === 'POST' && assetUpload) {
-      requireAdmin();
-      const result = {
-        assetId: assetUpload[1],
-        ...(await artifacts.save('assets', assetUpload[1], req)),
-      };
-      nextAssetCleanup = 0;
-      notifyChange();
-      return send(res, 201, result);
-    }
-    const binary = url.pathname.match(
-      /^\/v1\/jobs\/([A-Za-z0-9_-]{8,100})\/(exports|assets)\/([^/]+)$/,
-    );
-    if (binary) {
-      const job = execution.get(binary[1], { payload: true, result: false }),
-        name = decodeURIComponent(binary[3]);
-      if (!job || job.archived || !validName(name))
-        throw problem(404, 'job or artifact was not found');
-      if (req.method === 'POST' && binary[2] === 'exports') {
-        const client = requireClient();
-        if (job.clientId !== client.id)
-          throw problem(403, 'artifact belongs to another client');
-        return send(res, 200, await artifacts.save(job.id, name, req));
-      }
-      if (req.method === 'GET' && binary[2] === 'assets') {
-        const client = requireClient();
-        if (job.clientId !== client.id)
-          throw problem(403, 'asset belongs to another client');
-        const asset = job.assets && job.assets[name];
-        if (!asset || typeof asset !== 'object')
-          throw problem(404, 'asset was not found');
-        return artifacts.send('assets', asset.assetId, res);
-      }
-      if (req.method === 'GET' && binary[2] === 'exports') {
-        requireAdmin();
-        return artifacts.send(job.id, name, res);
-      }
-    }
-    if (req.method === 'GET' && url.pathname === '/v1/jobs/next') {
-      const client = requireClient(url.searchParams.get('clientId'));
-      client.lastSeenAt = now();
-      const waitMs = Math.max(
-        0,
-        Math.min(25000, Number(url.searchParams.get('wait') || 0) || 0),
-      );
-      const job = await waitForValue(
-        () => {
-          if (sessions.get(supplied) !== session)
-            throw problem(401, 'session was rotated');
-          return claimNextJob(client);
-        },
-        waitMs,
-        res,
-      );
-      client.lastSeenAt = now();
-      return job === NO_VALUE ? send(res, 204) : send(res, 200, { job });
-    }
-    if (req.method === 'POST' && url.pathname === '/v1/jobs') {
-      requireAdmin();
-      const body = await readJson(req);
-      if (maintenance)
-        throw problem(
-          503,
-          'The companion is activating an update; no operation was submitted',
-        );
-      const kind = body.kind || 'exec';
-      if (kind !== 'exec')
-        throw problem(400, 'only native exec jobs are supported');
-      let source, args, assets;
-      try {
-        source = body.source;
-        args = body.args === undefined ? {} : body.args;
-        assets = body.assets || {};
-        if (
-          typeof source !== 'string' ||
-          !source.trim() ||
-          Buffer.byteLength(source) > 1024 * 1024
-        )
-          throw new Error('script source must be nonempty and at most 1 MiB');
-        if (
-          !assets ||
-          typeof assets !== 'object' ||
-          Array.isArray(assets) ||
-          Object.entries(assets).some(
-            ([name, data]) =>
-              !validName(name) ||
-              !data ||
-              typeof data !== 'object' ||
-              !/^[A-Za-z0-9_-]{8,100}$/.test(data.assetId || '') ||
-              artifacts.describe('assets', data.assetId).sha256 !== data.sha256,
-          )
-        )
-          throw new Error(
-            'assets must map simple names to uploaded byte receipts',
-          );
-        const inputBytes = Object.values(assets).reduce(
-          (sum, asset) =>
-            sum + artifacts.describe('assets', asset.assetId).size,
-          0,
-        );
-        if (inputBytes > 32 * 1024 * 1024)
-          throw new Error('assets exceed 32 MiB total');
-      } catch (error) {
-        throw problem(400, formatBridgeError(error));
-      }
-      const id = body.operationId;
-      if (!/^[A-Za-z0-9_-]{8,100}$/.test(id))
-        throw problem(400, 'invalid operationId');
-      if (
-        !body.target ||
-        !/^[A-Za-z0-9_-]{8,100}$/.test(body.target.clientId || '') ||
-        !['fileKey', 'documentId', 'instanceId', 'editorType'].every((key) =>
-          Object.hasOwn(body.target, key),
-        )
-      )
-        throw problem(400, 'resolve an exact target before submission');
-      const expected = targetIdentity({
-        ...body.target,
-        id: body.target.clientId,
-      });
-      const { job, created } = execution.submit(
-        {
-          id,
-          source,
-          args,
-          assets,
-          target: expected,
-          options: body.options,
-          expiresInMs: body.expiresInMs,
-        },
-        catalog.decorate(
-          activeClients().map((client) => publicClient(client, now())),
-        ),
-      );
-      return send(res, created ? 202 : 200, { job });
-    }
-    const resultMatch = url.pathname.match(/^\/v1\/jobs\/([^/]+)\/result$/);
-    if (req.method === 'POST' && resultMatch) {
-      const body = await readJson(req);
-      const client = requireClient(body.clientId);
-      const job = execution.complete(resultMatch[1], client.id, body);
-      if (body.context) metadata(client, body.context);
-      // Context and durable receipt are visible in the same host snapshot.
-      notifyChange();
-      return send(res, 200, { job });
-    }
-    const resolveMatch = url.pathname.match(/^\/v1\/jobs\/([^/]+)\/reconcile$/);
-    if (req.method === 'POST' && resolveMatch) {
-      requireAdmin();
-      const job = execution.reconcile(resolveMatch[1], await readJson(req));
-      return send(res, 200, { job });
-    }
-    const jobMatch = url.pathname.match(/^\/v1\/jobs\/([^/]+)$/);
-    if (req.method === 'GET' && jobMatch) {
-      requireAdmin();
-      const job = execution.get(jobMatch[1]);
-      if (!job) throw problem(404, 'job was not found');
-      const waitMs = Math.max(
-        0,
-        Math.min(30000, Number(url.searchParams.get('wait') || 0) || 0),
-      );
-      if (waitMs && !TERMINAL_STATES.has(job.status))
-        await waitForValue(
-          () =>
-            TERMINAL_STATES.has(execution.get(job.id, { result: false }).status)
-              ? true
-              : NO_VALUE,
-          waitMs,
-          res,
-        );
-      return send(res, 200, { job: execution.get(job.id) });
-    }
-    throw problem(404, 'route was not found');
+    const route = findRoute(req.method, url.pathname);
+    const authorization = route?.public ? {} : authorizeRequest(req);
+    if (!route) throw problem(404, 'route was not found');
+    await route.handle({ req, res, url, ...authorization, match: route.match });
+    if (!res.headersSent && !res.destroyed)
+      throw problem(404, 'route was not found');
   }
+
   const server = http.createServer((req, res) =>
     handle(req, res).catch((error) => {
       if (res.headersSent) res.destroy();
       else
         send(res, error.statusCode || 500, {
+          ...(error.code && typeof error.code === 'string'
+            ? { code: error.code }
+            : {}),
           error: formatBridgeError(error),
           ...Object.fromEntries(
             ['clients', 'expected', 'actual', 'blockingOperationIds']
@@ -943,6 +1275,12 @@ function createBridgeServer(options = {}) {
           onError: options.onError,
           artifacts,
         });
+        externalJobs = require('./external-jobs.cjs').createExternalJobs({
+          execution,
+          clients: externalClients,
+          artifacts,
+          now,
+        });
         restoreGrants();
         ready = true;
         maintain();
@@ -962,6 +1300,7 @@ function createBridgeServer(options = {}) {
     async stop() {
       ready = false;
       clearTimeout(cleanupTimer);
+      await externalJobs?.close();
       if (catalogWorker) {
         const worker = catalogWorker;
         worker.kill('SIGTERM');

@@ -390,7 +390,7 @@ test('verified bindings preserve every native instance of the same cloud file', 
     decorated.map((c) => c.fileKey),
     ['FileAlpha12', 'FileAlpha12'],
   );
-  const item = require('../src/host/app.cjs').fileList(
+  const item = require('../src/host/file-list.cjs').fileList(
     { clients: decorated },
     catalog.view(),
   ).files[0];
@@ -767,6 +767,7 @@ function desktopTargets(accounts, authenticated = accounts.map(() => true)) {
             readers++;
             return { result: { objectId: sessionId } };
           }
+          if (method === 'Runtime.enable') return {};
           if (method === 'Runtime.callFunctionOn')
             return {
               result: { value: { accountId: accounts[Number(sessionId)] } },

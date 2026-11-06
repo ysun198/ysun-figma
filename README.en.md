@@ -8,9 +8,15 @@
   <a href="README.md">简体中文</a> | <strong>English</strong>
 </p>
 
-Mention **ysun figma** in your conversation or select the plugin with `/`; you can also preview your designs in the Codex sidebar.
+Mention **ysun figma** in your conversation or select the plugin with `/`. Read, edit and export Figma designs through regular tool calls.
 
-The plugin currently supports macOS only and requires Figma Desktop. It reads and writes designs directly through the desktop app, with unlimited local operations. Free Figma accounts also have unlimited use of the plugin, without consuming the official MCP quota.
+The plugin currently supports macOS only and requires Figma Desktop. It reads and writes designs directly through the desktop app, with no local monthly quota or official MCP quota consumption. Available features still depend on Figma file permissions, editor support and plan eligibility.
+
+Ordinary connection, reading, editing, readback and export use direct MCP calls without mouse or keyboard automation or an API token. Cloud authoring reuses the official Figma connection in Codex: use an existing grant, or sign in when the host requests it. No self-registered OAuth app or hosted backend is required for this workflow.
+
+Direct REST, SCIM/Discovery and Embed API integrations remain optional. Check their separate credentials, app registration, permissions and quotas only when needed. The official connection does not supply credentials for direct REST requests.
+
+Widget and Dev extensions use their actual entrypoints while sharing the native connection and operation journal. The [capability inventory](skills/ysun-figma/references/capabilities.md) separates implementation, live acceptance and account restrictions.
 
 You can also ask Codex to research Figma Community templates directly: search, paginate, read details and inspect image previews without GUI automation.
 
@@ -21,6 +27,8 @@ Copy this into Codex:
 ```text
 Install ysun figma: https://github.com/ysun198/ysun-figma
 ```
+
+Codex prepares the local prerequisites, connects your intended Figma file and verifies it with a real read. Existing sign-in is reused; first Figma sign-in or permission acceptance remains yours. A missing native manifest is imported once. Ordinary use needs no connection code.
 
 Keep Codex Desktop and Figma Desktop updated to the latest versions.
 

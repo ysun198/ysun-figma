@@ -204,6 +204,58 @@ function createExecution({
     fileWork(target).filter(
       (job) => job.status === 'outcome_unknown' && !job.reconciledAt,
     );
+  function observedInputs(input, expected) {
+    const references = input.options?.ifUnchanged || [];
+    if (
+      !Array.isArray(references) ||
+      references.length > 20 ||
+      references.some((id) => typeof id !== 'string')
+    )
+      throw problem(
+        400,
+        'ifUnchanged must contain up to 20 snapshot operation IDs',
+      );
+    const snapshots = references.map((id) => {
+      const previous = get(id);
+      if (
+        !previous ||
+        previous.archived ||
+        previous.status !== 'succeeded' ||
+        previous.options?.readOnly !== true ||
+        !previous.options.snapshot ||
+        previous.result?.value?.format !== 'figma.snapshot.v1'
+      )
+        throw problem(
+          409,
+          'Snapshot is unavailable or expired; read it again with figma_snapshot: ' +
+            id,
+        );
+      if (
+        digest(
+          targetIdentity({
+            ...previous.target,
+            id: previous.target.clientId,
+          }),
+        ) !== digest(expected)
+      )
+        throw problem(
+          409,
+          'Snapshot belongs to another file or native instance; take a fresh snapshot',
+        );
+      return previous.result.value;
+    });
+    if (Buffer.byteLength(JSON.stringify(snapshots)) > 4 * 1024 * 1024)
+      throw problem(
+        413,
+        'Observed data exceeds 4 MiB; snapshot smaller properties',
+      );
+    const roots = [
+      ...new Set(snapshots.map((item) => item.rootId).filter(Boolean)),
+    ];
+    const rootId =
+      input.options?.rootId || (roots.length === 1 ? roots[0] : null);
+    return { references, snapshots, rootId };
+  }
   return {
     get,
     list,
@@ -255,6 +307,11 @@ function createExecution({
             'no matching connected Figma session; open the plugin and pair it first',
             { clients },
           );
+        if (client.needsPluginUpdate)
+          throw problem(
+            409,
+            'The native plugin is outdated; reconnect it before submitting new operations',
+          );
         const actual = targetIdentity(client);
         if (digest(actual) !== digest(expected))
           throw problem(
@@ -269,55 +326,10 @@ function createExecution({
             'this client has an unresolved outcome; inspect the file and reconcile the original operation',
             { blockingOperationIds: blocked.map((job) => job.id) },
           );
-        const references = input.options?.ifUnchanged || [];
-        if (
-          !Array.isArray(references) ||
-          references.length > 20 ||
-          references.some((id) => typeof id !== 'string')
-        )
-          throw problem(
-            400,
-            'ifUnchanged must contain up to 20 snapshot operation IDs',
-          );
-        const snapshots = references.map((id) => {
-          const previous = get(id);
-          if (
-            !previous ||
-            previous.archived ||
-            previous.status !== 'succeeded' ||
-            previous.options?.readOnly !== true ||
-            !previous.options.snapshot ||
-            previous.result?.value?.format !== 'figma.snapshot.v1'
-          )
-            throw problem(
-              409,
-              'Snapshot is unavailable or expired; read it again with figma_snapshot: ' +
-                id,
-            );
-          if (
-            digest(
-              targetIdentity({
-                ...previous.target,
-                id: previous.target.clientId,
-              }),
-            ) !== digest(expected)
-          )
-            throw problem(
-              409,
-              'Snapshot belongs to another file or native instance; take a fresh snapshot',
-            );
-          return previous.result.value;
-        });
-        if (Buffer.byteLength(JSON.stringify(snapshots)) > 4 * 1024 * 1024)
-          throw problem(
-            413,
-            'Observed data exceeds 4 MiB; snapshot smaller properties',
-          );
-        const roots = [
-          ...new Set(snapshots.map((item) => item.rootId).filter(Boolean)),
-        ];
-        const rootId =
-          input.options?.rootId || (roots.length === 1 ? roots[0] : null);
+        const { references, snapshots, rootId } = observedInputs(
+          input,
+          expected,
+        );
         const counts = statement(`SELECT count(*) AS recent,
           sum(status IN ('queued','running')) AS pending FROM operations WHERE archived=0`).get();
         if (counts.pending >= 200)
@@ -333,7 +345,7 @@ function createExecution({
         }
         const job = {
           id: input.id,
-          kind: 'exec',
+          kind: input.kind || 'exec',
           payloadHash,
           sourceHash: digest(input.source),
           status: 'queued',

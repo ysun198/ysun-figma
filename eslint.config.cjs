@@ -20,6 +20,12 @@ module.exports = [
     },
   },
   {
+    files: ['src/**/*.js', 'src/**/*.cjs'],
+    // Keep production functions reviewable; a growing dispatcher should expose
+    // its actual responsibilities before it becomes another branching monolith.
+    rules: { complexity: ['error', 25], 'max-depth': ['error', 4] },
+  },
+  {
     files: [
       'src/host/**/*.cjs',
       'scripts/**/*.cjs',
@@ -30,22 +36,18 @@ module.exports = [
   },
   {
     files: [
-      'src/workbench/app-ui.js',
-      'src/workbench/canvas-view.js',
       'src/figma/ui.js',
       'src/host/account-reader.js',
+      'src/host/editor-reader.js',
       'src/host/community-reader.js',
     ],
     languageOptions: { globals: globals.browser },
   },
   {
-    files: ['src/workbench/app-ui.js'],
-    languageOptions: { globals: { APP_VERSION: 'readonly' } },
-  },
-  {
     files: [
       'src/shared/core.js',
       'src/host/account-reader.js',
+      'src/host/editor-reader.js',
       'src/host/community-reader.js',
       'src/figma/design-queries.js',
       'src/shared/version.js',
@@ -60,9 +62,19 @@ module.exports = [
       'src/figma/design-queries.js',
       'src/figma/script-runtime.js',
       'src/figma/native-runtime.js',
+      'src/figma/widget-runtime.js',
+      'src/figma/dev-runtime.js',
     ],
     languageOptions: {
       sourceType: 'script',
+      globals: { setTimeout: 'readonly', clearTimeout: 'readonly' },
+    },
+  },
+  {
+    files: ['src/figma/design-queries.js', 'src/figma/queries/**/*.js'],
+    languageOptions: {
+      sourceType: 'commonjs',
+      globals: { setTimeout: 'readonly', clearTimeout: 'readonly' },
     },
   },
   {
@@ -87,9 +99,17 @@ module.exports = [
         BRIDGE_RUNTIME_VERSION: 'readonly',
         BRIDGE_PROTOCOL_VERSION: 'readonly',
         executeScript: 'readonly',
+        startWidgetPlugin: 'readonly',
+        startCodegenPlugin: 'readonly',
         formatBridgeError: 'readonly',
         validArtifactName: 'readonly',
       },
+    },
+  },
+  {
+    files: ['src/figma/widget-runtime.js', 'src/figma/dev-runtime.js'],
+    languageOptions: {
+      globals: { figma: 'readonly', startNativePlugin: 'readonly' },
     },
   },
 ];

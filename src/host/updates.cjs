@@ -29,11 +29,17 @@ function readUpdateState() {
     throw error;
   }
 }
-function updateStatus() {
+function updateStatus(installedVersion) {
   const state = readUpdateState();
   if (!state) return null;
   const { feed, ...status } = state;
-  return status;
+  return installedVersion && status.installedVersion !== installedVersion
+    ? {
+        ...status,
+        checkedInstalledVersion: status.installedVersion ?? null,
+        installedVersion,
+      }
+    : status;
 }
 function repository(pkg) {
   const match = /^https:\/\/github\.com\/([\w-]+\/[\w.-]+)\.git$/.exec(
@@ -236,6 +242,55 @@ function createUpdater({
       fs.rmSync(candidate.directory, { recursive: true, force: true });
     candidate = undefined;
   }
+  async function latestRelease(state) {
+    let cached = state.feed,
+      release;
+    if (cached) {
+      try {
+        release = verifyRelease(cached.envelope, trusted);
+      } catch {
+        cached = undefined;
+        state.feed = undefined;
+      }
+    }
+    const headers = { 'Cache-Control': 'no-cache' };
+    if (cached?.etag) headers['If-None-Match'] = cached.etag;
+    else if (cached?.lastModified)
+      headers['If-Modified-Since'] = cached.lastModified;
+    // Revalidate even a staged archive: the publisher may have withdrawn or
+    // superseded it while a long-running edit held maintenance admission.
+    const response = await request(
+      base + '/latest/download/update.json',
+      fetchImpl,
+      cancellation.signal,
+      headers,
+      20000,
+    );
+    if (response.status === 304) {
+      if (!cached) throw new Error('No verified cached release for HTTP 304');
+    } else {
+      const envelope = JSON.parse(
+        (await readBody(response, 65536)).toString('utf8'),
+      );
+      release = verifyRelease(envelope, trusted);
+      cached = {
+        envelope: {
+          payload: envelope.payload,
+          signature: envelope.signature,
+        },
+      };
+    }
+    state.feed = {
+      ...cached,
+      etag:
+        response.headers.get('etag') ||
+        (response.status === 304 ? cached.etag : undefined),
+      lastModified:
+        response.headers.get('last-modified') ||
+        (response.status === 304 ? cached.lastModified : undefined),
+    };
+    return release;
+  }
   async function check() {
     privateDirectory(directory());
     cancellation.signal.throwIfAborted();
@@ -253,52 +308,7 @@ function createUpdater({
         refreshPending = false;
         save(state, 'current', { installedVersion: installed, refreshPending });
       }
-      let cached = state.feed,
-        release;
-      if (cached) {
-        try {
-          release = verifyRelease(cached.envelope, trusted);
-        } catch {
-          cached = undefined;
-          state.feed = undefined;
-        }
-      }
-      const headers = { 'Cache-Control': 'no-cache' };
-      if (cached?.etag) headers['If-None-Match'] = cached.etag;
-      else if (cached?.lastModified)
-        headers['If-Modified-Since'] = cached.lastModified;
-      // Revalidate even a staged archive: the publisher may have withdrawn or
-      // superseded it while a long-running edit held maintenance admission.
-      const response = await request(
-        base + '/latest/download/update.json',
-        fetchImpl,
-        cancellation.signal,
-        headers,
-        20000,
-      );
-      if (response.status === 304) {
-        if (!cached) throw new Error('No verified cached release for HTTP 304');
-      } else {
-        const envelope = JSON.parse(
-          (await readBody(response, 65536)).toString('utf8'),
-        );
-        release = verifyRelease(envelope, trusted);
-        cached = {
-          envelope: {
-            payload: envelope.payload,
-            signature: envelope.signature,
-          },
-        };
-      }
-      state.feed = {
-        ...cached,
-        etag:
-          response.headers.get('etag') ||
-          (response.status === 304 ? cached.etag : undefined),
-        lastModified:
-          response.headers.get('last-modified') ||
-          (response.status === 304 ? cached.lastModified : undefined),
-      };
+      const release = await latestRelease(state);
       if (!newer(release.version, installed)) {
         dispose();
         finish(state, 'current', {

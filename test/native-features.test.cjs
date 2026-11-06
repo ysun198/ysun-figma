@@ -100,6 +100,24 @@ function graph() {
     queries: createDesignQueries(figma, bridge),
   };
 }
+test('vector-only asset discovery does not read disabled text image fills', async () => {
+  const f = graph();
+  f.frame.children.push(
+    f.add('3:1', 'TEXT', 'unrequested images', {
+      parent: f.frame,
+      getStyledTextSegments() {
+        assert.fail('raw image fills were disabled');
+      },
+    }),
+  );
+  const result = await f.queries.downloadAssets({
+    nodeId: f.frame.id,
+    includeRender: false,
+    includeRaw: false,
+  });
+  assert.equal(result.sources.length, 0);
+  assert.equal(result.visited, 2);
+});
 test('component search reports field truncation separately from traversal and returns getter failures', async () => {
   const f = graph(),
     component = f.add('3:1', 'COMPONENT', 'Many properties', {
@@ -171,6 +189,206 @@ test('context resolves run-level styles and variable aliases and obtains a bound
   assert.equal(f.figma.currentPage, f.first);
   assert.deepEqual(f.first.selection, []);
 });
+test('context retains native grid structure, text paths, wrapping and nested effect bindings for handoff', async () => {
+  const f = graph();
+  Object.assign(f.frame, {
+    layoutMode: 'GRID',
+    gridColumnCount: 2,
+    gridRowCount: 1,
+    gridColumnGap: 12,
+    gridRowGap: 8,
+    gridColumnSizes: [
+      { type: 'FIXED', value: 160 },
+      { type: 'FLEX', value: 1 },
+    ],
+    gridRowSizes: [{ type: 'HUG' }],
+    gridAutoTracks: 'ROWS',
+    gridStyleId: 'guides',
+    effects: [
+      {
+        type: 'DROP_SHADOW',
+        boundVariables: { color: { type: 'VARIABLE_ALIAS', id: 'alias' } },
+      },
+    ],
+  });
+  const text = f.add('3:1', 'TEXT_PATH', 'Curved', {
+    parent: f.frame,
+    characters: 'Curved text',
+    textWrapStyle: 'BALANCE',
+    textPathStartData: { segment: 0, position: 0.25 },
+    gridColumnAnchorIndex: 0,
+    gridRowAnchorIndex: 0,
+    gridColumnSpan: 2,
+    gridRowSpan: 1,
+    gridChildHorizontalAlign: 'CENTER',
+    getStyledTextSegments: () => [
+      {
+        start: 0,
+        end: 11,
+        characters: 'Curved text',
+        fontName: {
+          family: 'Variable',
+          style: 'Regular',
+          variationSettings: { wght: 550 },
+        },
+      },
+    ],
+  });
+  f.frame.children = [text];
+  const guides = [
+    {
+      pattern: 'GRID',
+      sectionSize: 8,
+      visible: true,
+      color: { r: 0, g: 0, b: 1, a: 0.1 },
+    },
+  ];
+  f.figma.getStyleByIdAsync = async (id) => ({
+    id,
+    type: 'GRID',
+    layoutGrids: guides,
+  });
+  const value = await f.queries.context({
+    nodeId: f.frame.id,
+    includeScreenshot: false,
+  });
+  const root = value.nodes[0],
+    child = root.children[0];
+  assert.equal(root.gridColumnCount, 2);
+  assert.equal(root.gridAutoTracks, 'ROWS');
+  assert.deepEqual(root.gridColumnSizes, f.frame.gridColumnSizes);
+  assert.equal(child.gridColumnSpan, 2);
+  assert.equal(child.textWrapStyle, 'BALANCE');
+  assert.deepEqual(child.textPathStartData, { segment: 0, position: 0.25 });
+  assert.equal(child.textSegments[0].fontName.variationSettings.wght, 550);
+  assert.deepEqual(value.resources.styles[0].layoutGrids, guides);
+  assert.deepEqual(
+    value.resources.variables.map((v) => v.id),
+    ['alias', 'color'],
+  );
+  assert.equal(value.sparse, false);
+});
+test('design-system style results retain the already projected grid, wrapping and binding fields', async () => {
+  const f = graph();
+  const grids = [{ pattern: 'GRID', sectionSize: 8 }];
+  const bindings = { fontSize: { type: 'VARIABLE_ALIAS', id: 'size' } };
+  f.figma.getLocalGridStylesAsync = async () => [
+    { id: 'guides', name: 'QA / Guides', layoutGrids: grids },
+  ];
+  f.figma.getLocalTextStylesAsync = async () => [
+    {
+      id: 'body',
+      name: 'QA / Body',
+      textWrapStyle: 'BALANCE',
+      boundVariables: bindings,
+    },
+  ];
+  const value = await f.queries.designSystem({
+    queries: [{ entity: 'style', query: 'QA /', limit: 10 }],
+  });
+  assert.deepEqual(
+    value.results[0].items.find((s) => s.kind === 'GRID').layoutGrids,
+    grids,
+  );
+  const text = value.results[0].items.find((s) => s.kind === 'TEXT');
+  assert.equal(text.textWrapStyle, 'BALANCE');
+  assert.deepEqual(text.boundVariables, bindings);
+  assert.equal(value.sparse, false);
+});
+test('FigJam context reads editable table cells and code within the shared node budget', async () => {
+  const f = graph();
+  const table = f.add('3:1', 'TABLE', 'Results', {
+    parent: f.frame,
+    numRows: 2,
+    numColumns: 2,
+    cellAt: (row, column) => ({
+      width: 160,
+      height: 60,
+      text: {
+        characters: 'R' + row + 'C' + column,
+        fontName: { family: 'Inter', style: 'Regular' },
+      },
+    }),
+  });
+  const code = f.add('3:2', 'CODE_BLOCK', 'Editable code', {
+    parent: f.frame,
+    code: 'const route = "MCP";',
+    codeLanguage: 'TYPESCRIPT',
+  });
+  f.frame.children = [table, code];
+  const args = {
+    nodeId: f.frame.id,
+    includeCSS: false,
+    includeScreenshot: false,
+    resolveReferences: false,
+  };
+  const full = await f.queries.context({ ...args, maxNodes: 20 });
+  assert.equal(full.nodes[0].children[0].table.rows, 2);
+  assert.equal(
+    full.nodes[0].children[0].table.cells[3].text.characters,
+    'R1C1',
+  );
+  assert.equal(full.nodes[0].children[1].code, code.code);
+  assert.equal(full.nodes[0].children[1].codeLanguage, 'TYPESCRIPT');
+  assert.equal(full.sparse, false);
+  const bounded = await f.queries.context({ ...args, maxNodes: 4 });
+  assert.equal(bounded.nodes[0].children[0].table.cells.length, 2);
+  assert.equal(bounded.nodes[0].children[0].table.truncated, true);
+  assert.equal(bounded.truncated, true);
+  const original = table.cellAt;
+  table.cellAt = (row, column) => {
+    if (row === 1 && column === 0) throw new Error('cell unavailable');
+    return original(row, column);
+  };
+  const sparse = await f.queries.context({ ...args, maxNodes: 20 });
+  assert.equal(sparse.nodes[0].children[0].table.cells[2].unavailable, true);
+  assert(
+    sparse.issues.some(
+      (i) => i.nodeId === table.id && i.field === 'table.cells[1,0]',
+    ),
+  );
+});
+test('local style references resolve from native local lists without cloud-dependent ID lookups', async () => {
+  const f = graph();
+  f.frame.textStyleId = 'style';
+  f.figma.getStyleByIdAsync = () =>
+    assert.fail('local styles must not use a cloud-dependent ID lookup');
+  const value = await f.queries.context({
+    nodeId: f.frame.id,
+    includeCSS: false,
+    includeScreenshot: false,
+  });
+  assert.equal(value.resources.styles[0].id, 'style');
+  assert.equal(value.nativeReads.getStyleByIdAsync, undefined);
+  assert.equal(value.nativeReads.getLocalTextStylesAsync.calls, 1);
+  assert.equal(value.sparse, false);
+});
+test(
+  'a stalled optional CSS read returns native geometry and an explicit timeout instead of holding the file indefinitely',
+  { timeout: 8000 },
+  async () => {
+    const f = graph();
+    f.frame.getCSSAsync = () => new Promise(() => {});
+    const value = await f.queries.context({
+      nodeId: f.frame.id,
+      includeCSS: true,
+      includeScreenshot: false,
+      resolveReferences: false,
+    });
+    assert.equal(value.nodes[0].width, 8000);
+    assert.equal(value.nodes[0].css, undefined);
+    assert.equal(value.sparse, true);
+    assert(
+      value.issues.some(
+        (i) =>
+          i.nodeId === f.frame.id &&
+          i.field === 'css' &&
+          /getCSSAsync timed out/.test(i.error),
+      ),
+    );
+    assert(value.nativeReads.getCSSAsync.elapsedMs >= 1900);
+  },
+);
 test('component discovery reads variant properties on their owner, avoiding an invalid variant getter', async () => {
   const f = graph(),
     set = f.add('3:1', 'COMPONENT_SET', 'Button', {
@@ -280,6 +498,58 @@ test('file-wide cursor covers both pages exactly once and expires on a document 
   await assert.rejects(
     f.queries.findNodes({ scope: 'file', cursor: start.cursor }),
     /expired/,
+  );
+});
+test('stale slot children retain sparse evidence without breaking context siblings or cursor continuation', async () => {
+  const f = graph();
+  const first = f.add('9:1', 'TEXT', 'QA First', { parent: f.frame });
+  const ghost = f.add('9:2', 'FRAME', 'Ghost', { parent: f.frame });
+  const last = f.add('9:3', 'TEXT', 'QA Last', { parent: f.frame });
+  Object.defineProperty(ghost, 'name', {
+    get() {
+      throw new Error('native slot child does not exist');
+    },
+  });
+  Object.defineProperty(ghost, 'children', {
+    get() {
+      throw new Error('native slot children unavailable');
+    },
+  });
+  f.frame.children = [first, ghost, last];
+  const args = { rootId: f.frame.id, query: 'QA', limit: 1 };
+  const page = await f.queries.findNodes(args);
+  assert.deepEqual(
+    page.nodes.map((n) => n.id),
+    [first.id],
+  );
+  const next = await f.queries.findNodes({ ...args, cursor: page.cursor });
+  assert.deepEqual(
+    next.nodes.map((n) => n.id),
+    [last.id],
+  );
+  assert.equal(next.cursor, null);
+  assert.equal(next.sparse, true);
+  assert(next.issues.some((i) => i.nodeId === ghost.id && i.field === 'name'));
+  assert(
+    next.issues.some((i) => i.nodeId === ghost.id && i.field === 'traversal'),
+  );
+  const context = await f.queries.context({
+    nodeId: f.frame.id,
+    depth: 2,
+    includeCSS: false,
+    includeScreenshot: false,
+    resolveReferences: false,
+  });
+  assert.deepEqual(
+    context.nodes[0].children.map((n) => n.id),
+    [first.id, ghost.id, last.id],
+  );
+  assert.equal(context.nodes[0].children[1].unavailable, true);
+  assert.equal(context.sparse, true);
+  assert(
+    context.issues.some(
+      (i) => i.nodeId === ghost.id && /does not exist/.test(i.error),
+    ),
   );
 });
 test('immutable native errors retain their message and query diagnostics', async () => {
@@ -631,6 +901,27 @@ test('lightweight node inspection returns native bounds and parents without read
   assert.equal(f.figma.currentPage, f.first);
   assert.deepEqual(f.first.selection, []);
 });
+test('FigJam raster imports use an actual frame when rectangles are unavailable', async () => {
+  const f = fixture();
+  f.figma.editorType = 'figjam';
+  f.figma.createRectangle = undefined;
+  f.figma.createImage = () => ({
+    hash: 'frame-image',
+    getSizeAsync: async () => ({ width: 80, height: 40 }),
+  });
+  const receipt = await f.api.executeScript(
+    "return await bridge.query('importAssets',args);",
+    { assetNames: ['image.png'], width: 40 },
+    { 'image.png': new Uint8Array([1]) },
+    {},
+  );
+  assert.equal(receipt.value.assets[0].type, 'FRAME');
+  assert.equal(receipt.value.assets[0].width, 40);
+  assert.equal(receipt.value.assets[0].height, 20);
+  const created = f.nodes.find((n) => n.id === receipt.value.assets[0].nodeId);
+  assert.equal(created.parent, f.figma.currentPage);
+  assert.equal(created.fills[0].imageHash, 'frame-image');
+});
 test('asset receipts map each SVG and raster to actual bounds with explicit and intrinsic aspect-ratio sizing', async () => {
   const f = fixture(),
     createSvg = f.figma.createNodeFromSvg;
@@ -832,6 +1123,10 @@ test('targeted capability checks do not enumerate unrelated motion or shader lib
 });
 test('ordinary capability probes never call resource APIs or load an unneeded node', async () => {
   const f = graph();
+  f.figma.getCanvasGrid = () =>
+    assert.fail('capability probes must not read the canvas grid');
+  f.figma.setCanvasGrid = () =>
+    assert.fail('capability probes must not change the canvas grid');
   let resourceReads = 0;
   f.figma.listAvailableShaders = () => {
     resourceReads++;
@@ -845,6 +1140,9 @@ test('ordinary capability probes never call resource APIs or load an unneeded no
   };
   const defaults = await f.queries.capabilities();
   assert.equal(defaults.api.listAvailableShaders, true);
+  assert.equal(defaults.api.getCanvasGrid, true);
+  assert.equal(defaults.api.setCanvasGrid, true);
+  assert.equal(defaults.api.getSlideGrid, undefined);
   assert.equal(defaults.shaderLibrary, null);
   assert.equal(defaults.motionStyles, null);
   f.figma.getNodeByIdAsync = () =>
@@ -963,5 +1261,90 @@ test('native read failures preserve method, exact target and timing in the execu
       assert.match(error.receipt.logs[0].message, /getNodeByIdAsync/);
       return /Unable to establish/.test(error.message);
     },
+  );
+});
+
+test('font helper accepts explicit variable fonts and deduplicates lists before any text creation', async () => {
+  const f = fixture();
+  await f.api.executeScript(
+    'await bridge.loadFonts(args.fonts);',
+    {
+      fonts: [
+        { family: 'Inter', style: 'Regular', variationSettings: { wght: 550 } },
+        { family: 'Inter', style: 'Regular', variationSettings: { wght: 550 } },
+      ],
+    },
+    {},
+    { readOnly: true, commitUndo: false },
+  );
+  assert.equal(f.calls.fonts.length, 1);
+  assert.equal(f.calls.fonts[0].variationSettings.wght, 550);
+});
+
+test('failed native writes retain bounded before/after root IDs without claiming unchanged nested content', async () => {
+  const f = fixture();
+  await assert.rejects(
+    f.api.executeScript(
+      "figma.createFrame(); throw Error('partial fixture');",
+      {},
+      {},
+      { commitUndo: false },
+    ),
+    (error) => {
+      assert.equal(error.outcomeUnknown, true);
+      assert.equal(
+        error.receipt.scene.after.rootCount,
+        error.receipt.scene.before.rootCount + 1,
+      );
+      assert.equal(
+        error.receipt.scene.after.rootIds.length,
+        error.receipt.scene.before.rootIds.length + 1,
+      );
+      assert.match(error.receipt.scene.note, /inspect affected nodes/);
+      return true;
+    },
+  );
+});
+
+test('Buzz media updates use the native setter when present and preserve unrelated fills when the current editor omits it', async () => {
+  const f = fixture();
+  f.figma.editorType = 'buzz';
+  const node = {
+    id: '4:2',
+    fills: [
+      { type: 'SOLID', color: { r: 1, g: 1, b: 1 } },
+      { type: 'IMAGE', imageHash: 'old', scaleMode: 'FIT' },
+    ],
+  };
+  const field = { node, type: 'IMAGE', hash: 'old' };
+  const paint = { type: 'IMAGE', imageHash: 'new', scaleMode: 'FILL' };
+  const result = await f.api.executeScript(
+    'return await bridge.setBuzzMedia(args.field,args.paint);',
+    { field, paint },
+  );
+  assert.equal(result.value.route, 'node.fills');
+  assert.equal(node.fills[0].type, 'SOLID');
+  assert.equal(node.fills[1].imageHash, 'new');
+  let called = 0;
+  field.setMediaAsync = async (value) => {
+    called++;
+    assert.equal(value.imageHash, 'new');
+  };
+  const setter = await f.api.executeScript(
+    'return await bridge.setBuzzMedia(args.field,args.paint);',
+    { field, paint },
+  );
+  assert.equal(called, 1);
+  assert.equal(setter.value.route, 'setMediaAsync');
+  delete field.setMediaAsync;
+  field.hash = 'missing';
+  await assert.rejects(
+    f.api.executeScript(
+      'return await bridge.setBuzzMedia(args.field,args.paint);',
+      { field, paint },
+      {},
+      { readOnly: true },
+    ),
+    /missing or ambiguous/,
   );
 });

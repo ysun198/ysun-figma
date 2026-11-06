@@ -5,6 +5,44 @@ const { inflateSync } = require('node:zlib');
 const { privateDirectory } = require('./state.cjs');
 const MAX_BINARY_BYTES = 32 * 1024 * 1024;
 const { validArtifactName: validName } = require('../shared/core.js');
+function pngRow(raw, offset, stride, channels, previous) {
+  const filter = raw[offset],
+    row = Buffer.from(raw.subarray(offset + 1, offset + 1 + stride));
+  if (filter > 4) throw new Error('Invalid PNG filter');
+  for (let x = 0; x < stride; x++) {
+    const left = x >= channels ? row[x - channels] : 0,
+      up = previous[x],
+      corner = x >= channels ? previous[x - channels] : 0;
+    row[x] += pngPredictor(filter, left, up, corner);
+  }
+  return row;
+}
+function pngPredictor(filter, left, up, corner) {
+  if (filter === 1) return left;
+  if (filter === 2) return up;
+  if (filter === 3) return Math.floor((left + up) / 2);
+  if (filter !== 4) return 0;
+  const p = left + up - corner,
+    a = Math.abs(p - left),
+    b = Math.abs(p - up),
+    c = Math.abs(p - corner);
+  return a <= b && a <= c ? left : b <= c ? up : corner;
+}
+function rowIsVisible(row, channels, type, transparency) {
+  for (let x = 0; x < row.length; x += channels) {
+    let alpha;
+    if (type === 4 || type === 6) alpha = row[x + channels - 1];
+    else if (type === 3) alpha = transparency[row[x]] ?? 255;
+    else
+      alpha = Array.from({ length: channels }, (_, i) => row[x + i]).every(
+        (sample, i) => sample === transparency.readUInt16BE(i * 2),
+      )
+        ? 0
+        : 255;
+    if (alpha !== 0) return true;
+  }
+  return false;
+}
 // Inspect exported PNGs once at upload. Diagnostics never reject valid delivery.
 function pngInfo(bytes) {
   if (
@@ -45,48 +83,10 @@ function pngInfo(bytes) {
     if (raw.length !== limit) throw new Error('Invalid PNG scanline length');
     let previous = Buffer.alloc(stride);
     for (let y = 0; y < height; y++) {
-      const offset = y * (stride + 1),
-        filter = raw[offset],
-        row = Buffer.from(raw.subarray(offset + 1, offset + 1 + stride));
-      if (filter > 4) throw new Error('Invalid PNG filter');
-      for (let x = 0; x < stride; x++) {
-        const left = x >= channels ? row[x - channels] : 0,
-          up = previous[x],
-          corner = x >= channels ? previous[x - channels] : 0,
-          p = left + up - corner,
-          a = Math.abs(p - left),
-          b = Math.abs(p - up),
-          c = Math.abs(p - corner);
-        row[x] +=
-          filter === 1
-            ? left
-            : filter === 2
-              ? up
-              : filter === 3
-                ? Math.floor((left + up) / 2)
-                : filter === 4
-                  ? a <= b && a <= c
-                    ? left
-                    : b <= c
-                      ? up
-                      : corner
-                  : 0;
-      }
-      for (let x = 0; x < stride; x += channels) {
-        const alpha =
-          type === 4 || type === 6
-            ? row[x + channels - 1]
-            : type === 3
-              ? (transparency[row[x]] ?? 255)
-              : Array.from({ length: channels }, (_, i) => row[x + i]).every(
-                    (sample, i) => sample === transparency.readUInt16BE(i * 2),
-                  )
-                ? 0
-                : 255;
-        if (alpha !== 0) {
-          image.fullyTransparent = false;
-          return image;
-        }
+      const row = pngRow(raw, y * (stride + 1), stride, channels, previous);
+      if (rowIsVisible(row, channels, type, transparency)) {
+        image.fullyTransparent = false;
+        return image;
       }
       previous = row;
     }

@@ -40,6 +40,8 @@ return { rowId: row.id, childId: child.id, bounds: [row.width, row.height] };
 
 Layout grids used as guides (`layoutGrids`) and grid Auto Layout (`layoutMode: 'GRID'`) are distinct features. Native grid Auto Layout supports row/column counts, gaps, sizing tracks and child spans/positions. Discover the exact `grid*` properties and track types before setting them; do not simulate an editable grid by arranging unrelated rectangles. `bridge.autoLayout` handles horizontal/vertical flow; create a frame and set native GRID properties for a grid.
 
+`figma_design_context` preserves grid row/column tracks, auto-track mode, gaps, child anchors/spans and alignment, alongside layout guides and grid-style references. Use those native values when translating a grid; the container's `layoutMode` alone does not describe its layout.
+
 ## Constraints and clipping
 
 Constraints apply within the parent and do not replace Auto Layout. `clipsContent` clips descendants to a frame, while a mask uses a separate masking node and ordering. Read existing constraints before resizing. Confirm both native bounds and the rendered result when clipping, wrapping or transforms matter; bounds alone do not prove content is visible.

@@ -11,20 +11,26 @@ function codexExecutable() {
   }
   throw new Error('Codex Desktop is not installed in Applications');
 }
-function marketplaceRoot() {
-  const root = path.dirname(currentPath());
-  writePrivateJson(path.join(root, '.agents/plugins/marketplace.json'), {
+function marketplaceDefinition(sourcePath) {
+  return {
     name: 'figma-local',
     interface: { displayName: 'ysun figma' },
     plugins: [
       {
         name: 'figma-plugin-local',
-        source: { source: 'local', path: './current' },
-        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
+        source: { source: 'local', path: sourcePath },
+        policy: { installation: 'AVAILABLE', authentication: 'ON_USE' },
         category: 'Productivity',
       },
     ],
-  });
+  };
+}
+function marketplaceRoot() {
+  const root = path.dirname(currentPath());
+  writePrivateJson(
+    path.join(root, '.agents/plugins/marketplace.json'),
+    marketplaceDefinition('./current'),
+  );
   return root;
 }
 async function refreshCodex() {
@@ -74,6 +80,7 @@ async function hostEnabled() {
   );
 }
 module.exports = {
+  marketplaceDefinition,
   refreshCodex,
   marketplaceRoot,
   codexExecutable,

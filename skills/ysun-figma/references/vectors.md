@@ -58,6 +58,8 @@ Do not run that normalization on intentionally multicolour artwork.
 
 `figma.createNodeFromSvg` creates editable native geometry. Keep its viewBox/canvas and child bounds distinct. Use `figma_upload_assets` for repeated local SVG imports and its returned IDs/dimensions for composition.
 
+`figma.createTextPath(vector, segment, position)` returns the new `TEXT_PATH` node. In a live native check it was parented to the active page even when the input vector belonged to another page's frame. Append the returned node to the intended parent before setting its local coordinates; verify that parent rather than retaining the old vector wrapper. `figma_design_context` returns the actual `textPathStartData`, text runs and vector paths.
+
 For a mask, set the actual mask type (`ALPHA`, `VECTOR` or `LUMINANCE` when supported), put it before the masked siblings and keep the intended group/frame boundary. Mask scope follows hierarchy and sibling order. `clipsContent` is a frame crop rather than a substitute for every mask.
 
 Export SVG with native settings when the deliverable must remain vector. Verify transparency, holes, stroke weights and both intended foreground/background combinations. A magnified preview supplements the intended-size native render; it does not replace it.

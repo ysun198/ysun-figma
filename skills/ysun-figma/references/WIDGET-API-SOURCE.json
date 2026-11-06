@@ -1,0 +1,9 @@
+{
+  "repository": "https://github.com/figma/widget-typings",
+  "commit": "8815555bab1cf358ee9958fe2fa2cf46f77f3fb6",
+  "file": "widget-api.d.ts",
+  "sha256": "1e9266bd86b89890b4d6c625f6d470a6c01f898b0b1eb700af143cac85b390ef",
+  "license": "MIT",
+  "licenseFile": "WIDGET-API-LICENSE",
+  "retrieved": "2026-11-06"
+}

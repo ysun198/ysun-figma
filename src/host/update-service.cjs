@@ -147,10 +147,9 @@ async function receive({
         checked = true;
         if (!stopped && (await updater.check())) break;
       } catch (error) {
-        if (!stopped) {
-          if (!checked) updater.defer(error);
-          console.error(new Date().toISOString() + ' ' + error.message);
-        }
+        if (stopped) break;
+        if (!checked) updater.defer(error);
+        console.error(new Date().toISOString() + ' ' + error.message);
       }
       if (updater.restartRequired()) break;
     }

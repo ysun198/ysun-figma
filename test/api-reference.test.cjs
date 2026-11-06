@@ -56,3 +56,15 @@ test('broad API searches are bounded and literal misses do not invent support', 
   assert.equal(missing.totalMatchingLines, 0);
   assert.deepEqual(missing.excerpts, []);
 });
+
+test('Widget hook discovery uses its official Widget declarations without changing native lookups', () => {
+  const widget = readAPIReference({
+    query: 'figma.widget.useSyncedMap',
+    limit: 1,
+  });
+  assert.equal(widget.excerpts[0].owner, 'WidgetAPI');
+  assert.match(widget.reference.path, /widget-api\.d\.ts$/);
+  const native = readAPIReference({ query: 'WidgetNode', limit: 1 });
+  assert.match(native.reference.path, /plugin-api\.d\.ts$/);
+  assert.equal(native.excerpts[0].owner, 'WidgetNode');
+});

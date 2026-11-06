@@ -1,786 +1,21 @@
 #!/usr/bin/env node
 // Small stdio MCP server: newline JSON-RPC, no external runtime dependencies.
-const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { ensureCompanion } = require('./companion.cjs');
 const { bridgeStateDirectory } = require('./state.cjs');
 const { bridgeRequest } = require('./bridge-client.cjs');
-const { readAPIReference, topics, workflows } = require('./api-reference.cjs');
+const { readAPIReference } = require('./api-reference.cjs');
 const {
   uploadAssets,
   saveExports,
   readExport,
 } = require('./artifact-client.cjs');
 const terminal = new Set(['succeeded', 'failed', 'outcome_unknown']);
-const {
-  resolveTarget,
-  parseFigmaUrl,
-  matchingClients,
-} = require('./targets.cjs');
-const app = require('./app.cjs');
+const { resolveTarget, parseFigmaUrl } = require('./targets.cjs');
 const version = require('../../package.json').version;
-const isRecord = (value) =>
-  value !== null && typeof value === 'object' && !Array.isArray(value);
-const object = (properties = {}, required = []) => ({
-  type: 'object',
-  properties,
-  required,
-  additionalProperties: false,
-});
-const id = { type: 'string', pattern: '^[A-Za-z0-9_-]{8,100}$' };
-const fileKey = { type: 'string', pattern: '^[A-Za-z0-9]{6,100}$' };
-const target = {
-  clientId: id,
-  fileKey,
-  fileName: { type: 'string', minLength: 1, maxLength: 1000 },
-  figmaUrl: { type: 'string', minLength: 1, maxLength: 3000 },
-};
-const operation = { operationId: id };
-const ifUnchanged = {
-  type: 'array',
-  items: id,
-  minItems: 1,
-  maxItems: 20,
-  uniqueItems: true,
-};
-const nodeId = {
-  type: 'string',
-  pattern: '^(?:I)?[0-9]+:[0-9]+(?:;[0-9]+:[0-9]+)*$',
-};
-const integer = (minimum, maximum, value) => ({
-  type: 'integer',
-  minimum,
-  maximum,
-  default: value,
-});
-const scope = { type: 'string', enum: ['page', 'file'], default: 'page' };
-const cursor = { type: 'string', minLength: 1, maxLength: 1048576 };
-const svgOptions = {
-  svgIdAttribute: { type: 'boolean' },
-  svgOutlineText: { type: 'boolean' },
-};
-const search = {
-  ...target,
-  rootId: nodeId,
-  pageId: nodeId,
-  query: { type: 'string', maxLength: 200 },
-  scope,
-  cursor,
-  limit: integer(1, 500, 100),
-  maxVisited: integer(1, 20000, 5000),
-};
-const queries = {
-  figma_navigate: 'navigate',
-  figma_canvas: 'canvas',
-  figma_inspect: 'inspect',
-  figma_snapshot: 'snapshot',
-  figma_design_context: 'context',
-  figma_screenshot: 'screenshot',
-  figma_variables: 'variables',
-  figma_components: 'components',
-  figma_find_nodes: 'findNodes',
-  figma_export_node: 'exportNode',
-  figma_capabilities: 'capabilities',
-  figma_design_system: 'designSystem',
-  figma_download_assets: 'downloadAssets',
-  figma_upload_assets: 'importAssets',
-  figma_motion: 'motion',
-};
+const { queries, tools, validate, toolError } = require('./mcp-contract.cjs');
 const images = Symbol('inline MCP image content');
-// Results retain extensible native receipts; schemas describe the stable
-// envelopes rather than pretending arbitrary returned scripts are statically typed.
-const resultSchema = (properties, required = Object.keys(properties)) => ({
-  type: 'object',
-  properties,
-  required,
-  additionalProperties: true,
-});
-const fileListSchema = resultSchema({
-  files: {
-    type: 'array',
-    items: resultSchema({
-      id: { type: 'string' },
-      fileKey,
-      name: { type: 'string' },
-    }),
-  },
-  catalog: { type: 'object' },
-  cursor: { type: 'string', pattern: '^sha256:[a-f0-9]{64}$' },
-});
-const outputSchemas = {
-  figma_api: resultSchema({ reference: { type: 'object' } }),
-  figma_community: resultSchema({ source: { type: 'object' } }),
-  figma_open: fileListSchema,
-  figma_watch: fileListSchema,
-  figma_status: resultSchema({
-    clients: { type: 'array', items: { type: 'object' } },
-    version: { type: 'string' },
-    jobCount: { type: 'integer' },
-    scopedUnresolvedJobCount: { type: 'integer' },
-    globalUnresolvedJobCount: { type: 'integer' },
-  }),
-  figma_connect: resultSchema({
-    state: { type: 'string', enum: ['connected', 'pairing_required'] },
-    manifestPath: { type: 'string' },
-  }),
-  figma_file: {
-    type: 'object',
-    anyOf: [
-      fileListSchema,
-      resultSchema({
-        state: { type: 'string', enum: ['opened', 'connection_required'] },
-      }),
-    ],
-  },
-};
-const receiptSchema = resultSchema({
-  job: resultSchema({
-    id,
-    status: {
-      type: 'string',
-      enum: ['queued', 'running', 'succeeded', 'failed', 'outcome_unknown'],
-    },
-  }),
-});
-const errorSchema = resultSchema({
-  code: { type: 'string' },
-  message: { type: 'string' },
-  error: { type: 'string' },
-});
-function toolError(error, input = {}) {
-  const detail = String(error.message || error);
-  const precondition = error.receipt?.job.result?.precondition;
-  const code =
-    precondition?.code === 'WRITE_CONFLICT'
-      ? 'FIGMA_WRITE_CONFLICT'
-      : precondition
-        ? 'FIGMA_PRECONDITION_FAILED'
-        : error.phase === 'delivery'
-          ? 'ARTIFACT_DELIVERY_FAILED'
-          : error.code === 'FILE_AMBIGUOUS'
-            ? error.code
-            : error.receipt?.job.status === 'outcome_unknown'
-              ? 'OUTCOME_NEEDS_REVIEW'
-              : error.receipt?.job.status === 'failed'
-                ? 'FIGMA_OPERATION_FAILED'
-                : /No matching connected|no matching connected|open the plugin and pair/.test(
-                      detail,
-                    )
-                  ? 'FIGMA_NOT_CONNECTED'
-                  : /Several Figma|multiple matching/.test(detail)
-                    ? 'FILE_AMBIGUOUS'
-                    : /outcome_unknown|uncertain|reconcil/i.test(detail)
-                      ? 'OUTCOME_NEEDS_REVIEW'
-                      : /outdated|version mismatch|update the plugin/i.test(
-                            detail,
-                          )
-                        ? 'PLUGIN_UPDATE_REQUIRED'
-                        : /ECONN|fetch failed|timeout|not running|could not start|Port 38491/i.test(
-                              detail,
-                            )
-                          ? 'CONNECTION_UNAVAILABLE'
-                          : 'FIGMA_OPERATION_FAILED';
-  const messages = {
-    FIGMA_WRITE_CONFLICT: '目标内容已变化，本次脚本尚未执行。',
-    FIGMA_PRECONDITION_FAILED: '无法核对写入条件，本次脚本尚未执行。',
-    FIGMA_NOT_CONNECTED: '目标 Figma 文件尚未连接。',
-    FILE_AMBIGUOUS: '存在多个可能的 Figma 实例，需要明确目标文件和客户端。',
-    OUTCOME_NEEDS_REVIEW: '上次操作的结果尚未确认，需要先核对设计。',
-    PLUGIN_UPDATE_REQUIRED: 'Figma 中的 ysun figma 需要更新并重新打开。',
-    CONNECTION_UNAVAILABLE: '连接暂时不可用，可以重试或让 Codex 恢复连接。',
-    FIGMA_OPERATION_FAILED: '操作未完成，请查看原始错误和执行回执。',
-    ARTIFACT_DELIVERY_FAILED: '预览或文件交付失败，原始 Figma 执行回执已保留。',
-  };
-  const blockingOperationIds = error.body?.blockingOperationIds;
-  const operationId =
-    error.receipt?.job.id ||
-    blockingOperationIds?.[0] ||
-    error.operationId ||
-    input.operationId;
-  const submitted =
-    error.phase !== 'preflight' &&
-    (['submitted', 'execution', 'delivery', 'receipt'].includes(error.phase) ||
-      !!error.receipt ||
-      code === 'OUTCOME_NEEDS_REVIEW');
-  // Rejection of this request does not resolve an older uncertain write. Derive
-  // retry guidance once, so a preflight branch cannot override the ledger.
-  const safeToRetryWithoutCanvasRead =
-    precondition || blockingOperationIds || code === 'OUTCOME_NEEDS_REVIEW'
-      ? false
-      : error.receipt
-        ? error.receipt.job.status === 'failed'
-        : !submitted && operationId
-          ? true
-          : undefined;
-  const result = {
-    code,
-    message:
-      error.phase === 'preflight' && !blockingOperationIds
-        ? '请求未提交到 Figma，请根据具体错误修正后继续。'
-        : messages[code],
-    error: detail,
-    phase: error.phase || undefined,
-    clients: error.clients || error.body?.clients || undefined,
-    targetChange:
-      error.body?.expected && error.body?.actual
-        ? { expected: error.body.expected, actual: error.body.actual }
-        : undefined,
-    blockingOperationIds: blockingOperationIds || undefined,
-    precondition,
-    receipt: error.receipt || undefined,
-    nativeStatus: error.receipt?.job.status,
-    safeToRetryWithoutCanvasRead,
-    operationId: operationId || undefined,
-    toolName: error.toolName,
-    next: blockingOperationIds
-      ? 'This request was not submitted. Inspect each blocking operation ID and reconcile its actual outcome before another write.'
-      : precondition
-        ? 'Read the current resources with figma_snapshot, review the changes, then submit a new conditional edit. The original user script did not run.'
-        : error.phase === 'preflight'
-          ? 'No native job was submitted. ' +
-            (error.toolName
-              ? `Correct the concrete error; figma_api(query=${JSON.stringify(error.toolName)}) gives its current inputSchema.`
-              : 'Correct the request before retrying.')
-          : error.phase === 'delivery'
-            ? 'Read figma_job with includePreviews=false for this original operation ID, or retry figma_export to an empty directory. Do not rerun the native script.'
-            : submitted
-              ? 'Inspect this original operation ID before retrying.'
-              : operationId
-                ? 'No native job was submitted. Correct the request before retrying.'
-                : undefined,
-  };
-  return Object.fromEntries(
-    Object.entries(result).filter(([, value]) => value !== undefined),
-  );
-}
-const tools = [
-  [
-    'figma_open',
-    'Open the account file browser and design preview inside Codex. Automatically refreshes the authenticated account directory in the background. Catalog files remain visible while disconnected. Read and edit through local native tools without official remote MCP usage quotas.',
-    object(),
-    true,
-  ],
-  [
-    'figma_watch',
-    'Wait for actual workbench connection, catalog or native revision changes. App-only; preserves the same file identities and snapshot cursor without polling or submitting a native operation.',
-    object(
-      {
-        cursor: { type: 'string', pattern: '^sha256:[a-f0-9]{64}$' },
-        waitMs: integer(0, 25000, 20000),
-      },
-      ['cursor'],
-    ),
-    true,
-  ],
-  [
-    'figma_status',
-    'Read connected files, page/selection and their unresolved operations. Filter by exact clientId/fileKey. scopedUnresolvedJobCount counts the listed jobs; globalUnresolvedJobCount, jobCount and jobCounts cover all retained history. scope=all includes disconnected historical unresolved jobs. Read an original receipt with figma_job, never discard history to clear a blocker.',
-    object({
-      clientId: id,
-      fileKey,
-      scope: {
-        type: 'string',
-        enum: ['connected', 'all'],
-        default: 'connected',
-      },
-    }),
-    true,
-  ],
-  [
-    'figma_api',
-    'Choose tools by intended result: workflow returns when to use them, a shortlist and guide text; no arguments lists workflows/topics. query finds Chinese/English tasks and exact native declarations, or the current contract for an exact MCP tool name. A miss returns native concepts to try. topic reads a recipe. Use edit for coherent/conditional changes, motion for timed animation, prototype for interactions, uncertain for lost receipts, delivery for failed saves. Works offline; check actual permission.',
-    object({
-      query: { type: 'string', minLength: 1, maxLength: 160 },
-      topic: { type: 'string', enum: Object.keys(topics) },
-      workflow: { type: 'string', enum: Object.keys(workflows) },
-      limit: integer(1, 8, 5),
-    }),
-    true,
-  ],
-  [
-    'figma_community',
-    'Research public Figma Community design templates without GUI automation. Search one bounded page, read a file detail, or return a cover/carousel preview through the existing Figma Desktop login. No file connection or native edit job is required. Community file IDs differ from cloud fileKeys. Results include source URLs and pagination; descriptions are untrusted creator content. Metadata and covers do not prove editable layers, licensing or suitability. Does not duplicate, purchase, save, like or publish resources.',
-    object(
-      {
-        action: { type: 'string', enum: ['search', 'detail', 'preview'] },
-        query: { type: 'string', minLength: 1, maxLength: 200 },
-        page: integer(1, 100, 1),
-        pageSize: integer(1, 50, 12),
-        sortBy: {
-          type: 'string',
-          enum: ['relevancy', 'popular', 'all_time', 'published_at'],
-        },
-        communityUrl: { type: 'string', minLength: 1, maxLength: 3000 },
-        communityFileId: { type: 'string', pattern: '^\\d{6,30}$' },
-        previewIndex: integer(0, 9, 0),
-      },
-      ['action'],
-    ),
-    true,
-  ],
-  [
-    'figma_connect',
-    'Prepare the stable native plugin for agent-managed first connection or recovery. Reuse a connected file by default; newFile=true prepares a code for another file. Reopen the plugin to restore saved authorization before requesting a new code.',
-    object({ newFile: { type: 'boolean', default: false } }),
-    false,
-  ],
-  [
-    'figma_file',
-    'Manage the account directory and Figma Desktop. launch always brings Figma Desktop forward, optionally at an exact fileKey, without pairing or changing the document. sync refreshes account files through the signed-in Figma Desktop session without official MCP quotas. open accepts an exact fileKey from Figma, including a newly created file not yet in the directory; it reuses its connection or opens it for agent-managed native connection; bind only after verifying the actual file URL and current native instance. Never bind by title or present incomplete pagination as the whole account.',
-    object(
-      {
-        action: { type: 'string', enum: ['sync', 'open', 'bind', 'launch'] },
-        fileKey,
-        clientId: id,
-        documentId: { type: 'string', pattern: '^[a-f0-9]{32}$' },
-        verifiedUrl: { type: 'string', minLength: 1, maxLength: 3000 },
-      },
-      ['action'],
-    ),
-    false,
-  ],
-  [
-    'figma_inspect',
-    'Read page roots, page names and selection, or lightweight identities, dimensions and parents for nodeId/nodeIds (up to 20). No vector paths, CSS or screenshots. pageId reads another page without activating it. Available during uncertain-write recovery.',
-    object({
-      ...target,
-      pageId: nodeId,
-      nodeId,
-      nodeIds: {
-        type: 'array',
-        items: nodeId,
-        minItems: 1,
-        maxItems: 20,
-        uniqueItems: true,
-      },
-    }),
-    true,
-  ],
-  [
-    'figma_navigate',
-    'Activate an exact native page, optionally select nodes on it and fit the viewport, entirely through the Plugin API. Requires pageId from figma_inspect. An empty nodeIds clears selection; omit it to preserve selection. A node in figmaUrl can select that node instead. Does not create or edit design content or bring another app forward. Selected nodes must belong to the chosen page. Returns actual page, selection and viewport. Use a stable operationId; if a selection fails, inspect the current page through figma_status instead of clicking the GUI.',
-    object(
-      {
-        ...target,
-        ...operation,
-        pageId: nodeId,
-        nodeIds: {
-          type: 'array',
-          items: nodeId,
-          maxItems: 20,
-          uniqueItems: true,
-        },
-        zoomToFit: { type: 'boolean', default: false },
-        waitMs: integer(0, 30000, 20000),
-      },
-      ['operationId', 'pageId'],
-    ),
-    false,
-  ],
-  [
-    'figma_canvas',
-    'Read the selected native page and render it through Figma exportAsync for the local workbench. Preserves the active page, selection and viewport. Requires an exact connected native file; no website login or remote MCP.',
-    object(
-      {
-        clientId: id,
-        fileKey,
-        pageId: nodeId,
-        maxDimension: integer(256, 4096, 2048),
-      },
-      ['clientId', 'fileKey'],
-    ),
-    true,
-  ],
-  [
-    'figma_snapshot',
-    'Read exact selected properties for a conditional edit. Resources may be nodes, variables, collections or styles. rootId pins the workspace without navigating. Pass this returned job.id in figma_run/figma_upload_assets ifUnchanged; only these observed fields and node ancestry are protected. Independent workspaces do not invalidate each other. Re-read on conflict; this is not a transaction or a JavaScript sandbox.',
-    object(
-      {
-        ...target,
-        rootId: nodeId,
-        resources: {
-          type: 'array',
-          minItems: 1,
-          maxItems: 20,
-          items: object(
-            {
-              kind: {
-                type: 'string',
-                enum: ['node', 'variable', 'collection', 'style'],
-              },
-              id: { type: 'string', minLength: 1, maxLength: 200 },
-              fields: {
-                type: 'array',
-                minItems: 1,
-                maxItems: 64,
-                uniqueItems: true,
-                items: { type: 'string', minLength: 1, maxLength: 100 },
-              },
-            },
-            ['kind', 'id', 'fields'],
-          ),
-        },
-      },
-      ['resources'],
-    ),
-    true,
-  ],
-  [
-    'figma_design_context',
-    'Read native layout, paints, text runs, CSS, resolved variable/style references, image hashes, FigJam shape/connector relationships and correct component property owners. CSS defaults on in Design; request it explicitly in other editors. Includes a screenshot for a single exportable root by default. Sparse/truncated output must be drilled into before implementation. Returns authoritative data for the project stack; does not claim generated code or hosted Code Connect.',
-    object({
-      ...target,
-      nodeId,
-      nodeIds: {
-        type: 'array',
-        items: nodeId,
-        minItems: 1,
-        maxItems: 20,
-        uniqueItems: true,
-      },
-      pageId: nodeId,
-      depth: integer(0, 6, 3),
-      maxNodes: integer(1, 1000, 200),
-      includeCSS: { type: 'boolean' },
-      resolveReferences: { type: 'boolean', default: true },
-      includeScreenshot: { type: 'boolean', default: true },
-      maxDimension: integer(64, 4096, 1600),
-    }),
-    true,
-  ],
-  [
-    'figma_screenshot',
-    'Render one node or a single selection as PNG and return an inline image when <=2 MiB. Does not change selection or viewport. Larger previews remain available with figma_export. Figma and the plugin must be running.',
-    object({ ...target, nodeId, maxDimension: integer(64, 4096, 1600) }),
-    true,
-  ],
-  [
-    'figma_variables',
-    'Read local variable collections, modes, values, aliases, scopes and code syntax. Paginated; does not search cloud libraries.',
-    object({
-      ...target,
-      collectionId: { type: 'string', minLength: 1, maxLength: 200 },
-      type: { type: 'string', enum: ['BOOLEAN', 'COLOR', 'FLOAT', 'STRING'] },
-      limit: integer(1, 500, 200),
-      offset: integer(0, 1000000, 0),
-    }),
-    true,
-  ],
-  [
-    'figma_components',
-    'Find component definitions in a subtree, page or the entire file (scope=file). Returns keys, variants and definitions from the correct owner. Continue bounded searches with the returned cursor and identical query; document edits expire cursors. Does not enumerate arbitrary cloud libraries.',
-    object(search),
-    true,
-  ],
-  [
-    'figma_find_nodes',
-    'Find lightweight node identities by literal name and optional types in a page, subtree or file (scope=file). Does not resolve instance masters by default; includeComponentMetadata=true adds that detail, or use figma_components/design_context. Bounded traversal; continue with its cursor and identical options. Edits expire cursors. No selection/viewport change.',
-    object({
-      ...search,
-      includeComponentMetadata: { type: 'boolean', default: false },
-      types: {
-        type: 'array',
-        items: { type: 'string', minLength: 1, maxLength: 60 },
-        minItems: 1,
-        maxItems: 20,
-        uniqueItems: true,
-      },
-    }),
-    true,
-  ],
-  [
-    'figma_export_node',
-    'Export PNG/JPG/SVG/PDF, native REST-shaped JSON_REST_V1 node data, or MP4/GIF/WEBM from an animated top-level frame when Figma enables it. JSON is not a .fig file or guaranteed round-trip backup. SVG options are explicit; omitted options use native defaults. PNG exports report actual image dimensions and fullyTransparent (null when alpha inspection is unavailable); empty renders warn without blocking delivery. Verify bytes and optionally save locally. Native video fps is format-specific; unsupported permissions/features are reported, never bypassed. No file or viewport edits.',
-    object({
-      ...target,
-      ...svgOptions,
-      nodeId,
-      format: {
-        type: 'string',
-        enum: [
-          'PNG',
-          'JPG',
-          'SVG',
-          'PDF',
-          'MP4',
-          'GIF',
-          'WEBM',
-          'JSON_REST_V1',
-        ],
-        default: 'PNG',
-      },
-      fps: integer(8, 60, 24),
-      quality: { type: 'string', enum: ['LOW', 'MEDIUM', 'HIGH'] },
-      loopCount: integer(0, 1000, 0),
-      maxDimension: integer(64, 8192, 1600),
-      scale: { type: 'number', minimum: 0.01, maximum: 4, default: 1 },
-      outputDirectory: { type: 'string', minLength: 1 },
-    }),
-    false,
-  ],
-  [
-    'figma_capabilities',
-    'Probe callable methods on this live editor without enumerating resources. Optional methods checks exact dotted figma/node paths; global-only checks do not load nodes. nodeId or a single selection identifies node-method checks; without a target those checks are unknown, not false. includeResources=true additionally lists requested motion styles/shaders and can wait for the cloud. Method presence is not permission or plan entitlement.',
-    object({
-      ...target,
-      nodeId,
-      includeResources: { type: 'boolean', default: false },
-      methods: {
-        type: 'array',
-        minItems: 1,
-        maxItems: 64,
-        uniqueItems: true,
-        items: {
-          type: 'string',
-          pattern: '^(figma|node)(\\.[A-Za-z_$][A-Za-z0-9_$]*)+$',
-        },
-      },
-    }),
-    true,
-  ],
-  [
-    'figma_design_system',
-    'Search file components/instances, variables and paint/text/effect/grid styles in one batch. Optionally list enabled variable libraries and search one accessible library collection. Does not import assets, enable libraries or pretend to enumerate all cloud components.',
-    object({
-      ...target,
-      rootId: nodeId,
-      pageId: nodeId,
-      scope,
-      cursor,
-      maxVisited: integer(1, 20000, 5000),
-      includeLibraries: { type: 'boolean', default: false },
-      libraryCollectionKey: { type: 'string', minLength: 1, maxLength: 200 },
-      queries: {
-        type: 'array',
-        minItems: 1,
-        maxItems: 20,
-        items: object(
-          {
-            entity: {
-              type: 'string',
-              enum: ['component', 'variable', 'style'],
-            },
-            query: { type: 'string', maxLength: 200 },
-            limit: integer(1, 500, 100),
-          },
-          ['entity', 'query'],
-        ),
-      },
-    }),
-    true,
-  ],
-  [
-    'figma_download_assets',
-    'Batch download up to 20 nodes, their original image-fill bytes and native VECTOR/BOOLEAN_OPERATION SVGs. Explicit format/scale overrides native export settings; otherwise configured exports take precedence over the bounded fallback (4096 px). SVG options can be chosen explicitly. Raw sources are not re-rendered. Reports traversal/image/vector limits; exports use the verified local artifact channel. outputDirectory writes local files without overwriting existing files; never edits the Figma document.',
-    object({
-      ...target,
-      ...svgOptions,
-      nodeId,
-      nodeIds: {
-        type: 'array',
-        items: nodeId,
-        minItems: 1,
-        maxItems: 20,
-        uniqueItems: true,
-      },
-      pageId: nodeId,
-      includeRender: { type: 'boolean', default: true },
-      includeRaw: { type: 'boolean', default: true },
-      includeVectors: { type: 'boolean', default: true },
-      format: { type: 'string', enum: ['PNG', 'JPG', 'SVG', 'PDF'] },
-      scale: { type: 'number', minimum: 0.01, maximum: 4 },
-      maxDimension: integer(64, 8192, 4096),
-      maxRawImages: integer(1, 100, 20),
-      maxVectorAssets: integer(1, 100, 20),
-      maxVisited: integer(1, 20000, 20000),
-      outputDirectory: { type: 'string', minLength: 1 },
-    }),
-    false,
-  ],
-  [
-    'figma_upload_assets',
-    'Import 1–20 local raster/SVG assets with actual assetName/nodeId/type/bounds. Unicode aliases are supported. Both dimensions set exact bounds; one preserves aspect ratio; neither preserves intrinsic size. Image-fill replacement preserves geometry, other paints and the original image mode/crop; choose fillIndex for ambiguity or replaceAllFills explicitly. scaleMode and spacing are configurable. SVG stays vector. Stable operationId receipts support recovery; selection/viewport remain unchanged.',
-    object(
-      {
-        ...target,
-        ...operation,
-        ifUnchanged,
-        nodeId,
-        parentId: nodeId,
-        x: { type: 'number' },
-        y: { type: 'number' },
-        width: integer(1, 8192),
-        height: integer(1, 8192),
-        scaleMode: { type: 'string', enum: ['FILL', 'FIT', 'CROP', 'TILE'] },
-        fillIndex: integer(0, 100),
-        replaceAllFills: { type: 'boolean', default: false },
-        spacing: { type: 'number', minimum: 0, maximum: 8192 },
-        assetPaths: {
-          type: 'object',
-          additionalProperties: { type: 'string' },
-        },
-        waitMs: integer(0, 30000, 20000),
-      },
-      ['operationId', 'assetPaths'],
-    ),
-    false,
-  ],
-  [
-    'figma_motion',
-    'Read actual keyframes, animation styles and prototype reactions in a bounded subtree/file. Static default timelines are omitted except for an explicit root; includeStaticTimelines=true includes them. Returns typed values/easing, current-page counts, issues and a cursor. No guessed animation snippets. Continue with the same options; feature availability varies by account/editor.',
-    object({
-      ...target,
-      nodeId,
-      rootId: nodeId,
-      pageId: nodeId,
-      scope,
-      cursor,
-      maxNodes: integer(1, 1000, 200),
-      maxVisited: integer(1, 20000, 5000),
-      includeStaticTimelines: { type: 'boolean', default: false },
-    }),
-    true,
-  ],
-  [
-    'figma_run',
-    'Run a native async JavaScript body. Prefer one live read/compute/write for coherent edits. For decisions based on earlier tool reads, ifUnchanged accepts figma_snapshot IDs and rejects changed fields before the body runs. rootId (or a unique snapshot root) supplies bridge.root and scopes autoLayout/import creation without navigating. Helpers: set, loadFonts, screenshot, assetText, exportFile. Use stable operationId; inspect after a lost response. Native code retains full API access; root/readOnly are not a sandbox.',
-    object(
-      {
-        ...target,
-        ...operation,
-        rootId: nodeId,
-        ifUnchanged,
-        source: { type: 'string', minLength: 1, maxLength: 1048576 },
-        args: { type: 'object' },
-        assetPaths: {
-          type: 'object',
-          additionalProperties: { type: 'string' },
-        },
-        readOnly: { type: 'boolean', default: false },
-        waitMs: integer(0, 30000, 20000),
-        commitUndo: { type: 'boolean', default: true },
-      },
-      ['operationId', 'source'],
-    ),
-    false,
-  ],
-  [
-    'figma_job',
-    'Read an original operation receipt. includePreviews=false reads it without downloading images. An uncertain outcome must be inspected, not repeated.',
-    object(
-      {
-        ...operation,
-        includePreviews: { type: 'boolean', default: true },
-        waitMs: { type: 'integer', minimum: 0, maximum: 30000, default: 0 },
-      },
-      ['operationId'],
-    ),
-    true,
-  ],
-  [
-    'figma_export',
-    'Download verified exported files from an existing job to a local directory; refuses overwriting files.',
-    object(
-      { ...operation, outputDirectory: { type: 'string', minLength: 1 } },
-      ['operationId', 'outputDirectory'],
-    ),
-    false,
-  ],
-  [
-    'figma_reconcile',
-    'After inspecting the actual canvas, record whether an uncertain operation applied, partially applied, or did not apply. Unblocks later writes; does not replay, roll back, or change the original receipt.',
-    object(
-      {
-        ...operation,
-        outcome: {
-          type: 'string',
-          enum: ['applied', 'partially_applied', 'not_applied'],
-        },
-        note: { type: 'string', minLength: 1, maxLength: 2000 },
-      },
-      ['operationId', 'outcome', 'note'],
-    ),
-    false,
-  ],
-].map(([name, description, inputSchema, readOnlyHint]) => ({
-  name,
-  title: name.replace(/^figma_/, 'Figma ').replaceAll('_', ' '),
-  description,
-  inputSchema,
-  outputSchema: {
-    type: 'object',
-    anyOf: [outputSchemas[name] || receiptSchema, errorSchema],
-  },
-  annotations: {
-    readOnlyHint,
-    destructiveHint: ['figma_run', 'figma_upload_assets'].includes(name),
-    openWorldHint: [
-      'figma_open',
-      'figma_file',
-      'figma_run',
-      'figma_community',
-    ].includes(name),
-    ...(['figma_run', 'figma_upload_assets', 'figma_navigate'].includes(name)
-      ? { idempotentHint: true }
-      : {}),
-  },
-}));
-Object.assign(tools[0], {
-  title: 'ysun figma',
-  icons: app.icons,
-  _meta: app.metadata,
-});
-for (const name of ['figma_canvas', 'figma_watch'])
-  tools.find((tool) => tool.name === name)._meta = {
-    ui: { visibility: ['app'] },
-  };
-function validate(value, schema, label = 'arguments') {
-  if (schema.type === 'object') {
-    if (!isRecord(value)) throw new Error(`${label} must be an object`);
-    for (const key of schema.required || [])
-      if (!Object.hasOwn(value, key))
-        throw new Error(`${label}.${key} is required`);
-    for (const [key, item] of Object.entries(value)) {
-      const rule =
-        schema.properties && Object.hasOwn(schema.properties, key)
-          ? schema.properties[key]
-          : (schema.additionalProperties ?? true);
-      if (rule === false || rule === undefined)
-        throw new Error(`unexpected ${label}.${key}`);
-      if (typeof rule === 'object') validate(item, rule, `${label}.${key}`);
-    }
-  } else if (schema.type === 'array') {
-    if (
-      !Array.isArray(value) ||
-      (schema.minItems !== undefined && value.length < schema.minItems) ||
-      (schema.maxItems !== undefined && value.length > schema.maxItems) ||
-      (schema.uniqueItems &&
-        new Set(value.map((item) => JSON.stringify(item))).size !==
-          value.length)
-    )
-      throw new Error(`invalid ${label}`);
-    value.forEach((item, index) =>
-      validate(item, schema.items, `${label}[${index}]`),
-    );
-  } else {
-    if (
-      schema.type === 'integer'
-        ? !Number.isInteger(value)
-        : typeof value !== schema.type
-    )
-      throw new Error(`invalid ${label}`);
-    if (
-      (schema.enum && !schema.enum.includes(value)) ||
-      (schema.pattern && !new RegExp(schema.pattern).test(value)) ||
-      (schema.minLength && value.length < schema.minLength) ||
-      (schema.maxLength && value.length > schema.maxLength) ||
-      (schema.minimum !== undefined && value < schema.minimum) ||
-      (schema.maximum !== undefined && value > schema.maximum)
-    )
-      throw new Error(`invalid ${label}`);
-  }
-}
 async function withPreviews(connection, record, signal, explicit = false) {
   if (record.job.status !== 'succeeded') return record;
   explicit ||=
@@ -788,7 +23,9 @@ async function withPreviews(connection, record, signal, explicit = false) {
     record.job.result?.value?.format === 'PNG';
   const previews = (record.job.result?.exports || []).filter(
     (file) =>
-      ['image/png', 'image/jpeg', 'image/gif'].includes(file.mimeType) &&
+      ['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(
+        file.mimeType,
+      ) &&
       (explicit || file.name.startsWith('preview-')),
   );
   record[images] = [];
@@ -849,304 +86,280 @@ function compactSuccess(record) {
     job: { id, status, target, result: details },
   };
 }
-async function callTool(name, input, signal) {
+async function callRest(name, input, { connection, request, signal }) {
+  const rest = require('./rest.cjs');
+  rest.prepare(input);
+  const result = await request('/v1/rest', {
+    method: 'POST',
+    body: JSON.stringify(input),
+    timeoutMs: 125000,
+  }).catch((error) => {
+    if (error.body?.code === 'CLOUD_RECEIPT_UNAVAILABLE') {
+      error.phase = 'receipt';
+      error.operationId = input.operationId;
+    }
+    throw error;
+  });
+  if (['failed', 'outcome_unknown'].includes(result.job?.status))
+    throw Object.assign(
+      new Error(result.job.error || 'Figma REST request failed'),
+      {
+        code:
+          result.job.status === 'outcome_unknown'
+            ? 'REST_OUTCOME_UNKNOWN'
+            : 'REST_REQUEST_FAILED',
+        phase: 'execution',
+        receipt: result,
+      },
+    );
+  return compactSuccess(
+    await deliverResult(connection, result, {
+      signal,
+      outputDirectory: input.outputDirectory,
+    }),
+  );
+}
+
+async function callCommunity(name, input, { connection, request, signal }) {
+  const result = await request('/v1/community', {
+    method: 'POST',
+    body: JSON.stringify(input),
+    timeoutMs: 45000,
+  });
+  if (result.image) {
+    result[images] = [
+      {
+        type: 'image',
+        data: result.image.data,
+        mimeType: result.image.mimeType,
+      },
+    ];
+    delete result.image;
+  }
+  return result;
+}
+
+async function callStatus(name, input, { connection, request, signal }) {
+  return {
+    updates: require('./updates.cjs').updateStatus(version),
+    ...(await request(
+      '/v1/status?' + new URLSearchParams({ summary: '1', ...input }),
+    )),
+    skillRootPath: path.join(
+      bridgeStateDirectory(),
+      'companion/current/skills',
+    ),
+    apiReferencePath: path.join(
+      bridgeStateDirectory(),
+      'companion/current/skills/ysun-figma/references/plugin-api.d.ts',
+    ),
+  };
+}
+
+async function callConnect(name, input, { connection, request, signal }) {
+  const state = await request('/v1/status?summary=1');
+  const files = state.clients;
+  const manifestPath = path.join(
+    bridgeStateDirectory(),
+    'plugin/manifest.json',
+  );
+  if (input.manualPairing)
+    return {
+      state: 'pairing_required',
+      manifestPath,
+      ...(await request('/v1/pairings', { method: 'POST', body: '{}' })),
+      next: 'Manual fallback only after the direct Desktop lifecycle is diagnosed as unavailable. Import this stable manifest only if absent, run its Connect command and enter this one-time code using available app automation. Verify the exact file/client with figma_status. Ordinary setup uses figma_file(action="open" or "connect", fileKey=...) without a connection code.',
+    };
+  if (files.length && !input.newFile)
+    return {
+      state: files.some((file) => !file.needsPluginUpdate)
+        ? 'connected'
+        : 'connection_required',
+      manifestPath,
+      files,
+      next: 'Reuse the exact intended file/client, without a new pairing. If needsPluginUpdate, finish or reconcile its original operations, then use figma_file(action="connect", fileKey=...) to verify and recover its actual native instance. Dev/Widget profile changes can replace the previous iframe; read the returned client identity again before submitting work. For an additional existing file, use figma_file(action="open", fileKey=...).',
+    };
+  return {
+    state: 'connection_required',
+    manifestPath,
+    files,
+    next: 'Use the requested Figma URL/fileKey with figma_file(action="open", fileKey=...), or inspect actual open editors with figma_file(action="status") and connect the intended exact file. Direct connection handles saved authorization and owned-frame pairing without GUI or a code. Only desktop_plugin_not_imported requires a one-time import of this stable manifest using app automation; retry the same direct connection afterward. This preparation does not create a Figma file. See the packaged ysun-figma-setup skill for missing Node/Desktop, sign-in or safe Desktop restart.',
+  };
+}
+
+async function callReconcile(name, input, { connection, request, signal }) {
+  return request(`/v1/jobs/${input.operationId}/reconcile`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+async function callReceipt(name, input, { connection, request, signal }) {
+  let phase = 'receipt',
+    submittedId = input.operationId;
+  try {
+    phase = 'receipt';
+    submittedId = input.operationId;
+    const record = await request(
+      `/v1/jobs/${input.operationId}?wait=${input.waitMs || 0}`,
+    );
+    return await deliverResult(connection, record, {
+      signal,
+      outputDirectory: input.outputDirectory,
+      includePreviews: name === 'figma_job' && input.includePreviews !== false,
+    });
+  } catch (error) {
+    error.phase ||= phase;
+    error.operationId ||= submittedId;
+    throw error;
+  }
+}
+
+function validateTargetOptions(name, input) {
+  if (
+    (name !== 'figma_navigate' &&
+      [input.nodeId, input.nodeIds, input.pageId].filter(Boolean).length > 1) ||
+    (input.rootId && (input.pageId || input.nodeId)) ||
+    (input.nodeId && input.parentId) ||
+    (input.scope === 'file' && (input.rootId || input.pageId || input.nodeId))
+  )
+    throw new Error('choose one node/root targeting option');
+}
+function validateAssetInput(input) {
+  const count = Object.keys(input.assetPaths).length;
+  if (!count || count > 20) throw new Error('Choose 1–20 assetPaths');
+  const target =
+    input.nodeId || (input.figmaUrl && parseFigmaUrl(input.figmaUrl).nodeId);
+  if (input.fillIndex !== undefined && (!target || input.replaceAllFills))
+    throw new Error(
+      'fillIndex requires a target and cannot be combined with replaceAllFills',
+    );
+  if (
+    target &&
+    ['x', 'y', 'width', 'height'].some((key) => input[key] !== undefined)
+  )
+    throw new Error(
+      'An image-fill replacement preserves node position and size; omit x, y, width and height',
+    );
+}
+function validateToolInput(name, input) {
+  if (
+    name === 'figma_file' &&
+    input.action === 'status' &&
+    ['clientId', 'documentId', 'verifiedUrl'].some(
+      (key) => input[key] !== undefined,
+    )
+  )
+    throw new Error('Desktop file status accepts only an optional fileKey');
+  validateTargetOptions(name, input);
+  if (name === 'figma_upload_assets') validateAssetInput(input);
+  if (
+    name === 'figma_status' &&
+    input.scope === 'all' &&
+    (input.clientId || input.fileKey)
+  )
+    throw new Error('choose all history or one connected file');
+  if (name === 'figma_community')
+    require('./community.cjs').validateResearch(input);
+}
+function nativeTarget(name, input, state) {
+  const selected = resolveTarget(input, state.clients);
+  if (
+    state.clients.find((client) => client.id === selected.clientId)
+      ?.needsPluginUpdate
+  )
+    throw new Error(
+      'The native plugin is outdated; reconnect it before submitting an operation',
+    );
+  if (
+    selected.nodeId &&
+    (name === 'figma_navigate'
+      ? input.nodeIds
+      : input.pageId || input.rootId || input.nodeIds || input.scope === 'file')
+  )
+    throw new Error('choose one node/root targeting option');
+  return selected;
+}
+function nativeJob(name, input, selected, assets) {
+  const query = queries[name];
+  const source = query
+    ? query === 'snapshot'
+      ? 'return await bridge.observe(args);'
+      : `return await bridge.query('${query}', args);`
+    : input.source;
+  const {
+    clientId,
+    fileKey,
+    fileName,
+    figmaUrl,
+    operationId,
+    waitMs,
+    assetPaths,
+    outputDirectory,
+    ...queryArgs
+  } = input;
+  const readOnly =
+    (!!query && name !== 'figma_upload_assets') ||
+    (name === 'figma_run' && input.readOnly === true);
+  return {
+    readOnly,
+    body: {
+      kind: 'exec',
+      operationId: ['figma_run', 'figma_navigate'].includes(name)
+        ? input.operationId
+        : readOnly
+          ? crypto.randomUUID()
+          : input.operationId,
+      target: selected.target,
+      source,
+      assets,
+      args: query
+        ? {
+            ...queryArgs,
+            assetNames: Object.keys(assets),
+            nodeId: selected.nodeId,
+            rootId:
+              input.rootId ||
+              ([
+                'figma_find_nodes',
+                'figma_components',
+                'figma_design_system',
+              ].includes(name)
+                ? selected.nodeId
+                : undefined),
+          }
+        : input.args,
+      options: {
+        readOnly,
+        commitUndo: !readOnly && input.commitUndo !== false,
+        ...(name === 'figma_snapshot' ? { snapshot: true } : {}),
+        ...(input.ifUnchanged ? { ifUnchanged: input.ifUnchanged } : {}),
+        ...(name === 'figma_run' && input.rootId
+          ? { rootId: input.rootId }
+          : {}),
+      },
+    },
+  };
+}
+
+async function callNative(name, input, { connection, request, signal }) {
   let phase = 'preflight',
     receipt,
     submittedId;
   try {
-    const definition = tools.find((tool) => tool.name === name);
-    if (!definition)
-      throw Object.assign(new Error('unknown tool'), { code: -32602 });
-    validate(input, definition.inputSchema);
-    if (name === 'figma_api') {
-      const tool = tools.find((entry) => entry.name === input.query?.trim());
-      return { version, ...readAPIReference(input), ...(tool ? { tool } : {}) };
-    }
-    if (
-      (name !== 'figma_navigate' &&
-        [input.nodeId, input.nodeIds, input.pageId].filter(Boolean).length >
-          1) ||
-      (input.rootId && (input.pageId || input.nodeId)) ||
-      (input.nodeId && input.parentId) ||
-      (input.scope === 'file' && (input.rootId || input.pageId || input.nodeId))
-    )
-      throw new Error('choose one node/root targeting option');
-    if (
-      name === 'figma_upload_assets' &&
-      (!Object.keys(input.assetPaths).length ||
-        Object.keys(input.assetPaths).length > 20)
-    )
-      throw new Error('Choose 1–20 assetPaths');
-    if (
-      name === 'figma_upload_assets' &&
-      input.fillIndex !== undefined &&
-      (!(
-        input.nodeId ||
-        (input.figmaUrl && parseFigmaUrl(input.figmaUrl).nodeId)
-      ) ||
-        input.replaceAllFills)
-    )
-      throw new Error(
-        'fillIndex requires a target and cannot be combined with replaceAllFills',
-      );
-    if (
-      name === 'figma_upload_assets' &&
-      (input.nodeId ||
-        (input.figmaUrl && parseFigmaUrl(input.figmaUrl).nodeId)) &&
-      ['x', 'y', 'width', 'height'].some((key) => input[key] !== undefined)
-    )
-      throw new Error(
-        'An image-fill replacement preserves node position and size; omit x, y, width and height',
-      );
-    if (
-      name === 'figma_status' &&
-      input.scope === 'all' &&
-      (input.clientId || input.fileKey)
-    )
-      throw new Error('choose all history or one connected file');
-    if (name === 'figma_community')
-      require('./community.cjs').validateResearch(input);
-    const connection = await ensureCompanion();
-    const request = (route, options) =>
-      bridgeRequest(connection, route, { ...options, signal });
-    const launchDesktop = (fileKey) =>
-      request('/v1/desktop', {
-        method: 'POST',
-        body: JSON.stringify({ fileKey }),
-      });
-    if (name === 'figma_community') {
-      const result = await request('/v1/community', {
-        method: 'POST',
-        body: JSON.stringify(input),
-        timeoutMs: 45000,
-      });
-      if (result.image) {
-        result[images] = [
-          {
-            type: 'image',
-            data: result.image.data,
-            mimeType: result.image.mimeType,
-          },
-        ];
-        delete result.image;
-      }
-      return result;
-    }
-    if (name === 'figma_file' && input.action === 'launch' && !input.fileKey)
-      return launchDesktop();
-    if (name === 'figma_status')
-      return {
-        updates: require('./updates.cjs').updateStatus(),
-        ...(await request(
-          '/v1/status?' + new URLSearchParams({ summary: '1', ...input }),
-        )),
-        skillRootPath: path.join(
-          bridgeStateDirectory(),
-          'companion/current/skills',
-        ),
-        apiReferencePath: path.join(
-          bridgeStateDirectory(),
-          'companion/current/skills/ysun-figma/references/plugin-api.d.ts',
-        ),
-      };
-    if (name === 'figma_open') {
-      await request('/v1/catalog/sync', {
-        method: 'POST',
-        body: '{}',
-      });
-      return request('/v1/app');
-    }
-    if (name === 'figma_watch') {
-      await request('/v1/catalog/sync', { method: 'POST', body: '{}' });
-      return request(
-        '/v1/app?' +
-          new URLSearchParams({
-            cursor: input.cursor,
-            waitMs: input.waitMs ?? 20000,
-          }),
-      );
-    }
-    if (name === 'figma_file') {
-      if (input.action === 'sync') {
-        await request('/v1/catalog/sync', {
-          method: 'POST',
-          body: '{"force":true}',
-        });
-        return {
-          ...(await request('/v1/app')),
-          next: 'Account sync reuses Figma Desktop login. If desktop_required, install Desktop from Figma official Downloads, verify its code signature and launch it; use the files skill for installation. If desktop_restart_required, safely save pending changes, quit Figma normally with app automation and launch it through figma_file(action="launch"), then sync. Never force quit an editor with unsynced changes. If login_required, complete ordinary sign-in in Figma Desktop; no separate browser login, cookie copying or Keychain password is required. Preserve login/permission boundaries.',
-        };
-      }
-      if (input.action === 'bind') {
-        await request('/v1/catalog/bind', {
-          method: 'POST',
-          body: JSON.stringify(input),
-        });
-        return request('/v1/app');
-      }
-      const catalog = await request('/v1/catalog');
-      if (!input.fileKey)
-        throw new Error('fileKey is required to open a file.');
-      if (
-        input.verifiedUrl &&
-        parseFigmaUrl(input.verifiedUrl).fileKey !== input.fileKey
-      )
-        throw new Error('verifiedUrl does not match fileKey.');
-      const file = catalog.files.find(
-        (file) => file.fileKey === input.fileKey,
-      ) || {
-        fileKey: input.fileKey,
-        url:
-          input.verifiedUrl || 'https://www.figma.com/design/' + input.fileKey,
-      };
-      if (input.action === 'launch') return launchDesktop(file.fileKey);
-      const state = await request('/v1/status?summary=1');
-      if (
-        input.clientId ||
-        matchingClients({ fileKey: file.fileKey }, state.clients).length
-      ) {
-        const selected = resolveTarget(
-          { fileKey: file.fileKey, clientId: input.clientId },
-          state.clients,
-        );
-        return {
-          state: 'connected',
-          file,
-          clientId: selected.clientId,
-          targeting: selected.targeting,
-          ...(await request('/v1/app')),
-        };
-      }
-      await launchDesktop(file.fileKey);
-      return {
-        state: 'connection_required',
-        file,
-        next: 'Figma Desktop is opening this exact file. Check figma_status and the actual open file URL first. If its native plugin is already running, verify that exact client/document before binding; otherwise run ysun figma → Connect in this file and compare the fresh instance with prior status. Reuse saved authorization; figma_connect(newFile=true) supplies a code only when needed. Use figma_file(action=bind,fileKey,clientId,documentId,verifiedUrl) for that live instance. Never infer identity from the name or copied plugin data. Keep instructions in the current Codex conversation.',
-      };
-    }
-    if (name === 'figma_connect') {
-      const state = await request('/v1/status?summary=1');
-      const files = state.clients;
-      const manifestPath = path.join(
-        bridgeStateDirectory(),
-        'plugin/manifest.json',
-      );
-      if (files.length && !input.newFile)
-        return {
-          state: 'connected',
-          manifestPath,
-          files,
-          next: 'Reuse the intended connected file. If needsPluginUpdate, wait until no job is queued/running and reopen the native plugin yourself; saved authorization restores. For an additional file call with newFile=true. Do not re-pair a working file.',
-        };
-      return {
-        state: 'pairing_required',
-        manifestPath,
-        ...(await request('/v1/pairings', { method: 'POST', body: '{}' })),
-        next: 'Use available native app automation: open Figma Desktop and the intended file, import this stable manifest only if missing, run ysun figma → Connect, fill the one-time code and click 连接. Verify figma_status. Reopened plugins restore saved authorization without a new code. If automation or a dialog is blocked, state the actual blocker and ask only for the remaining action. The connection panel hides after pairing.',
-      };
-    }
-    if (name === 'figma_reconcile')
-      return request(`/v1/jobs/${input.operationId}/reconcile`, {
-        method: 'POST',
-        body: JSON.stringify(input),
-      });
-    if (name === 'figma_job' || name === 'figma_export') {
-      phase = 'receipt';
-      submittedId = input.operationId;
-      const record = await request(
-        `/v1/jobs/${input.operationId}?wait=${input.waitMs || 0}`,
-      );
-      return await deliverResult(connection, record, {
-        signal,
-        outputDirectory: input.outputDirectory,
-        includePreviews:
-          name === 'figma_job' && input.includePreviews !== false,
-      });
-    }
     signal?.throwIfAborted();
     // The health check already read this status; submit rechecks exact identity.
-    const state = connection.status;
-    const selected = resolveTarget(input, state.clients);
-    if (
-      state.clients.find((client) => client.id === selected.clientId)
-        ?.needsPluginUpdate
-    )
-      throw new Error(
-        'The native plugin is outdated; update and reopen it before submitting an operation',
-      );
-    if (
-      selected.nodeId &&
-      (name === 'figma_navigate'
-        ? input.nodeIds
-        : input.pageId ||
-          input.rootId ||
-          input.nodeIds ||
-          input.scope === 'file')
-    )
-      throw new Error('choose one node/root targeting option');
+    const selected = nativeTarget(name, input, connection.status);
     const assets = await uploadAssets(connection, input.assetPaths, signal);
-    const query = queries[name];
-    const source = query
-      ? query === 'snapshot'
-        ? 'return await bridge.observe(args);'
-        : `return await bridge.query('${query}', args);`
-      : input.source;
-    const {
-      clientId,
-      fileKey,
-      fileName,
-      figmaUrl,
-      operationId,
-      waitMs: requestedWait,
-      assetPaths,
-      outputDirectory,
-      ...queryArgs
-    } = input;
-    // Asset bytes are content-addressed for stable request digests across upload retries.
+    // Asset bytes are content-addressed; the same request keeps its digest
+    // across upload retries. The operation id is recorded before submission.
+    const { readOnly, body } = nativeJob(name, input, selected, assets);
     signal?.throwIfAborted();
-    const readOnly =
-      (!!query && name !== 'figma_upload_assets') ||
-      (name === 'figma_run' && input.readOnly === true);
     phase = 'submitted';
-    submittedId = ['figma_run', 'figma_navigate'].includes(name)
-      ? input.operationId
-      : readOnly
-        ? crypto.randomUUID()
-        : input.operationId;
+    submittedId = body.operationId;
     const { job } = await request('/v1/jobs', {
       method: 'POST',
-      body: JSON.stringify({
-        kind: 'exec',
-        operationId: submittedId,
-        target: selected.target,
-        source,
-        assets,
-        args: query
-          ? {
-              ...queryArgs,
-              assetNames: Object.keys(assets),
-              nodeId: selected.nodeId,
-              rootId:
-                input.rootId ||
-                ([
-                  'figma_find_nodes',
-                  'figma_components',
-                  'figma_design_system',
-                ].includes(name)
-                  ? selected.nodeId
-                  : undefined),
-            }
-          : input.args,
-        options: {
-          readOnly,
-          commitUndo: !readOnly && input.commitUndo !== false,
-          ...(name === 'figma_snapshot' ? { snapshot: true } : {}),
-          ...(input.ifUnchanged ? { ifUnchanged: input.ifUnchanged } : {}),
-          ...(name === 'figma_run' && input.rootId
-            ? { rootId: input.rootId }
-            : {}),
-        },
-      }),
+      body: JSON.stringify(body),
     }).catch((error) => {
       if (error.statusCode) error.phase = 'preflight';
       throw error;
@@ -1187,225 +400,74 @@ async function callTool(name, input, signal) {
     throw error;
   }
 }
-function serve(input = process.stdin, output = process.stdout) {
-  let buffer = '',
-    phase = 'new';
-  const pending = new Map();
-  const send = (message) => output.write(JSON.stringify(message) + '\n');
-  let runtime, updateWatch;
-  function currentRuntime() {
-    runtime ||= module.exports;
-    let observed;
-    try {
-      observed = JSON.parse(
-        fs.readFileSync(path.join(__dirname, '../../package.json'), 'utf8'),
-      ).version;
-    } catch (error) {
-      if (error.code === 'ENOENT') return runtime;
-      throw error;
-    }
-    if (observed === runtime.version) return runtime;
-    // Managed promotion replaces the one current package atomically. Keep the
-    // host's stdio transport alive and discard only this package's module cache.
-    const root = path.resolve(__dirname, '../..') + path.sep;
-    for (const id of Object.keys(require.cache))
-      if (id.startsWith(root)) delete require.cache[id];
-    runtime = require(__filename);
-    if (phase === 'ready') {
-      send({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' });
-      send({ jsonrpc: '2.0', method: 'notifications/resources/list_changed' });
-    }
-    return runtime;
-  }
-  async function handle(message) {
-    if (
-      !message ||
-      Array.isArray(message) ||
-      message.jsonrpc !== '2.0' ||
-      typeof message.method !== 'string' ||
-      (Object.hasOwn(message, 'id') &&
-        !['number', 'string'].includes(typeof message.id))
-    ) {
-      send({
-        jsonrpc: '2.0',
-        id: null,
-        error: { code: -32600, message: 'Invalid Request' },
-      });
-      return;
-    }
-    if (!Object.hasOwn(message, 'id')) {
-      if (
-        message.method === 'notifications/initialized' &&
-        phase === 'initializing'
-      ) {
-        phase = 'ready';
-        const packageRoot = path.resolve(__dirname, '../..');
-        const report = (error) =>
-          process.stderr.write('Update discovery: ' + error.message + '\n');
-        try {
-          // Managed updates atomically replace packageRoot; watch its stable parent.
-          updateWatch = fs.watch(
-            path.dirname(packageRoot),
-            { persistent: false },
-            (_event, name) => {
-              if (!name || name.toString() === path.basename(packageRoot))
-                try {
-                  currentRuntime();
-                } catch (error) {
-                  report(error);
-                }
-            },
-          );
-          updateWatch.on('error', report);
-        } catch (error) {
-          report(error);
-        }
-      }
-      if (message.method === 'notifications/cancelled')
-        pending.get(message.params && message.params.requestId)?.abort();
-      return;
-    }
-    const controller = new AbortController();
-    pending.set(message.id, controller);
-    try {
-      const api = currentRuntime();
-      let result;
-      if (message.params !== undefined && !isRecord(message.params))
-        throw Object.assign(new Error('invalid request parameters'), {
-          code: -32602,
-        });
-      if (message.method === 'initialize') {
-        if (phase !== 'new')
-          throw Object.assign(new Error('already initialized'), {
-            code: -32600,
-          });
-        if (
-          typeof message.params?.protocolVersion !== 'string' ||
-          typeof message.params.clientInfo?.name !== 'string' ||
-          typeof message.params.clientInfo?.version !== 'string' ||
-          !isRecord(message.params.capabilities)
-        )
-          throw Object.assign(new Error('invalid initialize parameters'), {
-            code: -32602,
-          });
-        phase = 'initializing';
-        result = {
-          protocolVersion: '2025-11-25',
-          capabilities: {
-            tools: { listChanged: true },
-            resources: { listChanged: true },
-          },
-          serverInfo: {
-            name: 'figma-plugin-local',
-            title: 'ysun figma',
-            version: api.version,
-            icons: api.app.icons,
-          },
-          instructions:
-            'Use ysun-figma skills in this conversation. Confirm exact file/client with figma_status; reuse one native client per file across tasks, never bind by title. Choose native capabilities from desired behavior without asking the user to name features. figma_api workflows give guides: edit for coherent or conditional edits, motion for timed animation, prototype for interactions, handoff for code. Prefer one live read/compute/write. When a decision spans tool calls, figma_snapshot its dependent fields and pass job.id as ifUnchanged; pin rootId rather than currentPage. On conflict re-read and merge; the body did not run. Keep one operationId per edit. After interruption inspect original figma_job and reconcile uncertain writes; repair delivery from original output. Use native MCP for edits/navigation/exports, GUI only for uncovered lifecycle or actual interactions. Sparse/truncated reads are incomplete; cloud-only services remain separate.',
-        };
-      } else if (message.method === 'ping') result = {};
-      else {
-        if (phase !== 'ready')
-          throw Object.assign(new Error('initialize first'), { code: -32000 });
-        if (message.method === 'tools/list') result = { tools: api.tools };
-        else if (message.method === 'resources/list')
-          result = { resources: [api.app.resource] };
-        else if (message.method === 'resources/templates/list')
-          result = { resourceTemplates: [] };
-        else if (message.method === 'resources/read')
-          result = api.app.readResource(message.params?.uri);
-        else if (message.method === 'tools/call') {
-          if (
-            typeof message.params?.name !== 'string' ||
-            (message.params.arguments !== undefined &&
-              !isRecord(message.params.arguments))
-          )
-            throw Object.assign(new Error('invalid tools/call parameters'), {
-              code: -32602,
-            });
-          try {
-            const value = await api.callTool(
-              message.params?.name,
-              message.params?.arguments || {},
-              controller.signal,
-            );
-            result = {
-              content: [
-                { type: 'text', text: JSON.stringify(value) },
-                ...(value[api.images] || []),
-              ],
-              structuredContent: value,
-              isError: false,
-            };
-          } catch (error) {
-            if (error.code === -32602) throw error;
-            const value = api.toolError(error, message.params?.arguments);
-            result = {
-              content: [{ type: 'text', text: JSON.stringify(value) }],
-              structuredContent: value,
-              isError: true,
-            };
-          }
-        } else
-          throw Object.assign(new Error('Method not found'), { code: -32601 });
-      }
-      if (!controller.signal.aborted)
-        send({ jsonrpc: '2.0', id: message.id, result });
-    } catch (error) {
-      if (!controller.signal.aborted)
-        send({
-          jsonrpc: '2.0',
-          id: message.id,
-          error: {
-            code: Number.isInteger(error.code) ? error.code : -32603,
-            message: error.message,
-          },
-        });
-    } finally {
-      pending.delete(message.id);
-    }
-  }
-  input.setEncoding('utf8');
-  input.on('data', (chunk) => {
-    buffer += chunk;
-    if (Buffer.byteLength(buffer) > 6 * 1024 * 1024) {
-      input.destroy();
-      process.exitCode = 1;
-      return;
-    }
-    let newline;
-    while ((newline = buffer.indexOf('\n')) >= 0) {
-      const line = buffer.slice(0, newline);
-      buffer = buffer.slice(newline + 1);
-      if (!line.trim()) continue;
-      let message;
-      try {
-        message = JSON.parse(line);
-      } catch {
-        send({
-          jsonrpc: '2.0',
-          id: null,
-          error: { code: -32700, message: 'Parse error' },
-        });
-        continue;
-      }
-      void handle(message);
-    }
-  });
-  const stop = () => {
-    updateWatch?.close();
-    for (const controller of pending.values()) controller.abort();
-  };
-  for (const event of ['end', 'close', 'error']) input.once(event, stop);
+
+function restMetadata(input) {
+  const rest = require('./rest.cjs');
+  if (input.action === 'list')
+    return rest.list({
+      query: input.search,
+      offset: input.offset,
+      limit: input.limit,
+    });
+  if (input.action === 'describe') return rest.describe(input.endpoint);
+  if (input.action === 'auth_status')
+    return rest.authStatus(input.credentialProfile);
+  if (input.action === 'configure') return rest.configure(input);
 }
+
+const connectedTools = {
+  figma_rest: callRest,
+  figma_community: callCommunity,
+  figma_status: callStatus,
+  figma_connect: callConnect,
+  figma_reconcile: callReconcile,
+  figma_job: callReceipt,
+  figma_export: callReceipt,
+  figma_file: (_name, input, context) =>
+    require('./file-tools.cjs').callFile(input, context),
+};
+async function callTool(name, input, signal) {
+  try {
+    const definition = tools.find((tool) => tool.name === name);
+    if (!definition)
+      throw Object.assign(new Error('unknown tool'), { code: -32602 });
+    validate(input, definition.inputSchema);
+    if (name === 'figma_api') {
+      const tool = tools.find((entry) => entry.name === input.query?.trim());
+      return { version, ...readAPIReference(input), ...(tool ? { tool } : {}) };
+    }
+    if (name === 'figma_rest' && input.action !== 'request')
+      return restMetadata(input);
+    validateToolInput(name, input);
+    const connection = await ensureCompanion();
+    const request = (route, options) =>
+      bridgeRequest(connection, route, { ...options, signal });
+    const launchDesktop = (fileKey) =>
+      request('/v1/desktop', {
+        method: 'POST',
+        body: JSON.stringify({ fileKey }),
+      });
+    return await (connectedTools[name] || callNative)(name, input, {
+      connection,
+      request,
+      launchDesktop,
+      signal,
+    });
+  } catch (error) {
+    error.phase ||= 'preflight';
+    error.toolName ||= name;
+    throw error;
+  }
+}
+
+const { serve } = require('./mcp-transport.cjs');
+
 module.exports = {
   tools,
   callTool,
   serve,
   validate,
   toolError,
-  app,
   version,
   images,
 };

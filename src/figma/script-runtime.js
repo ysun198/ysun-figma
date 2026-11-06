@@ -42,6 +42,22 @@ function encodeScriptValue(value) {
   }
   return visit(value, 0);
 }
+async function checkedScriptRoot(observations, options) {
+  const checked = await observations.check(
+    options.observations || [],
+    options.rootId,
+  );
+  if (checked.error || checked.conflictCount) {
+    const error = new Error(checked.error || 'Observed Figma data changed');
+    error.precondition = {
+      code: checked.error ? 'PRECONDITION_UNAVAILABLE' : 'WRITE_CONFLICT',
+      conflicts: checked.conflicts || [],
+      conflictCount: checked.conflictCount || 0,
+    };
+    throw error;
+  }
+  return checked.root;
+}
 async function executeScript(source, args = {}, assets = {}, options = {}) {
   if (typeof source !== 'string' || !source.trim())
     throw new Error('script source is required');
@@ -102,6 +118,42 @@ async function executeScript(source, args = {}, assets = {}, options = {}) {
       for (const [key, value] of Object.entries(rest)) node[key] = value;
       return node;
     },
+    async setBuzzMedia(field, paint) {
+      if (figma.editorType !== 'buzz')
+        throw new Error('bridge.setBuzzMedia requires Buzz');
+      if (
+        !field ||
+        !['IMAGE', 'VIDEO'].includes(paint?.type) ||
+        typeof (paint.type === 'IMAGE' ? paint.imageHash : paint.videoHash) !==
+          'string'
+      )
+        throw new Error(
+          'Expected a Buzz media field and native image/video paint',
+        );
+      if (typeof field.setMediaAsync === 'function') {
+        await field.setMediaAsync(paint);
+        return { route: 'setMediaAsync', nodeId: field.node?.id || null };
+      }
+      const node = field.node;
+      if (!node || !Array.isArray(node.fills) || !field.hash)
+        throw new Error('This Buzz media field has no editable native fills');
+      const matches = node.fills
+        .map((fill, index) => ({ fill, index }))
+        .filter(
+          ({ fill }) =>
+            fill.type === field.type &&
+            (fill.type === 'IMAGE' ? fill.imageHash : fill.videoHash) ===
+              field.hash,
+        );
+      if (matches.length !== 1)
+        throw new Error(
+          'Buzz media fill is missing or ambiguous; re-read the exact field',
+        );
+      node.fills = node.fills.map((fill, index) =>
+        index === matches[0].index ? { ...paint } : fill,
+      );
+      return { route: 'node.fills', nodeId: node.id };
+    },
     autoLayout(direction = 'VERTICAL', properties = {}) {
       if (!['VERTICAL', 'HORIZONTAL'].includes(direction))
         throw new Error('Choose VERTICAL or HORIZONTAL');
@@ -116,19 +168,30 @@ async function executeScript(source, args = {}, assets = {}, options = {}) {
         ...properties,
       });
     },
-    async loadFonts(text) {
-      const target = text?.text || text;
+    async loadFonts(input) {
+      const target = input?.text || input;
+      let fonts;
+      if (Array.isArray(target)) fonts = target;
+      else if (typeof target?.family === 'string') fonts = [target];
+      else if (target && typeof target.getRangeAllFontNames === 'function')
+        fonts = target.characters.length
+          ? target.getRangeAllFontNames(0, target.characters.length)
+          : target.fontName === figma.mixed
+            ? []
+            : [target.fontName];
+      else
+        throw new Error(
+          'Choose native text, a text sublayer, a FontNameInput or a font list',
+        );
       if (
-        !target ||
-        !('fontName' in target) ||
-        typeof target.getRangeAllFontNames !== 'function'
+        fonts.some(
+          (font) =>
+            !font ||
+            typeof font.family !== 'string' ||
+            typeof font.style !== 'string',
+        )
       )
-        throw new Error('Choose native text or a node with a text sublayer');
-      const fonts = target.characters.length
-        ? target.getRangeAllFontNames(0, target.characters.length)
-        : target.fontName === figma.mixed
-          ? []
-          : [target.fontName];
+        throw new Error('Each font requires its actual family and style');
       for (const font of new Map(
         fonts.map((font) => [JSON.stringify(font), font]),
       ).values())
@@ -187,23 +250,27 @@ async function executeScript(source, args = {}, assets = {}, options = {}) {
   );
   const startedAt = Date.now();
   let executionStarted = false;
+  // Bounded context helps identify a partial creation without implying rollback
+  // or treating unchanged root IDs as proof that nested content did not change.
+  const scene = () => {
+    try {
+      const page = figma.currentPage;
+      return {
+        pageId: page.id,
+        rootCount: page.children.length,
+        rootIds: page.children.slice(0, 100).map((node) => node.id),
+        truncated: page.children.length > 100,
+      };
+    } catch (_) {
+      return null;
+    }
+  };
+  let beforeScene;
   try {
     if (options.observations?.length || options.rootId) {
-      const checked = await observations.check(
-        options.observations || [],
-        options.rootId,
-      );
-      if (checked.error || checked.conflictCount) {
-        const error = new Error(checked.error || 'Observed Figma data changed');
-        error.precondition = {
-          code: checked.error ? 'PRECONDITION_UNAVAILABLE' : 'WRITE_CONFLICT',
-          conflicts: checked.conflicts || [],
-          conflictCount: checked.conflictCount || 0,
-        };
-        throw error;
-      }
-      bridge.root = checked.root;
+      bridge.root = await checkedScriptRoot(observations, options);
     }
+    if (options.readOnly !== true) beforeScene = scene();
     executionStarted = true;
     const value = await run(figma, bridge, args, scriptConsole);
     const receipt = {
@@ -251,6 +318,15 @@ async function executeScript(source, args = {}, assets = {}, options = {}) {
       logs,
       logLimits,
       exports,
+      ...(executionStarted && options.readOnly !== true
+        ? {
+            scene: {
+              before: beforeScene,
+              after: scene(),
+              note: 'Page roots only; inspect affected nodes to determine applied changes.',
+            },
+          }
+        : {}),
       ...(!executionStarted && error.precondition
         ? { precondition: error.precondition }
         : {}),

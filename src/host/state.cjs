@@ -4,6 +4,26 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const nativeFiles = ['manifest.json', 'plugin-runtime.js', 'ui.html'];
 
+function readNativeBuild(sourceRoot = path.resolve(__dirname, '../..')) {
+  let source;
+  try {
+    source = fs.readFileSync(
+      path.join(sourceRoot, 'plugin-runtime.js'),
+      'utf8',
+    );
+  } catch (error) {
+    // Source checkouts have no generated kernel; packaged hosts always do.
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
+  const build = source.match(
+    /^const FIGMA_PLUGIN_BUILD = "([a-f0-9]{64})";/m,
+  )?.[1];
+  if (!build)
+    throw new Error('Native kernel build identity is missing or invalid');
+  return build;
+}
+
 function bridgeStateDirectory() {
   const override = process.env.FIGMA_PLUGIN_STATE_DIR;
   if (override && !path.isAbsolute(override))
@@ -36,15 +56,17 @@ function writePrivateJson(file, value) {
 // are copied; credentials and receipts never enter the plugin directory.
 function pluginInstalled(sourceRoot) {
   const directory = path.join(bridgeStateDirectory(), 'plugin');
-  return nativeFiles.every((name) => {
-    const target = path.join(directory, name);
-    return (
-      fs.existsSync(target) &&
-      fs
-        .readFileSync(target)
-        .equals(fs.readFileSync(path.join(sourceRoot, name)))
-    );
-  });
+  return (
+    nativeFiles.every((name) => {
+      const target = path.join(directory, name);
+      return (
+        fs.existsSync(target) &&
+        fs
+          .readFileSync(target)
+          .equals(fs.readFileSync(path.join(sourceRoot, name)))
+      );
+    }) && require('./native-profiles.cjs').extraProfilesInstalled(sourceRoot)
+  );
 }
 function installPlugin(sourceRoot) {
   const directory = path.join(bridgeStateDirectory(), 'plugin');
@@ -55,10 +77,12 @@ function installPlugin(sourceRoot) {
     if (!fs.existsSync(target) || !fs.readFileSync(target).equals(source))
       fs.writeFileSync(target, source, { mode: 0o600 });
   }
+  require('./native-profiles.cjs').installExtraProfiles(sourceRoot);
   return path.join(directory, 'manifest.json');
 }
 
 module.exports = {
+  readNativeBuild,
   bridgeStateDirectory,
   connectionPath,
   privateDirectory,
