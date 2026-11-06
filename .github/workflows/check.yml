@@ -46,3 +46,16 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run api:check
+  required:
+    name: check
+    needs: [check, upstream]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every verification job to succeed
+        env:
+          MATRIX_RESULT: ${{ needs.check.result }}
+          CONTRACT_RESULT: ${{ needs.upstream.result }}
+        run: |
+          test "$MATRIX_RESULT" = success
+          test "$CONTRACT_RESULT" = success
