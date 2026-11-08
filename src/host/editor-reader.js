@@ -9,9 +9,11 @@ function createEditorReader(options = {}) {
   const fileKey = keyOf(expectedUrl);
   const pluginId = options.pluginId || '1675211139174009382';
   const chunks = window.rspackChunk_figma_web_bundler;
-  if (!Array.isArray(chunks))
-    throw new Error('desktop_launcher_schema_changed');
-  const factories = Object.assign({}, ...chunks.map((chunk) => chunk[1] || {}));
+  if (!Array.isArray(chunks)) throw new Error('desktop_editor_not_ready');
+  // Lazy chunks arrive after the editor store. Do not freeze the module table
+  // when creating a reader: the same reader must see a newly loaded launcher.
+  const factories = () =>
+    Object.assign({}, ...chunks.map((chunk) => chunk[1] || {}));
   let require;
   const item = [
     ['ysun-bridge-' + Date.now()],
@@ -22,11 +24,17 @@ function createEditorReader(options = {}) {
   ];
   chunks.push(item);
   chunks.splice(chunks.indexOf(item), 1);
-  if (!require) throw new Error('desktop_launcher_unavailable');
+  if (!require) throw new Error('desktop_editor_not_ready');
   function uniqueFactory(matches, domain) {
-    const entries = Object.entries(factories).filter(([, fn]) =>
+    const entries = Object.entries(factories()).filter(([, fn]) =>
       matches(String(fn)),
     );
+    if (!entries.length)
+      throw new Error(
+        domain === 'state'
+          ? 'desktop_editor_not_ready'
+          : `desktop_${domain}_not_ready`,
+      );
     if (entries.length !== 1)
       throw new Error(
         `desktop_${domain}_${entries.length ? 'ambiguous' : 'schema_changed'}`,
@@ -103,7 +111,7 @@ function createEditorReader(options = {}) {
     if (typeof insert !== 'function')
       throw new Error('desktop_widget_schema_changed');
     const insertSource = String(insert),
-      moduleSource = String(factories[moduleId]);
+      moduleSource = String(factories()[moduleId]);
     const guardMatches = [
       ...insertSource.matchAll(/if\(!\(0,([\w$]+)\.([\w$]+)\)\(\)\)/g),
     ];
@@ -205,6 +213,11 @@ function createEditorReader(options = {}) {
             ? state.isFullscreenDocumentLoaded
             : null,
         openFileKey: state.openFile?.key || null,
+        nativePlugin: {
+          matches: Object.values(state.localPlugins || {}).filter(
+            (p) => p.plugin_id === pluginId,
+          ).length,
+        },
         desktopAdapter: {
           revision: 1,
           pluginLauncher: probe(launcher),

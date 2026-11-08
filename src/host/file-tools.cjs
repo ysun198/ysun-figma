@@ -3,6 +3,7 @@ const {
   matchingClients,
   resolveTarget,
 } = require('./targets.cjs');
+const { DESKTOP_SETUP_TIMEOUT_MS } = require('./desktop-app.cjs');
 
 async function connectDesktop(input, request) {
   const result = await request('/v1/desktop/connect', {
@@ -15,7 +16,7 @@ async function connectDesktop(input, request) {
       operationId: input.operationId,
       restart: input.restart,
     }),
-    timeoutMs: 45000,
+    timeoutMs: DESKTOP_SETUP_TIMEOUT_MS,
   });
   if (result.job && ['failed', 'outcome_unknown'].includes(result.job.status))
     throw Object.assign(new Error(result.job.error), {
@@ -76,29 +77,14 @@ async function openFile(input, { request, launchDesktop, directory }) {
     };
   }
   await launchDesktop(file.fileKey);
-  const deadline = Date.now() + 20000;
-  while (true) {
-    try {
-      return await connectAndDescribe(
-        { ...input, fileKey: file.fileKey },
-        request,
-        async () => ({
-          file,
-          ...(await request('/v1/files')),
-        }),
-      );
-    } catch (error) {
-      if (
-        error.receipt ||
-        !/desktop_file_not_open|desktop_editor_not_ready|desktop_plugin_not_imported/.test(
-          error.message,
-        ) ||
-        Date.now() >= deadline
-      )
-        throw error;
-      await new Promise((resolve) => setTimeout(resolve, 200));
-    }
-  }
+  return connectAndDescribe(
+    { ...input, fileKey: file.fileKey },
+    request,
+    async () => ({
+      file,
+      ...(await request('/v1/files')),
+    }),
+  );
 }
 
 async function callFile(input, { request, launchDesktop }) {
@@ -143,7 +129,7 @@ async function callFile(input, { request, launchDesktop }) {
       });
       return {
         ...(await request('/v1/files')),
-        next: 'Account sync reuses Figma Desktop login. If desktop_required, install Desktop from Figma official Downloads, verify its code signature and launch it; use the files skill for installation. If desktop_restart_required, safely save pending changes, quit Figma normally with app automation and launch it through figma_file(action="launch"), then sync. Never force quit an editor with unsynced changes. If login_required, complete ordinary sign-in in Figma Desktop; no separate browser login, cookie copying or Keychain password is required. Preserve login/permission boundaries.',
+        next: 'Account sync reuses Figma Desktop login and never quits a running editor. If desktop_required or desktop_restart_required, use figma_file(action="launch") to prepare the complete app, stable registrations and normal restart, then sync. A pending save prompt is not forced. If login_required, complete ordinary Figma sign-in; no REST token, cookie copying or Keychain password is required.',
       };
     case 'bind':
       await request('/v1/catalog/bind', {

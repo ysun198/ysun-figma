@@ -4,6 +4,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { ensureCompanion } = require('./companion.cjs');
 const { bridgeStateDirectory } = require('./state.cjs');
+const { DESKTOP_SETUP_TIMEOUT_MS } = require('./desktop-app.cjs');
 const { bridgeRequest } = require('./bridge-client.cjs');
 const { readAPIReference } = require('./api-reference.cjs');
 const {
@@ -183,7 +184,7 @@ async function callConnect(name, input, { connection, request, signal }) {
     state: 'connection_required',
     manifestPath,
     files,
-    next: 'Use the requested Figma URL/fileKey with figma_file(action="open", fileKey=...), or inspect actual open editors with figma_file(action="status") and connect the intended exact file. Direct connection handles saved authorization and owned-frame pairing without GUI or a code. Only desktop_plugin_not_imported requires a one-time import of this stable manifest using app automation; retry the same direct connection afterward. This preparation does not create a Figma file. See the packaged ysun-figma-setup skill for missing Node/Desktop, sign-in or safe Desktop restart.',
+    next: 'Use the requested Figma URL/fileKey with figma_file(action="open", fileKey=...), or inspect actual open editors with figma_file(action="status") and connect the intended exact file. Direct connection prepares the complete signed Desktop app, stable registrations, normal restart when needed, readiness and owned-frame pairing without GUI or a code. A pending save/cancel prompt remains with Figma. This preparation does not create a Figma file. See the packaged ysun-figma-setup skill for missing Node, sign-in or a concrete setup diagnostic.',
   };
 }
 
@@ -446,6 +447,7 @@ async function callTool(name, input, signal) {
       request('/v1/desktop', {
         method: 'POST',
         body: JSON.stringify({ fileKey }),
+        timeoutMs: DESKTOP_SETUP_TIMEOUT_MS,
       });
     return await (connectedTools[name] || callNative)(name, input, {
       connection,

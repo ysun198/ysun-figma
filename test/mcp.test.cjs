@@ -27,6 +27,10 @@ function isolatedRuntime(t, overrides) {
 for (const [reason, code] of [
   ['desktop_required', 'FIGMA_DESKTOP_REQUIRED'],
   ['desktop_restart_required', 'FIGMA_DESKTOP_RESTART_REQUIRED'],
+  ['desktop_not_running', 'FIGMA_DESKTOP_NOT_RUNNING'],
+  ['desktop_quit_pending', 'FIGMA_DESKTOP_QUIT_PENDING'],
+  ['desktop_editor_not_ready', 'FIGMA_DESKTOP_NOT_READY'],
+  ['desktop_registration_schema_changed', 'FIGMA_DESKTOP_SETUP_FAILED'],
   ['login_required', 'FIGMA_LOGIN_REQUIRED'],
   ['desktop_plugin_not_imported', 'FIGMA_NATIVE_IMPORT_REQUIRED'],
   ['desktop_launcher_schema_changed', 'FIGMA_DESKTOP_ADAPTER_UNAVAILABLE'],
@@ -777,6 +781,9 @@ test('file status reads Desktop readiness without launching, syncing, pairing or
 test('desktop launcher uses exact native URLs, also opens home, and surfaces failures', async () => {
   const { launchDesktop } = require('../src/host/desktop.cjs');
   const calls = [];
+  const connect = async () => ({
+    executable: '/Users/example/Apps/Figma.app/Contents/MacOS/Figma',
+  });
   const run = async (...args) => {
     calls.push(args);
   };
@@ -784,7 +791,7 @@ test('desktop launcher uses exact native URLs, also opens home, and surfaces fai
     (
       await launchDesktop('CloudFile12', {
         execute: run,
-        connect: async () => {},
+        connect,
         platform: 'darwin',
       })
     ).state,
@@ -792,19 +799,19 @@ test('desktop launcher uses exact native URLs, also opens home, and surfaces fai
   );
   assert.deepEqual(calls[0], [
     '/usr/bin/open',
-    ['-a', 'Figma', 'figma://file/CloudFile12'],
+    ['-a', '/Users/example/Apps/Figma.app', 'figma://file/CloudFile12'],
     { timeout: 10000 },
   ]);
   await launchDesktop(undefined, {
     execute: run,
-    connect: async () => {},
+    connect,
     platform: 'darwin',
   });
-  assert.deepEqual(calls[1][1], ['-a', 'Figma']);
+  assert.deepEqual(calls[1][1], ['-a', '/Users/example/Apps/Figma.app']);
   await assert.rejects(
     launchDesktop('../../private', {
       execute: run,
-      connect: async () => {},
+      connect,
       platform: 'darwin',
     }),
     /Invalid/,
@@ -812,7 +819,7 @@ test('desktop launcher uses exact native URLs, also opens home, and surfaces fai
   await assert.rejects(
     launchDesktop(undefined, {
       execute: run,
-      connect: async () => {},
+      connect,
       platform: 'linux',
     }),
     /requires macOS/,
@@ -822,7 +829,7 @@ test('desktop launcher uses exact native URLs, also opens home, and surfaces fai
       execute: async () => {
         throw new Error('App not installed');
       },
-      connect: async () => {},
+      connect,
       platform: 'darwin',
     }),
     /not installed/,

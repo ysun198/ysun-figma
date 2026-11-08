@@ -62,6 +62,8 @@ function editor(prepare = () => {}) {
   );
   return {
     reader,
+    factories,
+    chunks,
     state,
     runs,
     runner,
@@ -91,6 +93,33 @@ test('desktop adapter resolves renamed module IDs and exports without calling pe
   assert.equal(f.runs.length, 0);
   assert.equal(f.reader.start().state, 'starting');
   assert.equal(checks, 1);
+});
+test('an existing reader sees a lazily loaded launcher without treating startup as a schema change', () => {
+  let launcher;
+  const f = editor(({ factories }) => {
+    launcher = factories[201];
+    delete factories[201];
+  });
+  assert.equal(
+    f.reader.status().desktopAdapter.pluginLauncher.issue,
+    'desktop_launcher_not_ready',
+  );
+  assert.throws(() => f.reader.start(), /desktop_launcher_not_ready/);
+  assert.equal(f.runs.length, 0);
+  f.factories[201] = launcher;
+  assert.equal(f.reader.status().desktopAdapter.pluginLauncher.available, true);
+  assert.equal(f.reader.start().state, 'starting');
+  assert.equal(f.runs.length, 1);
+  assert.throws(
+    () =>
+      vm.runInNewContext('(' + createEditorReader.toString() + ')()', {
+        location: f.location,
+        URL,
+        window: {},
+        document: { readyState: 'loading' },
+      }),
+    /desktop_editor_not_ready/,
+  );
 });
 test('ambiguous or changed launcher signatures fail before enqueuing a native plugin', () => {
   const ambiguous = editor(({ factories }) => {
@@ -217,95 +246,120 @@ test('native identity accepts viewport query changes, rejects file changes and d
   f.state.openFile = { key: 'OtherFile12' };
   assert.throws(() => f.reader.status(), /identity_changed/);
 });
-test('new native pairing uses only the owned context and returns URL/document/instance proof without a GUI action', async () => {
-  let listener,
-    connected = false,
-    started = 0;
-  const calls = [];
-  const result = await connectNativeFile({
-    fileKey: 'CloudFile12',
-    pairingCode: 'a'.repeat(32),
-    connect: async () => ({
-      onEvent(fn) {
-        listener = fn;
-        return () => {};
-      },
-      close() {},
-      async call(method, params = {}, sessionId) {
-        calls.push({ method, params, sessionId });
-        if (method === 'Target.getTargets')
-          return {
-            targetInfos: [
-              {
-                type: 'page',
-                targetId: 'target-12',
-                url: 'https://www.figma.com/design/CloudFile12/Test',
-              },
-            ],
-          };
-        if (method === 'Target.attachToTarget')
-          return { sessionId: 'session-12' };
-        if (method === 'Runtime.enable') {
-          listener({
-            sessionId: 'session-12',
-            method: 'Runtime.executionContextCreated',
-            params: { context: { id: 12, auxData: { isDefault: true } } },
-          });
-          return {};
-        }
-        if (method === 'Runtime.evaluate') {
-          if (params.expression.includes('createEditorReader'))
-            return { result: { objectId: 'reader-12' } };
-          if (params.expression.includes('.pair(')) {
-            assert.equal(params.contextId, 12);
-            assert(params.expression.includes('a'.repeat(32)));
-            connected = true;
-            return { result: { value: true } };
+for (const booting of [false, true])
+  test(`new native pairing waits for readiness and uses only the owned context without GUI: ${booting ? 'cold startup' : 'ready'}`, async () => {
+    let listener,
+      connected = false,
+      started = 0,
+      creates = 0,
+      statuses = 0;
+    const calls = [];
+    const result = await connectNativeFile({
+      fileKey: 'CloudFile12',
+      pairingCode: 'a'.repeat(32),
+      connect: async () => ({
+        onEvent(fn) {
+          listener = fn;
+          return () => {};
+        },
+        close() {},
+        async call(method, params = {}, sessionId) {
+          calls.push({ method, params, sessionId });
+          if (method === 'Target.getTargets')
+            return {
+              targetInfos: [
+                {
+                  type: 'page',
+                  targetId: 'target-12',
+                  url: 'https://www.figma.com/design/CloudFile12/Test',
+                },
+              ],
+            };
+          if (method === 'Target.attachToTarget')
+            return { sessionId: 'session-12' };
+          if (method === 'Runtime.enable') {
+            listener({
+              sessionId: 'session-12',
+              method: 'Runtime.executionContextCreated',
+              params: { context: { id: 12, auxData: { isDefault: true } } },
+            });
+            return {};
           }
-          if (!started) return { result: { value: null } };
-          return {
-            result: {
-              value: {
-                pluginId: '1675211139174009382',
-                clientId: 'client-12',
-                instanceId: 'instance-12',
-                documentId: 'd'.repeat(32),
-                connected,
-                closed: false,
-              },
-            },
-          };
-        }
-        if (method === 'Runtime.callFunctionOn') {
-          const name = params.arguments?.[0]?.value;
-          if (name === 'status')
+          if (method === 'Runtime.evaluate') {
+            if (params.expression.includes('createEditorReader')) {
+              if (booting && ++creates === 1)
+                return {
+                  exceptionDetails: {
+                    exception: {
+                      description: 'Error: desktop_editor_not_ready',
+                    },
+                  },
+                };
+              return { result: { objectId: 'reader-12' } };
+            }
+            if (params.expression.includes('.pair(')) {
+              assert.equal(params.contextId, 12);
+              assert(params.expression.includes('a'.repeat(32)));
+              connected = true;
+              return { result: { value: true } };
+            }
+            if (!started) return { result: { value: null } };
             return {
               result: {
                 value: {
-                  url: 'https://www.figma.com/design/CloudFile12/Test',
-                  editorLoaded: true,
+                  pluginId: '1675211139174009382',
+                  clientId: 'client-12',
+                  instanceId: 'instance-12',
+                  documentId: 'd'.repeat(32),
+                  connected,
+                  closed: false,
                 },
               },
             };
-          if (name === 'start') {
-            started++;
-            return { result: { value: { state: 'starting' } } };
           }
-          return { result: { value: null } };
-        }
-        if (
-          ['Runtime.releaseObject', 'Target.detachFromTarget'].includes(method)
-        )
-          return {};
-        assert.fail(method);
-      },
-    }),
+          if (method === 'Runtime.callFunctionOn') {
+            const name = params.arguments?.[0]?.value;
+            if (name === 'status') {
+              statuses++;
+              return {
+                result: {
+                  value: {
+                    url: 'https://www.figma.com/design/CloudFile12/Test',
+                    editorLoaded: !booting || statuses > 1,
+                    desktopAdapter: {
+                      pluginLauncher:
+                        statuses > 3 || !booting
+                          ? { available: true }
+                          : {
+                              available: false,
+                              issue: 'desktop_launcher_not_ready',
+                            },
+                    },
+                  },
+                },
+              };
+            }
+            if (name === 'start') {
+              started++;
+              return { result: { value: { state: 'starting' } } };
+            }
+            return { result: { value: null } };
+          }
+          if (
+            ['Runtime.releaseObject', 'Target.detachFromTarget'].includes(
+              method,
+            )
+          )
+            return {};
+          assert.fail(method);
+        },
+      }),
+    });
+    assert.equal(result.state, 'connected');
+    assert.equal(result.native.documentId, 'd'.repeat(32));
+    assert.equal(started, 1);
+    assert(!calls.some((c) => /Input\.|Page.navigate/.test(c.method)));
   });
-  assert.equal(result.state, 'connected');
-  assert.equal(result.native.documentId, 'd'.repeat(32));
-  assert.equal(started, 1);
-  assert(!calls.some((c) => /Input\.|Page.navigate/.test(c.method)));
-});
 
 for (const mismatch of ['runtime', 'build']) {
   test(`cold recovery replaces an outdated ${mismatch} even with a stale connected token, then renews its broker session`, async () => {

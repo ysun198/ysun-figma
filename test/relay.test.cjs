@@ -80,6 +80,62 @@ async function setup(t, options = {}) {
     call(`/v1/jobs/next?clientId=${client.id}&wait=1`, null, client.token);
   return { bridge, url, call, pair, submit, claim };
 }
+test('Desktop restart refuses active jobs before requesting application termination', async (t) => {
+  let requested = 0;
+  const api = await setup(t, {
+    desktopLaunch: async (_key, { beforeRestart }) => {
+      const guard = beforeRestart();
+      requested++;
+      guard.close(false);
+      return { state: 'opened' };
+    },
+  });
+  const client = await api.pair('restart-active-client');
+  assert.equal((await api.submit(client.id)).status, 202);
+  const result = await api.call('/v1/desktop', {});
+  assert.equal(result.status, 409);
+  assert.equal(requested, 0);
+});
+
+for (const outcome of ['cancelled', 'quit', 'renewed'])
+  test(`Desktop restart gates new jobs and retires only the exited instances: ${outcome}`, async (t) => {
+    let entered, resume;
+    const started = new Promise((resolve) => {
+      entered = resolve;
+    });
+    const hold = new Promise((resolve) => {
+      resume = resolve;
+    });
+    const api = await setup(t, {
+      desktopLaunch: async (_key, { beforeRestart }) => {
+        const guard = beforeRestart();
+        entered();
+        await hold;
+        guard.close(outcome !== 'cancelled');
+        return { state: 'opened' };
+      },
+    });
+    const old = await api.pair('restart-lease-client', 'QA', {
+      instanceId: 'a'.repeat(32),
+    });
+    const launch = api.call('/v1/desktop', {});
+    await started;
+    try {
+      assert.equal((await api.submit(old.id)).status, 503);
+      assert.equal((await api.call('/v1/maintenance', {})).status, 409);
+      assert.equal((await api.call('/v1/status?summary=1')).body.jobCount, 0);
+      if (outcome === 'renewed')
+        await api.pair(old.id, 'QA', { instanceId: 'b'.repeat(32) });
+    } finally {
+      resume();
+    }
+    assert.equal((await launch).status, 200);
+    const current = (await api.call('/v1/status?summary=1')).body.clients.find(
+      (c) => c.id === old.id,
+    );
+    assert.equal(!!current?.connected, outcome !== 'quit');
+  });
+
 test('a same-version stale native build is detected before any job is accepted', async (t) => {
   const expected = 'b'.repeat(64);
   const api = await setup(t, { nativeBuild: expected });

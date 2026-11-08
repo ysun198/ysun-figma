@@ -9,7 +9,23 @@ const {
   connectDesktop,
   launchDesktop,
   readDesktopFiles,
+  observeDesktop,
 } = require('../src/host/desktop.cjs');
+test('passive Desktop observation does not create a session or launch an application', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'figma-passive-status-'));
+  const previous = process.env.FIGMA_PLUGIN_STATE_DIR;
+  process.env.FIGMA_PLUGIN_STATE_DIR = root;
+  t.after(() => {
+    if (previous === undefined) delete process.env.FIGMA_PLUGIN_STATE_DIR;
+    else process.env.FIGMA_PLUGIN_STATE_DIR = previous;
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  await assert.rejects(
+    observeDesktop(),
+    /desktop_(?:not_running|restart_required)/,
+  );
+  assert.deepEqual(fs.readdirSync(root), []);
+});
 async function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'figma-pipe-test-'));
   const before = process.env.FIGMA_PLUGIN_STATE_DIR;
@@ -222,19 +238,19 @@ test('pipe framing matches concurrent responses and recovers a dead owner withou
     pipe.close();
   }
 });
-test('ordinary Desktop launch reports a required reconnection without quitting or requesting another login', async () => {
+test('Desktop launch never reports success or opens a name-matched app when preparation fails', async () => {
   const calls = [];
-  const result = await launchDesktop('CloudFile12', {
-    platform: 'darwin',
-    connect: async () => {
-      throw new Error('desktop_restart_required');
-    },
-    execute: async (...args) => calls.push(args),
-  });
-  assert.equal(result.accountConnection, 'restart_required');
-  assert.equal(result.state, 'opened');
-  assert.equal(calls.length, 1);
-  assert.deepEqual(calls[0][1], ['-a', 'Figma', 'figma://file/CloudFile12']);
+  await assert.rejects(
+    launchDesktop('CloudFile12', {
+      platform: 'darwin',
+      connect: async () => {
+        throw new Error('desktop_restart_required');
+      },
+      execute: async (...args) => calls.push(args),
+    }),
+    /desktop_restart_required/,
+  );
+  assert.equal(calls.length, 0);
 });
 test(
   'a clean macOS runner without Figma reports the missing prerequisite before launch',

@@ -154,6 +154,8 @@ function createBridgeServer(options = {}) {
   let execution, externalJobs;
   const externalClients = new Map();
   const nativeRecoveries = new Set();
+  let desktopRecovering = false;
+  let desktopPreparing = 0;
   const catalog = require('./catalog.cjs').createCatalog(options.catalogPath);
   let catalogWorker = null;
   const grantPath =
@@ -541,6 +543,8 @@ function createBridgeServer(options = {}) {
     // Never let an edit enter between the updater's idle check and stop.
     if (
       externalJobs?.pendingCount ||
+      desktopPreparing ||
+      nativeRecoveries.size ||
       execution.list().some((job) => ['queued', 'running'].includes(job.status))
     )
       throw problem(409, 'Finish pending operations before updating');
@@ -654,14 +658,61 @@ function createBridgeServer(options = {}) {
     );
   }
 
+  function beforeDesktopRestart() {
+    const observed = activeClients()
+      .filter((client) => clientStatus(client).connected)
+      .map(({ id, instanceId }) => ({ id, instanceId }));
+    if (
+      desktopRecovering ||
+      nativeRecoveries.size > 1 ||
+      execution
+        .list()
+        .some(
+          (job) =>
+            ['queued', 'running'].includes(job.status) ||
+            (!resolved(job) &&
+              observed.some(
+                (client) =>
+                  client.id === job.target?.clientId &&
+                  client.instanceId === job.target?.instanceId,
+              )),
+        )
+    )
+      throw problem(
+        409,
+        'Finish or reconcile active operations before restarting Figma Desktop',
+      );
+    desktopRecovering = true;
+    return {
+      close(quit) {
+        if (quit)
+          for (const previous of observed) {
+            const client = clients.get(previous.id);
+            if (client?.instanceId === previous.instanceId)
+              client.suspended = true;
+          }
+        desktopRecovering = false;
+        notifyChange();
+      },
+    };
+  }
+
   async function launchDesktopRoute({ req, res, requireAdmin }) {
     requireAdmin();
     const { fileKey } = await readJson(req);
-    return send(
-      res,
-      200,
-      await require('./desktop.cjs').launchDesktop(fileKey),
-    );
+    desktopPreparing++;
+    try {
+      return send(
+        res,
+        200,
+        await (options.desktopLaunch || require('./desktop.cjs').launchDesktop)(
+          fileKey,
+          { beforeRestart: beforeDesktopRestart },
+        ),
+      );
+    } finally {
+      desktopPreparing--;
+    }
   }
 
   async function connectDesktopRoute({ req, res, requireAdmin }) {
@@ -724,6 +775,7 @@ function createBridgeServer(options = {}) {
           profile,
           widgetNodeId,
           pairingCode: pairing.code,
+          beforeRestart: beforeDesktopRestart,
           restart: restart || !!active?.needsPluginUpdate,
           ...(expectedNativeBuild ? { expectedNativeBuild } : {}),
         });
@@ -1054,9 +1106,10 @@ function createBridgeServer(options = {}) {
     });
     if (
       !execution.get(id) &&
-      [expected.fileKey, ...(expected.fileKeys || [])].some((key) =>
-        nativeRecoveries.has(key),
-      )
+      (desktopRecovering ||
+        [expected.fileKey, ...(expected.fileKeys || [])].some((key) =>
+          nativeRecoveries.has(key),
+        ))
     )
       throw problem(
         503,

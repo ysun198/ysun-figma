@@ -12,7 +12,9 @@ Codex 先检查 Node.js 24 或更高版本，优先复用已有运行时。插�
 
 缺少运行时时，由 Codex 从 [Node.js 官方发布目录](https://nodejs.org/download/release/latest-v24.x/)下载适合当前 Mac 架构的 Node.js 24 LTS，核对官方 `SHASUMS256.txt` 和二进制代码签名，将 `bin/node` 和许可证放入 `~/.canvas-bridge/node/`。无需管理员权限，也无需为运行插件安装 npm 开发依赖。使用其他稳定路径时，在 MCP 环境中指定 `FIGMA_PLUGIN_NODE`。
 
-未安装 Figma 桌面端时，插件返回 `desktop_required`。Codex 从 [Figma 官网](https://www.figma.com/downloads/)下载当前稳定版，核验代码签名后安装；可放在 `~/Applications/Figma.app`，无需管理员密码。首次使用 Figma 的用户仍需完成 Figma 自己的登录，已登录的账号直接复用。安装和登录完成后继续连接，无需重装插件。
+`figma_file` 的 open/connect/launch 会准备 Figma 桌面端。缺少应用、只装了通用安装器或现有应用整包校验失败时，下载 [Figma 官方架构专用完整包](https://help.figma.com/hc/en-us/articles/1500012289622-Deploy-Figma-on-macOS)，核验完整代码签名及 Figma 的发布者身份，再将干净的完整应用整体安装。默认新安装可放在 `~/Applications/Figma.app`，无需管理员密码。不会将完整应用合并覆盖进 `com.figma.Desktop.dua` 安装器，也不会删除签名资源或自行重签。替换的应用保留在同一安装目录下 `.ysun-figma-*/previous.app`，路径记录在桌面会话的 setup 回执中。首次使用 Figma 的用户仍需完成 Figma 自己的登录，已有登录直接复用。
+
+首次应用下载与短暂的编辑器就绪分别计时。弱网中断会在 `~/.canvas-bridge/desktop/downloads/` 保留已下载部分；重试相同 open/launch 会续传，成功安装后删除下载缓存。安装和连接期间不会激活另一个 companion 更新。不要因下载缓慢启动多个并发安装或转去点击菜单。
 
 下载最新正式发行版的预构建 ZIP，核对随包提供的 `SHA256SUMS`，解压到稳定目录，再注册插件。仓库源码 ZIP 和 Git checkout 缺少生成内核，不能作为安装包直接注册。用发行包内 `plugin/package.json` 核对版本与运行时要求；验收分支或本机版本不代表已经发布：
 
@@ -25,17 +27,17 @@ codex plugin add figma-plugin-local@figma-local --json
 
 保留其他插件和配置。如果 `figma-local` 已注册到不同目录，只移除它自己的旧注册，再添加新路径：`codex plugin marketplace remove figma-local --json`。
 
-优先使用用户已提供的 Figma 链接。没有指定文件时，读取实际打开的编辑器；只有唯一明确目标才直接复用，多文件无法判定时再让用户选择。调用 `figma_file(action="open", fileKey=...)` 直接连接目标文件。已有开发插件注册时，启动、恢复有效授权和一次性配对由本机接口完成，无需菜单或手工输入连接码。仅 manifest 确实缺失时，从 `figma_connect` 返回的稳定路径导入一次，再继续相同直接连接流程。为该开发插件开启 **Plugins → Development → Hot reload plugin**，让原生代码更新后能重新连接。
+优先使用用户已提供的 Figma 链接。没有指定文件时，读取实际打开的编辑器；只有唯一明确目标才直接复用，多文件无法判定时再让用户选择。`figma_file(action="status")` 只读观察现有连接，不启动或退出应用；`desktop_not_running` 时再调用 open/launch。调用 `figma_file(action="open", fileKey=...)` 直接连接目标文件。工具在 Figma 停止运行时注册打包的稳定 manifest，保留其他设置和插件，并将原设置原样备份至 `~/.canvas-bridge/backups/`。随后按已确认的应用绝对路径启动，等待实际编辑器、注册记录和启动器就绪，再恢复有效授权、配对及核验文件身份，无需菜单、手工连接码或热重载开关。设置格式无法识别时保留原文件并返回具体错误；手工导入仅作为已诊断兼容性问题的备用路径。
 
-Dev 与 Widget 各有独立注册的 manifest；需要这些能力时由 Codex 完成一次性导入，后续使用 `profile="dev"` 或 `profile="widget"` 直接连接。Widget 重新连接须复用实际节点 ID 和稳定操作 ID，避免生成重复节点。
+Dev 与 Widget 各有独立 manifest，与普通入口一起注册；注册不执行插件或插入 Widget。需要时使用 `profile="dev"` 或 `profile="widget"` 直接连接。Widget 重新连接须复用实际节点 ID 和稳定操作 ID，避免生成重复节点。
 
 `figma_connect()` 默认只准备稳定 manifest 并报告现有连接，不分配连接码，也不创建云文件。只有直接桌面生命周期确实不可用时，才使用 `manualPairing=true` 的备用流程。
 
-用 `figma_status` 和一次 `figma_inspect` 核对真实文件与客户端，安装本身的验收只读；用户已提出设计任务时，连接后继续实际任务。不要为了证明安装成功，在用户文件里创建无关测试图层。云文件绑定必须来自实际打开的文件 URL，不能按标题匹配。安装、运行插件和连接由 Codex 借助原生应用自动化完成；自动化不可用时，说明还缺少哪一步。
+用 `figma_status` 和一次 `figma_inspect` 核对真实文件与客户端，安装本身的验收只读；用户已提出设计任务时，连接后继续实际任务。不要为了证明安装成功，在用户文件里创建无关测试图层。云文件绑定必须来自实际打开的文件 URL，不能按标题匹配。首次登录、Figma 自己的授权及未完成退出时的实际保存提示，仍可能需要账号持有人处理。
 
 目前仅支持 macOS，需要 Figma 桌面端。账号目录复用桌面端自己的登录会话，无需另装浏览器，也不读取钥匙串或复制 Cookie。缺少 Node.js 时由 Codex 完成安装。Node.js 24 官方运行时要求 [macOS 13.5 或更高版本](https://github.com/nodejs/node/blob/v24.21.0/BUILDING.md#platform-list)。
 
-首次连接由 Codex 通过 `figma_file(action="launch")` 启动 Figma。若 Figma 已由 Dock 等方式启动，返回 `desktop_restart_required`：Codex 先检查并保存待同步设计，再正常退出 Figma，通过同一工具重新打开，复用原有账号登录。不可强制退出有未同步修改的编辑器。之后桌面端保持运行，插件更新、Codex 关闭或连接进程退出都不会退出 Figma。Figma 完全退出后，再从插件启动即可恢复；从 Dock 单独启动的进程仍需安全重连。
+首次连接由 open/connect/launch 统一准备。若 Figma 已由 Dock 等方式启动，工具先检查活跃操作，再向观测到的实际进程请求正常退出，随后注册并重新启动；不会依赖 GUI 工具按名称识别应用，也不会强制退出。Figma 尚未完成退出时返回 `desktop_quit_pending`，保留其保存/取消提示。目录同步和只读 status 不会为此退出应用。之后桌面端保持运行，Codex 关闭或连接进程退出都不会退出 Figma；从 Dock 单独启动后，下一次显式连接会按同一流程恢复。配置和原生内核均未变时，包或技能更新不会触发桌面重启。
 
 桌面端的账号目录通过 Figma Home 当前内部目录接口读取，并非公开的账号全量 REST API。版本变化或组织权限可能使同步不可用；它不改变原生插件的读写授权，已连接文件仍可编辑和实时预览。
 
@@ -47,7 +49,7 @@ Dev 与 Widget 各有独立注册的 manifest；需要这些能力时由 Codex �
 
 更新先验证发布者签名和文件完整性，等操作空闲后再切换。启动检查失败会回滚，授权、操作记录和导出文件保留。调度、校验与恢复的实现见[架构](ARCHITECTURE.md#自动更新)。
 
-工具元数据、setup 入口和技能随同一个安装包更新，并通过官方插件刷新路径同步给宿主；技能正文不会自动根据源码变化自行修改。原生代码通过 [Figma 热重载](https://developers.figma.com/docs/plugins/plugin-quickstart-guide/#hot-reloading)更新；未变化的原生内核无需重启。重启后由 Codex 核验实际文件 URL，恢复确切的云文件绑定。manifest 的权限或编辑器类型变化时，重新导入同一个稳定 manifest。
+工具元数据、setup 入口和技能随同一个安装包更新，并通过官方插件刷新路径同步给宿主；技能正文不会自动根据源码变化自行修改。直接连接核对实际内核 build，变化时安全重启本插件并读回确认；未变化的内核无需重启。[Figma 热重载](https://developers.figma.com/docs/plugins/plugin-quickstart-guide/#hot-reloading)可以另行开启，但不是安装或自动更新的前提。连接同时核验实际文件 URL，恢复确切的云文件绑定。
 
 源码提交不会推送更新。维护者运行 **Publish release** 工作流后，完整的签名发行版才会公开。宿主安装命令见 [OpenAI 本地插件指南](https://developers.openai.com/plugins/build/plugins#install-a-local-plugin-manually)。
 

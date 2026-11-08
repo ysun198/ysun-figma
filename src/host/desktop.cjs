@@ -1,11 +1,20 @@
 // Figma owns both ends of private FIFOs. Broker exit cannot close its debugging
 // pipe or quit the editor; no TCP debugger, copied cookies or Keychain reader.
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawn, execFile } = require('node:child_process');
 const run = require('node:util').promisify(execFile);
+const {
+  findDesktopApp,
+  inspectApp,
+  installDesktopApp,
+  quitDesktop,
+} = require('./desktop-app.cjs');
+const {
+  readRegistration,
+  registerDesktopPlugins,
+} = require('./desktop-registration.cjs');
 const {
   bridgeStateDirectory,
   privateDirectory,
@@ -18,27 +27,22 @@ async function processes() {
   const { stdout } = await run('/bin/ps', ['-axo', 'pid=,comm=']);
   return stdout.split('\n').flatMap((line) => {
     const match = line.match(
-      /^\s*(\d+)\s+(.+\/Figma\.app\/Contents\/MacOS\/Figma)$/,
+      /^\s*(\d+)\s+(.+\/Figma\.app\/Contents\/MacOS\/(?:Figma|DynamicUniversalApp))$/,
     );
     return match ? [{ pid: Number(match[1]), executable: match[2] }] : [];
   });
 }
-let starting;
-function ensureDesktop() {
-  if (!starting)
-    starting = start().finally(() => {
-      starting = null;
-    });
-  return starting;
+let lifecycle = Promise.resolve();
+function ensureDesktop(options) {
+  const next = lifecycle.then(() => start(options));
+  lifecycle = next.catch(() => {});
+  return next;
 }
-async function start() {
-  if (process.platform !== 'darwin')
-    throw new Error('Figma Desktop connection requires macOS');
-  privateDirectory(folder());
+async function observeDesktop() {
   const active = await processes();
-  let receipt;
-  if (fs.existsSync(receiptPath()))
-    receipt = JSON.parse(fs.readFileSync(receiptPath(), 'utf8'));
+  const receipt = fs.existsSync(receiptPath())
+    ? JSON.parse(fs.readFileSync(receiptPath(), 'utf8'))
+    : null;
   if (
     receipt &&
     active.some(
@@ -46,30 +50,77 @@ async function start() {
     )
   )
     return receipt;
-  if (active.length) throw new Error('desktop_restart_required');
-  if (receipt) {
-    validate(receipt);
-    fs.rmSync(receipt.directory, { recursive: true });
-    fs.unlinkSync(receiptPath());
-  }
-  const candidates = [
-    path.join('/Applications', 'Figma.app'),
-    path.join(os.homedir(), 'Applications/Figma.app'),
-  ];
-  let app = candidates.find((p) =>
-    fs.existsSync(path.join(p, 'Contents/MacOS/Figma')),
+  throw new Error(
+    active.length ? 'desktop_restart_required' : 'desktop_not_running',
   );
-  if (!app) {
-    const { stdout } = await run('/usr/bin/mdfind', [
-      'kMDItemCFBundleIdentifier == "com.figma.Desktop"',
-    ]);
-    const found = stdout
-      .trim()
-      .split('\n')
-      .filter((p) => fs.existsSync(path.join(p, 'Contents/MacOS/Figma')));
-    if (found.length !== 1) throw new Error('desktop_required');
-    app = found[0];
+}
+async function start({ restart = false, install = false, beforeRestart } = {}) {
+  if (process.platform !== 'darwin')
+    throw new Error('Figma Desktop connection requires macOS');
+  privateDirectory(folder());
+  const active = await processes();
+  let receipt;
+  if (fs.existsSync(receiptPath()))
+    receipt = JSON.parse(fs.readFileSync(receiptPath(), 'utf8'));
+  const registration = restart || !active.length ? readRegistration() : null;
+  if (
+    receipt &&
+    active.some(
+      (p) => p.pid === receipt.pid && p.executable === receipt.executable,
+    ) &&
+    !registration?.changes.length
+  )
+    return receipt;
+  if (active.length && !restart) throw new Error('desktop_restart_required');
+  if (active.length > 1) throw new Error('desktop_app_ambiguous');
+  const application = await applicationForStart(active, install, receipt);
+  let app = application.app;
+  let guard,
+    quit = false;
+  try {
+    if (active.length) {
+      guard = await beforeRestart?.();
+      await quitDesktop(active, { processes });
+      quit = true;
+    }
+    const assertStopped = async () => {
+      if ((await processes()).length)
+        throw new Error('desktop_restart_required');
+    };
+    let setup = {};
+    if (application.repair) {
+      setup = await installDesktopApp(app, { assertStopped });
+      app = setup.app;
+    }
+    const registered = await registerDesktopPlugins(readRegistration(), {
+      assertStopped,
+    });
+    if (registered) setup = { ...setup, ...registered };
+    if (receipt) {
+      validate(receipt);
+      fs.rmSync(receipt.directory, { recursive: true });
+      fs.unlinkSync(receiptPath());
+    }
+    return await spawnDesktop(app, setup);
+  } finally {
+    guard?.close(quit);
   }
+}
+async function applicationForStart(active, install, receipt) {
+  const executable = active[0]?.executable || receipt?.executable;
+  const app =
+    executable && fs.existsSync(executable)
+      ? path.resolve(executable, '../../..')
+      : await findDesktopApp();
+  const inspected = app ? await inspectApp(app) : null;
+  if (!install && !inspected?.valid)
+    throw new Error(app ? 'desktop_app_signature_invalid' : 'desktop_required');
+  if (!install && !inspected?.complete)
+    throw new Error('desktop_installer_incomplete');
+  return { app, repair: !inspected?.valid || !inspected?.complete };
+}
+async function spawnDesktop(app, setup) {
+  let receipt;
   const directory = fs.mkdtempSync(path.join(folder(), '.session-'));
   fs.chmodSync(directory, 0o700);
   const input = path.join(directory, 'input'),
@@ -88,7 +139,7 @@ async function start() {
       child.once('spawn', resolve);
       child.once('error', reject);
     });
-    receipt = { pid: child.pid, executable, directory };
+    receipt = { pid: child.pid, executable, directory, setup };
     writePrivateJson(receiptPath(), receipt);
     child.unref();
     // LaunchServices must not start another instance while this one is still
@@ -382,27 +433,37 @@ async function createPageReader(
 }
 async function launchDesktop(
   key,
-  { execute = run, connect = ensureDesktop, platform = process.platform } = {},
+  {
+    execute = run,
+    beforeRestart,
+    connect = () =>
+      ensureDesktop({ restart: true, install: true, beforeRestart }),
+    platform = process.platform,
+  } = {},
 ) {
   if (platform !== 'darwin')
     throw new Error('Figma Desktop launch requires macOS');
   if (key && !/^[A-Za-z0-9]{6,100}$/.test(key))
     throw new Error('Invalid Figma file key');
-  let accountConnection = 'available';
-  try {
-    await connect();
-  } catch (error) {
-    if (error.message !== 'desktop_restart_required') throw error;
-    accountConnection = 'restart_required';
-  }
+  const receipt = await connect();
+  const app = path.resolve(receipt.executable, '../../..');
   await execute(
     '/usr/bin/open',
-    ['-a', 'Figma', ...(key ? [`figma://file/${key}`] : [])],
+    ['-a', app, ...(key ? [`figma://file/${key}`] : [])],
     { timeout: 10000 },
   );
-  return { state: 'opened', fileKey: key || null, accountConnection };
+  return {
+    state: 'opened',
+    fileKey: key || null,
+    accountConnection: 'available',
+    appPath: app,
+    setup: receipt.setup,
+  };
 }
-async function readDesktopFiles({ fileKey, connect = queuedDesktop } = {}) {
+async function readDesktopFiles({
+  fileKey,
+  connect = () => queuedDesktop({ start: observeDesktop }),
+} = {}) {
   const { parseFigmaUrl } = require('./targets.cjs');
   if (fileKey && !/^[A-Za-z0-9]{6,100}$/.test(fileKey))
     throw new Error('Invalid Figma file key');
@@ -518,4 +579,5 @@ module.exports = {
   readDesktopFiles,
   runtimeResult,
   createPageReader,
+  observeDesktop,
 };

@@ -141,6 +141,16 @@ function classifyError(error, detail, precondition) {
   const patterns = [
     [/desktop_required/, 'FIGMA_DESKTOP_REQUIRED'],
     [/desktop_restart_required/, 'FIGMA_DESKTOP_RESTART_REQUIRED'],
+    [/desktop_not_running/, 'FIGMA_DESKTOP_NOT_RUNNING'],
+    [/desktop_quit_pending/, 'FIGMA_DESKTOP_QUIT_PENDING'],
+    [
+      /desktop_(?:editor|launcher|widget|plugin)_not_ready/,
+      'FIGMA_DESKTOP_NOT_READY',
+    ],
+    [
+      /desktop_(?:registration|app_signature|installer|download|native_manifest)/,
+      'FIGMA_DESKTOP_SETUP_FAILED',
+    ],
     [/login_required/, 'FIGMA_LOGIN_REQUIRED'],
     [/desktop_plugin_not_imported/, 'FIGMA_NATIVE_IMPORT_REQUIRED'],
     [
@@ -197,7 +207,19 @@ function setupRecovery(detail) {
     ],
     [
       /desktop_restart_required/,
-      'Inspect pending operations and Desktop save state, quit normally only when safe, then relaunch through figma_file(action="launch") and reconnect the exact file. Preserve the login and designs.',
+      'Use figma_file(action="open", fileKey=...) or launch to prepare Desktop. Explicit connection handles normal quit, stable registration and relaunch; passive status/sync never restarts a running app. Preserve pending operations and designs.',
+    ],
+    [
+      /desktop_not_running/,
+      'Use figma_file(action="open", fileKey=...) to start and connect the intended file. Status is read-only and does not launch Desktop.',
+    ],
+    [
+      /desktop_quit_pending/,
+      'Figma has not completed its normal quit. Inspect its existing save/cancel prompt or let synchronization finish, then retry the same open/connect. Never force quit.',
+    ],
+    [
+      /desktop_(?:editor|launcher|widget|plugin)_not_ready/,
+      'The bounded startup wait expired before readiness. Retain the exact diagnostic and observed URL; retry open/connect after checking the network/editor state. Do not reimport manifests or guess module IDs.',
     ],
     [
       /login_required/,
@@ -205,7 +227,11 @@ function setupRecovery(detail) {
     ],
     [
       /desktop_plugin_not_imported/,
-      'Read figma_connect for the stable manifest path, import only that missing manifest once through app automation, then retry figma_file(action="connect", fileKey=...). No manual pairing code is needed.',
+      'Direct open/connect prepares the stable registrations while Desktop is stopped and waits for their renderer state. Retain this diagnostic and inspect the packaged setup skill if the app did not load them; manual import is only a diagnosed compatibility fallback.',
+    ],
+    [
+      /desktop_(?:registration|app_signature|installer|download|native_manifest)/,
+      'Read the exact setup diagnostic. Existing settings/application backups are retained. Repair the concrete schema, download or signature issue; do not erase settings, merge app bundles, re-sign Figma or repeatedly use GUI import.',
     ],
     [
       /desktop_\w*schema_changed|desktop_(?:launcher|state|widget)_ambiguous/,
@@ -266,6 +292,10 @@ function toolError(error, input = {}) {
     PLUGIN_UPDATE_REQUIRED: 'Figma 中的 ysun figma 需要更新并恢复连接。',
     FIGMA_DESKTOP_REQUIRED: '需要先安装 Figma 桌面端。',
     FIGMA_DESKTOP_RESTART_REQUIRED: '需要由 Codex 安全重连 Figma 桌面端。',
+    FIGMA_DESKTOP_NOT_RUNNING: 'Figma 桌面端尚未运行，可直接打开目标文件。',
+    FIGMA_DESKTOP_QUIT_PENDING: 'Figma 正等待正常退出，请处理现有保存提示。',
+    FIGMA_DESKTOP_NOT_READY: 'Figma 编辑器尚未完成加载。',
+    FIGMA_DESKTOP_SETUP_FAILED: 'Figma 桌面准备未完成，请查看具体原因。',
     FIGMA_LOGIN_REQUIRED: '需要先完成 Figma 自己的登录。',
     FIGMA_NATIVE_IMPORT_REQUIRED: '需要先导入一次原生插件。',
     FIGMA_DESKTOP_ADAPTER_UNAVAILABLE: '当前 Figma 桌面接口需要兼容性处理。',
