@@ -255,11 +255,12 @@ async function executeScript(source, args = {}, assets = {}, options = {}) {
   const scene = () => {
     try {
       const page = figma.currentPage;
+      const roots = page.children;
       return {
         pageId: page.id,
-        rootCount: page.children.length,
-        rootIds: page.children.slice(0, 100).map((node) => node.id),
-        truncated: page.children.length > 100,
+        rootCount: roots.length,
+        rootIds: roots.slice(0, 100).map((node) => node.id),
+        truncated: roots.length > 100,
       };
     } catch (_) {
       return null;

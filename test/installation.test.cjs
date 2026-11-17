@@ -311,3 +311,26 @@ test('concurrent Codex launches converge on the newest package and reclaim a dea
     'current',
   ]);
 });
+
+test('a failed first activation restores pre-existing native bytes and can be retried', async (t) => {
+  const f = fixture(t),
+    source = f.source('1.0.0');
+  const native = path.join(f.state, 'plugin');
+  fs.mkdirSync(native);
+  fs.writeFileSync(path.join(native, 'ui.html'), 'previous user installation');
+  await assert.rejects(prepareManagedCompanion(source, { healthCheck: true }), {
+    code: 'UPDATE_UNHEALTHY',
+  });
+  assert.equal(fs.existsSync(currentPath()), false);
+  assert.deepEqual(fs.readdirSync(native), ['ui.html']);
+  assert.equal(
+    fs.readFileSync(path.join(native, 'ui.html'), 'utf8'),
+    'previous user installation',
+  );
+  assert.equal(
+    fs.readFileSync(path.join(f.state, 'authorizations.json'), 'utf8'),
+    'original grants',
+  );
+  assert.equal((await prepareManagedCompanion(source)).changed, true);
+  assert.equal(verify(currentPath()).version, '1.0.0');
+});

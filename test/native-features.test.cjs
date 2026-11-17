@@ -568,7 +568,7 @@ test('immutable native errors retain their message and query diagnostics', async
     return true;
   });
 });
-test('wide native child getters are read once and continuation resolves only visited nodes', async () => {
+test('wide tree continuation resolves its parent once and keeps a constant-size cursor', async () => {
   const f = graph();
   const children = Array.from({ length: 10000 }, (_, i) =>
     f.add('3:' + i, 'RECTANGLE', 'Stress ' + i, { parent: f.frame }),
@@ -593,10 +593,11 @@ test('wide native child getters are read once and continuation resolves only vis
   lookups.length = 0;
   const next = await f.queries.findNodes({ ...args, cursor: first.cursor });
   assert.equal(next.nodes.length, 500);
-  assert.equal(lookups.length, 501, 'root plus the requested page only');
+  assert(lookups.length <= 2, 'root resolution and a single parent lookup');
+  assert(first.cursor.length < 500);
   assert.equal(next.nodes[0].id, children[500].id);
   assert.equal(next.nodes.at(-1).id, children[999].id);
-  assert.equal(childReads, 1, 'the already expanded root stays expanded');
+  assert.equal(childReads, 2, 'one native child array per page of results');
   await assert.rejects(
     f.queries.findNodes({
       ...args,
@@ -1347,4 +1348,77 @@ test('Buzz media updates use the native setter when present and preserve unrelat
     ),
     /missing or ambiguous/,
   );
+});
+
+test('a hundred thousand siblings and selected layers support bounded inspection and exhaustive search', async () => {
+  const f = graph(),
+    count = 100000;
+  const nodes = Array.from({ length: count }, (_, i) => ({
+    id: '10:' + i,
+    type: 'RECTANGLE',
+    name: 'Design system / sample ' + i,
+    parent: f.first,
+  }));
+  nodes[0].name = '界'.repeat(10000);
+  f.first.children = nodes;
+  f.first.selection = nodes;
+  const first = await f.queries.inspect({});
+  assert.equal(first.children.length, 100);
+  assert(first.children[0].nameTruncated);
+  assert.equal(first.counts.children, count);
+  assert.equal(first.counts.selection, count);
+  assert.equal(first.nextOffset, 100);
+  assert(Buffer.byteLength(JSON.stringify(first)) < 25000);
+  const end = await f.queries.inspect({
+    pageId: f.first.id,
+    offset: count - 5,
+    limit: 100,
+  });
+  assert.equal(end.nextOffset, null);
+  assert.deepEqual(
+    end.children.map((n) => n.id),
+    nodes.slice(-5).map((n) => n.id),
+  );
+  let cursor,
+    seen = 0,
+    pages = 0;
+  do {
+    const result = await f.queries.findNodes({
+      pageId: f.first.id,
+      types: ['RECTANGLE'],
+      limit: 500,
+      cursor,
+    });
+    assert.equal(result.file.selection.length, 100);
+    assert.equal(result.file.selectionCount, count);
+    for (const match of result.nodes) assert.equal(match.id, nodes[seen++].id);
+    cursor = result.cursor;
+    if (cursor) assert(cursor.length < 512);
+    pages++;
+  } while (cursor);
+  assert.equal(seen, count);
+  assert.equal(pages, 200);
+});
+
+test('an outstanding legacy search cursor can finish after upgrading the plugin', async () => {
+  const f = graph();
+  const result = await f.queries.findNodes({
+    scope: 'file',
+    cursor: JSON.stringify({
+      criteria: JSON.stringify({
+        scope: 'file',
+        roots: [f.first.id, f.second.id],
+        query: '',
+        types: [],
+        includeStaticTimelines: false,
+        includeComponentMetadata: false,
+      }),
+      documentId: f.bridge.documentId,
+      revision: f.bridge.documentRevision,
+      pending: [f.second.id, f.frame.id],
+    }),
+  });
+  assert.equal(result.nodes[0].id, f.frame.id);
+  assert(result.nodes.some((n) => n.id === f.second.id));
+  assert.equal(result.cursor, null);
 });

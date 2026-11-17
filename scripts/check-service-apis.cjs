@@ -30,6 +30,8 @@ async function check() {
     headings(pages[0]).filter((h) => /^(GET|POST|PUT|PATCH|DELETE) /.test(h)),
     [
       'GET Service Provider Config',
+      'GET Resource Types',
+      'GET Schemas',
       'GET Tenant ID',
       'GET Users',
       'POST Users',
@@ -58,9 +60,19 @@ async function check() {
     new Set([...Object.keys(adapter.commands), ...adapter.events]),
     'Embed commands/events changed; update the adapter',
   );
-  assert.equal(operations.length, 13);
+  for (const suffix of [
+    'ResourceTypes',
+    'ResourceTypes/:id',
+    'Schemas',
+    'Schemas/:id',
+  ])
+    assert(
+      pages[0].includes(':baseURL/' + suffix),
+      'SCIM metadata route changed: ' + suffix,
+    );
+  assert.equal(operations.length, 17);
   return {
-    scim: 12,
+    scim: 16,
     discovery: 1,
     embedCommands: 5,
     embedEvents: 7,

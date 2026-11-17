@@ -9,7 +9,7 @@ const TERMINAL_JOB_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const TERMINAL_STATES = new Set(['succeeded', 'failed', 'outcome_unknown']);
 const resolved = (job) =>
   ['succeeded', 'failed'].includes(job.status) ||
-  (job.status === 'outcome_unknown' && !!job.reconciledAt);
+  (job.status === 'outcome_unknown' && job.reconciledAt != null);
 const digest = (value) =>
   'sha256:' +
   crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -39,7 +39,8 @@ function createExecution({
   }
   const db = new DatabaseSync(databasePath || ':memory:');
   const statements = new Map(),
-    payloads = new Map();
+    payloads = new Map(),
+    listeners = new Set();
   function statement(sql) {
     if (!statements.has(sql)) statements.set(sql, db.prepare(sql));
     return statements.get(sql);
@@ -50,6 +51,14 @@ function createExecution({
       .map((row) => JSON.parse(row.record));
   const list = () =>
     records('SELECT record FROM operations WHERE archived=0 ORDER BY rowid');
+  const active = () =>
+    records(
+      "SELECT record FROM operations WHERE archived=0 AND status IN ('queued','running') ORDER BY rowid",
+    );
+  const unresolved = () =>
+    records(
+      'SELECT record FROM operations WHERE archived=0 AND retention_at IS NULL ORDER BY rowid',
+    );
   function get(id, { payload = false, result = true } = {}) {
     const row = statement(
       `SELECT record${result ? ', receipt' : ''} FROM operations WHERE id=?`,
@@ -91,7 +100,10 @@ function createExecution({
       throw error;
     }
     for (const effect of effects) effect();
-    if (changed) onChange();
+    if (changed) {
+      onChange();
+      for (const listener of listeners) listener();
+    }
     return value;
   }
   function transition(job, status, fields) {
@@ -202,7 +214,7 @@ function createExecution({
     ).filter((job) => sameFile(job.target, target));
   const blocking = (target) =>
     fileWork(target).filter(
-      (job) => job.status === 'outcome_unknown' && !job.reconciledAt,
+      (job) => job.status === 'outcome_unknown' && job.reconciledAt == null,
     );
   function observedInputs(input, expected) {
     const references = input.options?.ifUnchanged || [];
@@ -259,6 +271,21 @@ function createExecution({
   return {
     get,
     list,
+    active,
+    unresolved,
+    counts() {
+      return Object.fromEntries(
+        statement(
+          'SELECT status, count(*) AS total FROM operations WHERE archived=0 GROUP BY status',
+        )
+          .all()
+          .map(({ status, total }) => [status, total]),
+      );
+    },
+    onChange(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
     assetIds() {
       return new Set(
         [...payloads.values()].flatMap((payload) =>
@@ -277,7 +304,8 @@ function createExecution({
           .map((job) => job.id),
         unresolved: work
           .filter(
-            (job) => job.status === 'outcome_unknown' && !job.reconciledAt,
+            (job) =>
+              job.status === 'outcome_unknown' && job.reconciledAt == null,
           )
           .map((job) => job.id),
       };
@@ -295,7 +323,11 @@ function createExecution({
         const existing = get(input.id);
         if (existing) {
           if (existing.payloadHash !== payloadHash)
-            throw problem(409, 'operationId already refers to another request');
+            throw problem(
+              409,
+              'operationId already refers to another request',
+              { code: 'OPERATION_ID_CONFLICT' },
+            );
           return { job: existing, created: false };
         }
         const client = clients.find(
@@ -393,14 +425,21 @@ function createExecution({
         return { job, created: true };
       });
     },
-    claim(target) {
+    claim(target, operationId) {
       return change((save, after) => {
         const work = fileWork(target);
         if (work.some((job) => job.status === 'running')) return null;
-        for (const job of records(
-          "SELECT record FROM operations WHERE target_client=? AND status='queued' AND archived=0 ORDER BY rowid",
-          target.clientId,
-        )) {
+        const queued =
+          "SELECT record FROM operations WHERE target_client=? AND status='queued' AND archived=0";
+        const candidates = operationId
+          ? records(queued + ' AND id=?', target.clientId, operationId)
+          : records(queued + ' ORDER BY rowid', target.clientId);
+        for (const job of candidates) {
+          if (now() >= job.expiresAt) {
+            save(interrupt(job, 'job expired before delivery'));
+            after(() => payloads.delete(job.id));
+            continue;
+          }
           const original = targetIdentity({
             ...job.target,
             id: job.target.clientId,
@@ -419,7 +458,8 @@ function createExecution({
             !job.options.readOnly &&
             work.some(
               (other) =>
-                other.status === 'outcome_unknown' && !other.reconciledAt,
+                other.status === 'outcome_unknown' &&
+                other.reconciledAt == null,
             )
           )
             continue;
@@ -431,6 +471,16 @@ function createExecution({
           return { ...claimed, ...payloads.get(job.id) };
         }
         return null;
+      });
+    },
+    cancelQueued(id, reason) {
+      return change((save, after) => {
+        const job = get(id);
+        if (job.status !== 'queued') return job;
+        const cancelled = interrupt(job, reason);
+        save(cancelled);
+        after(() => payloads.delete(id));
+        return cancelled;
       });
     },
     complete(id, clientId, body) {
@@ -489,6 +539,17 @@ function createExecution({
         const job = get(id, { result: false });
         if (!job || job.archived || job.status !== 'outcome_unknown')
           throw problem(409, 'only an uncertain operation can be reconciled');
+        if (job.reconciliation) {
+          if (
+            job.reconciliation.outcome !== outcome ||
+            job.reconciliation.note !== note.trim()
+          )
+            throw problem(
+              409,
+              'the original operation already has a different reconciliation',
+            );
+          return get(id);
+        }
         save({
           ...job,
           reconciledAt: now(),
@@ -517,12 +578,15 @@ function createExecution({
         }
       });
     },
-    cleanup(clients) {
+    cleanup(clients, locallyRunning = () => false) {
       let next = Infinity;
       change((save, after) => {
         for (const job of records(
           "SELECT record FROM operations WHERE status IN ('queued','running') AND archived=0",
         )) {
+          // A local executor owns its promise until the bounded transport settles.
+          // Native clients instead have a renewable remote session and deadline.
+          if (job.status === 'running' && locallyRunning(job.id)) continue;
           const client = clients.get(job.clientId);
           const deadline =
             job.status === 'queued'
@@ -565,6 +629,7 @@ function createExecution({
       );
     },
     close() {
+      listeners.clear();
       payloads.clear();
       db.close();
     },

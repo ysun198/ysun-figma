@@ -637,6 +637,7 @@ test('Widget cold start activates the exact hidden renderer before mounting, pre
               value: open
                 ? {
                     clientId: 'widget',
+                    widgetNodeId: '11:4',
                     documentId: 'doc',
                     instanceId: 'instance',
                     pluginId: '1700202761156255033',

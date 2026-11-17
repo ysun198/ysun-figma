@@ -5,10 +5,10 @@
   "sha256": "46685808f4994664397367ff855ff87619f8177370da572f7d3acfd2553dc95a",
   "license": "MIT",
   "licenseFile": "PLUGIN-API-LICENSE",
-  "retrieved": "2026-10-29",
+  "retrieved": "2026-11-17",
   "documentation": {
     "url": "https://developers.figma.com/docs/plugins/updates/",
-    "release": "Version 1, Update 141",
-    "sha256": "08badd369e172410e488e51ac0c7b20364b1d6985f9241ce90d96eedb201c57d"
+    "release": "Version 1, Update 142",
+    "sha256": "fe5d93775ba82ae316e8891911ef30e5e99e07944f379f2a67b895cb50926182"
   }
 }

@@ -13,6 +13,7 @@ function fileList(state, catalog = { files: [], status: 'empty' }) {
     pageName: client.pageName,
     pageId: client.pageId,
     selection: client.selection || [],
+    selectionCount: client.selectionCount ?? client.selection?.length ?? 0,
     documentRevision: client.documentRevision || 0,
     editorType: client.editorType,
     runtimeVersion: client.runtimeVersion,
@@ -48,7 +49,7 @@ function fileList(state, catalog = { files: [], status: 'empty' }) {
       error: catalog.error || null,
       coverage: catalog.coverage || [],
       coverageComplete: catalog.status === 'ready',
-      fileCount: catalog.files?.length || 0,
+      fileCount: catalog.fileCount ?? catalog.files?.length ?? 0,
     },
   };
 }

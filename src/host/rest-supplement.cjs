@@ -1,7 +1,7 @@
-// Contracts manually transcribed from the linked official docs, 2026-11-06.
+// Contracts manually transcribed from the linked official docs, 2026-11-18.
 // Kept separate from the unmodified upstream REST OpenAPI snapshot.
 const source = {
-  retrieved: '2026-11-06',
+  retrieved: '2026-11-18',
   scim: 'https://developers.figma.com/docs/rest-api/scim-endpoints/',
   schemas: 'https://developers.figma.com/docs/rest-api/scim-supported-schemas/',
   discovery: 'https://developers.figma.com/docs/rest-api/discovery-endpoints/',
@@ -125,6 +125,26 @@ const operations = [
   scim('scimGetTenant', 'GET', ''),
   scim('scimGetServiceProviderConfig', 'GET', '/ServiceProviderConfig'),
 ];
+// Figma also serves these four metadata reads at a tenant-independent URL.
+for (const [resource, single, idSchema] of [
+  [
+    'ResourceTypes',
+    'ResourceType',
+    { type: 'string', enum: ['User', 'Group'] },
+  ],
+  ['Schemas', 'Schema', string],
+]) {
+  for (const detail of [false, true]) {
+    const suffix = '/' + resource + (detail ? '/{id}' : '');
+    operations.push({
+      ...scim('scimGet' + (detail ? single : resource), 'GET', suffix),
+      route: '/scim/v2' + suffix,
+      credentialProfile: 'public',
+      security: [],
+      parameters: detail ? [parameter('id', 'path', idSchema, true)] : [],
+    });
+  }
+}
 for (const [resource, schema, id] of [
   ['Users', user, 'user_id'],
   ['Groups', group, 'group_id'],

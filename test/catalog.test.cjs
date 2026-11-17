@@ -413,6 +413,13 @@ test('verified bindings preserve every native instance of the same cloud file', 
     },
     clients,
   );
+  const scoped = catalog.view('FileBravo12');
+  assert.equal(scoped.fileCount, 2);
+  assert.deepEqual(
+    scoped.files.map((file) => file.fileKey),
+    ['FileBravo12'],
+  );
+  assert(scoped.bindings.every((binding) => binding.fileKey === 'FileBravo12'));
   assert.deepEqual(
     catalog.decorate(clients).map((c) => c.fileKey),
     ['FileAlpha12', 'FileBravo12'],

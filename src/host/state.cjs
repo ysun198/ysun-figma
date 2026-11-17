@@ -40,9 +40,12 @@ function privateDirectory(directory) {
 }
 function writePrivateJson(file, value) {
   privateDirectory(path.dirname(file));
+  writePrivateFile(file, JSON.stringify(value) + '\n');
+}
+function writePrivateFile(file, bytes) {
   const temporary = file + '.' + crypto.randomUUID() + '.tmp';
   try {
-    fs.writeFileSync(temporary, JSON.stringify(value) + '\n', {
+    fs.writeFileSync(temporary, bytes, {
       mode: 0o600,
       flag: 'wx',
     });
@@ -75,7 +78,7 @@ function installPlugin(sourceRoot) {
     const source = fs.readFileSync(path.join(sourceRoot, name));
     const target = path.join(directory, name);
     if (!fs.existsSync(target) || !fs.readFileSync(target).equals(source))
-      fs.writeFileSync(target, source, { mode: 0o600 });
+      writePrivateFile(target, source);
   }
   require('./native-profiles.cjs').installExtraProfiles(sourceRoot);
   return path.join(directory, 'manifest.json');
@@ -87,6 +90,7 @@ module.exports = {
   connectionPath,
   privateDirectory,
   writePrivateJson,
+  writePrivateFile,
   pluginInstalled,
   installPlugin,
 };

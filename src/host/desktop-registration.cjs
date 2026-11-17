@@ -83,7 +83,7 @@ async function registerDesktopPlugins(plan, { assertStopped } = {}) {
         !removedIds.has(entry.id) &&
         !removedIds.has(entry.fileMetadata?.manifestFileId),
     );
-    let id = replaced[0]?.id || 1;
+    let id = replaced[0]?.id ?? 1;
     if (replaced.length) ids.delete(id);
     while (ids.has(id)) id++;
     ids.add(id);

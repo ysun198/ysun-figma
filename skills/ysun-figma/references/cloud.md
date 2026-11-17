@@ -6,9 +6,11 @@ The package declares `https://mcp.figma.com/mcp` and the registered Figma connec
 
 ## Direct REST when needed
 
-Use `figma_rest` when a requested endpoint is not covered by the native or hosted tool for that task. Its unmodified pinned OpenAPI specification includes 59 general REST operations, input schemas, authentication alternatives and response schemas. The same catalog also includes 12 separately documented SCIM operations and Discovery, for 72 HTTP operations. These supplemental contracts identify their official documentation source. `action="list"` works offline; choose an endpoint by its returned operation name. `action="describe", endpoint="getFileVersions"` returns its precise path/query/body contract and referenced schemas. Scope, plan and account rules are enforced by Figma.
+Use `figma_rest` when a requested endpoint is not covered by the native or hosted tool for that task. Its unmodified pinned OpenAPI specification includes 59 general REST operations, input schemas, authentication alternatives and response schemas. The same catalog also includes 16 separately documented SCIM operations and Discovery, for 76 HTTP operations. These supplemental contracts identify their official documentation source. `action="list"` works offline; choose an endpoint by its returned operation name. `action="describe", endpoint="getFileVersions"` returns its precise path/query/body contract and referenced schemas. Scope, plan and account rules are enforced by Figma.
 
 For example, request a cloud version directory with `action="request", endpoint="getFileVersions", pathParams={file_key:exactKey}`. This is a server read, distinct from local native state. Pagination is explicit; follow returned pagination using the operation's documented query parameters. A partial page is not a whole directory. Larger responses are preserved as a JSON export in the same operation receipt; download them using `figma_export` rather than repeating the cloud request.
+
+SCIM schema and resource-type discovery uses the public service root. Use `scimGetResourceTypes`, `scimGetResourceType`, `scimGetSchemas` or `scimGetSchema`. Detail requests take `pathParams.id`. These four reads work without configuring credentials. [Figma SCIM endpoints](https://developers.figma.com/docs/rest-api/scim-endpoints/)
 
 ## Authentication
 

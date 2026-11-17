@@ -60,6 +60,7 @@ test('persistent Widget render definitions execute in Figma, retain state, and s
     register: (fn) => {
       render = fn;
     },
+    useWidgetNodeId: () => '11:4',
     useEffect() {},
     useSyncedState: () => ['persisted'],
     h: (component, props, ...children) => ({ component, props, children }),
@@ -89,6 +90,7 @@ test('Widget effects open one bridge and one retained task despite repeated rend
     register: (fn) => {
       component = fn;
     },
+    useWidgetNodeId: () => '11:4',
     useEffect: (fn) => effects.push(fn),
     useSyncedState: (_key, value) => [value, () => {}],
     h: () => ({}),

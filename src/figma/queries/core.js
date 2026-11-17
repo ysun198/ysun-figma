@@ -130,13 +130,24 @@ function createQueryCore(figma, bridge, log) {
     return result;
   };
   const describe = (node) => read(node, ['id', 'type', 'name']);
-  const identity = () => ({
-    name: figma.root.name,
-    fileKey: figma.fileKey || null,
-    editorType: figma.editorType,
-    page: describe(figma.currentPage),
-    selection: figma.currentPage.selection.map(describe),
-  });
+  function summaryNode(node) {
+    const value = describe(node);
+    if (value.name?.length > 256)
+      return { ...value, name: value.name.slice(0, 256), nameTruncated: true };
+    return value;
+  }
+  function identity() {
+    const selection = figma.currentPage.selection;
+    return {
+      name: figma.root.name,
+      fileKey: figma.fileKey || null,
+      editorType: figma.editorType,
+      page: describe(figma.currentPage),
+      selection: selection.slice(0, 100).map(summaryNode),
+      selectionCount: selection.length,
+      ...(selection.length > 100 ? { selectionTruncated: true } : {}),
+    };
+  }
   async function nodeById(id) {
     const node = await nativeRead('getNodeByIdAsync', id, () =>
       figma.getNodeByIdAsync(id),
@@ -189,6 +200,7 @@ function createQueryCore(figma, bridge, log) {
     safe,
     read,
     describe,
+    summaryNode,
     identity,
     nodeById,
     roots,

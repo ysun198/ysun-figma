@@ -81,7 +81,7 @@ function restoreInstallation(state) {
     if (error.code === 'ENOENT') return;
     throw error;
   }
-  const { staging } = JSON.parse(record);
+  const { staging, hadCurrent } = JSON.parse(record);
   if (
     path.dirname(staging) !== directory ||
     !/^\.install-[\w]+$/.test(path.basename(staging))
@@ -92,6 +92,40 @@ function restoreInstallation(state) {
   if (fs.existsSync(backup)) {
     fs.rmSync(current, { recursive: true, force: true });
     fs.renameSync(backup, current);
+  } else if (hadCurrent === false) {
+    fs.rmSync(current, { recursive: true, force: true });
+  }
+  const snapshot = path.join(staging, 'native');
+  if (fs.existsSync(snapshot)) {
+    // A snapshot contains only the entrypoints this activation can replace.
+    // Restore by copy so another interruption can restart the same recovery.
+    const entries = JSON.parse(
+      fs.readFileSync(path.join(snapshot, 'entries.json')),
+    );
+    for (const entry of entries) {
+      if (
+        !/^(?:plugin\/(?:manifest\.json|plugin-runtime\.js|ui\.html)|(?:dev|widget)\/(?:manifest\.json|code\.js|ui\.html))$/.test(
+          entry,
+        )
+      )
+        throw new Error('Invalid native recovery entry');
+      const saved = path.join(snapshot, entry),
+        file = path.join(state, entry);
+      if (!fs.existsSync(saved)) fs.rmSync(file, { force: true });
+      else {
+        fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+        const temporary =
+          file + '.' + require('node:crypto').randomUUID() + '.tmp';
+        try {
+          fs.copyFileSync(saved, temporary, fs.constants.COPYFILE_EXCL);
+          fs.renameSync(temporary, file);
+        } finally {
+          fs.rmSync(temporary, { force: true });
+        }
+      }
+    }
+  } else if (fs.existsSync(current)) {
+    // Activation journals from versions before native entrypoint snapshots.
     for (const name of ['manifest.json', 'plugin-runtime.js', 'ui.html'])
       fs.copyFileSync(
         path.join(current, name),
@@ -187,6 +221,12 @@ async function stopForMaintenance() {
     if (/not running/.test(error.message)) return;
     throw error;
   }
+  if (
+    !Number.isSafeInteger(connection.pid) ||
+    connection.pid <= 1 ||
+    connection.pid === process.pid
+  )
+    throw new Error('No managed companion PID is available');
   try {
     await bridgeRequest(connection, '/v1/maintenance', {
       method: 'POST',
@@ -195,14 +235,19 @@ async function stopForMaintenance() {
   } catch (error) {
     if (error.statusCode === 409) error.code = 'UPDATE_BUSY';
     if (error.statusCode) throw error;
-    return;
+    try {
+      process.kill(connection.pid, 0);
+    } catch (probe) {
+      if (probe.code === 'ESRCH') return;
+      throw probe;
+    }
+    throw Object.assign(
+      new Error('Cannot confirm that the running companion is idle', {
+        cause: error,
+      }),
+      { code: 'UPDATE_BUSY' },
+    );
   }
-  if (
-    !Number.isSafeInteger(connection.pid) ||
-    connection.pid <= 1 ||
-    connection.pid === process.pid
-  )
-    throw new Error('No managed companion PID is available');
   process.kill(connection.pid, 'SIGTERM');
   const deadline = Date.now() + 3000;
   while (Date.now() < deadline) {
@@ -263,6 +308,31 @@ function reusableInstallation(current, requested) {
   // the observation and sends the caller through the shared critical section.
   return busy() || generation() !== before ? null : ready;
 }
+function snapshotEntrypoints(state, next, staging) {
+  const entries = [
+    'plugin/manifest.json',
+    'plugin/plugin-runtime.js',
+    'plugin/ui.html',
+  ];
+  for (const profile of ['dev', 'widget']) {
+    if (fs.existsSync(path.join(next, 'profiles', profile, 'manifest.json')))
+      entries.push(
+        ...['manifest.json', 'code.js', 'ui.html'].map(
+          (name) => profile + '/' + name,
+        ),
+      );
+  }
+  const snapshot = path.join(staging, 'native');
+  for (const entry of entries) {
+    const file = path.join(state, entry);
+    if (!fs.existsSync(file)) continue;
+    const saved = path.join(snapshot, entry);
+    privateDirectory(path.dirname(saved));
+    fs.copyFileSync(file, saved, fs.constants.COPYFILE_EXCL);
+  }
+  writePrivateJson(path.join(snapshot, 'entries.json'), entries);
+}
+
 async function prepareManagedCompanion(source, options = {}) {
   const requested = receiptFor(source),
     current = currentPath();
@@ -282,6 +352,7 @@ async function prepareManagedCompanion(source, options = {}) {
     }
     const staging = fs.mkdtempSync(path.join(directory(), '.install-'));
     const backup = path.join(staging, 'replaced');
+    const journal = path.join(directory(), '.activation.json');
     try {
       const next = path.join(staging, 'next');
       for (const file of Object.keys(requested.files)) {
@@ -296,8 +367,11 @@ async function prepareManagedCompanion(source, options = {}) {
       writePrivateJson(path.join(next, '.installation.json'), requested);
       verify(next);
       await stopForMaintenance();
-      const journal = path.join(directory(), '.activation.json');
-      writePrivateJson(journal, { staging });
+      snapshotEntrypoints(bridgeStateDirectory(), next, staging);
+      writePrivateJson(journal, {
+        staging,
+        hadCurrent: fs.existsSync(current),
+      });
       try {
         if (fs.existsSync(current)) fs.renameSync(current, backup);
         fs.renameSync(next, current);
@@ -305,20 +379,15 @@ async function prepareManagedCompanion(source, options = {}) {
         if (options.healthCheck) await verifyActivation(requested.version);
         fs.unlinkSync(journal);
       } catch (error) {
-        try {
-          await stopForMaintenance();
-        } catch {}
-        if (fs.existsSync(backup)) {
-          fs.rmSync(current, { recursive: true, force: true });
-          fs.renameSync(backup, current);
-          installPlugin(current);
-        }
-        fs.rmSync(journal, { force: true });
+        await stopForMaintenance();
+        restoreInstallation(bridgeStateDirectory());
         throw error;
       }
       return { version: requested.version, changed: true };
     } finally {
-      fs.rmSync(staging, { recursive: true, force: true });
+      // A failed rollback still owns these bytes and can resume under the lock.
+      if (!fs.existsSync(journal))
+        fs.rmSync(staging, { recursive: true, force: true });
     }
   } finally {
     lock.close();

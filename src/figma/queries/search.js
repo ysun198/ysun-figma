@@ -27,7 +27,7 @@ function createSearchQueries({
   async function searchRoots(args) {
     const selected =
       args.scope === 'file'
-        ? [...figma.root.children]
+        ? figma.root.children
         : args.rootId || args.pageId
           ? [await nodeById(args.rootId || args.pageId)]
           : [figma.currentPage];
@@ -35,31 +35,93 @@ function createSearchQueries({
       throw new Error('pageId must identify a page');
     return selected;
   }
-  function searchCriteria(args, selected) {
+  function searchCriteria(args, selected, legacy = false) {
     return JSON.stringify({
       scope: args.scope || 'page',
-      roots: selected.map((node) => node.id),
+      roots:
+        args.scope === 'file' && !legacy
+          ? 'file'
+          : selected.map((node) => node.id),
       query: args.query || '',
       types: args.types || [],
       includeStaticTimelines: args.includeStaticTimelines === true,
       includeComponentMetadata: args.includeComponentMetadata === true,
     });
   }
+  const expired = () =>
+    new Error(
+      'Search cursor expired or targets another query; restart the search.',
+    );
+  function validPosition(entry) {
+    return (
+      entry &&
+      (entry.parentId === null || typeof entry.parentId === 'string') &&
+      Number.isSafeInteger(entry.index) &&
+      Number.isSafeInteger(entry.length) &&
+      entry.index >= 0 &&
+      entry.index < entry.length &&
+      (entry.index === 0 || typeof entry.after === 'string')
+    );
+  }
+  const range = (parentId, children) => ({
+    parentId,
+    index: 0,
+    length: children.length,
+    children,
+  });
   function pendingNodes(args, criteria, selected) {
-    if (!args.cursor) return selected.slice().reverse();
+    if (!args.cursor) return selected.length ? [range(null, selected)] : [];
     const cursor = JSON.parse(args.cursor);
     if (
-      cursor.criteria !== criteria ||
+      !cursor ||
       cursor.documentId !== (bridge.documentId || null) ||
       cursor.revision !== (bridge.documentRevision ?? null) ||
       !Array.isArray(cursor.pending) ||
-      cursor.pending.some((id) => typeof id !== 'string') ||
       cursor.pending.length > 20000
     )
-      throw new Error(
-        'Search cursor expired or targets another query; restart the search.',
-      );
+      throw expired();
+    if (cursor.version === undefined) {
+      if (
+        cursor.criteria !== searchCriteria(args, selected, true) ||
+        cursor.pending.some((id) => typeof id !== 'string')
+      )
+        throw expired();
+      return cursor.pending;
+    }
+    if (
+      cursor.version !== 2 ||
+      cursor.criteria !== criteria ||
+      cursor.pending.some(
+        (entry) =>
+          typeof entry !== 'string' &&
+          (!validPosition(entry) || Object.hasOwn(entry, 'children')),
+      )
+    )
+      throw expired();
     return cursor.pending;
+  }
+  async function nextNode(pending, selected) {
+    const entry = pending.pop();
+    if (typeof entry === 'string') return nodeById(entry);
+    if (!entry.children) {
+      const children =
+        entry.parentId === null
+          ? selected
+          : (await nodeById(entry.parentId)).children;
+      if (
+        !children ||
+        children.length !== entry.length ||
+        (entry.index > 0 && children[entry.index - 1]?.id !== entry.after)
+      )
+        throw expired();
+      entry.children = children;
+    }
+    const node = entry.children[entry.index++];
+    if (entry.index < entry.length) {
+      entry.after = node.id;
+      pending.push(entry);
+    }
+    return node;
   }
   function matchesNode(node, args, text) {
     const name = text ? read(node, ['name']).name : null;
@@ -69,8 +131,7 @@ function createSearchQueries({
         (typeof name === 'string' && name.toLocaleLowerCase().includes(text)))
     );
   }
-  async function visitNode(entry, args, text, project, pending, matches) {
-    const node = typeof entry === 'string' ? await nodeById(entry) : entry;
+  async function visitNode(node, args, text, project, pending, matches) {
     if (node.type === 'PAGE')
       await nativeRead('loadAsync', node.id, () => node.loadAsync());
     if (matchesNode(node, args, text)) {
@@ -79,18 +140,26 @@ function createSearchQueries({
     }
     if ('children' in node) {
       const children = node.children;
-      for (let i = children.length - 1; i >= 0; i--) pending.push(children[i]);
+      if (children.length) pending.push(range(node.id, children));
     }
   }
   function continuation(pending, criteria) {
     const cursor =
       pending.length <= 20000 && pending.length
         ? JSON.stringify({
+            version: 2,
             criteria,
             documentId: bridge.documentId || null,
             revision: bridge.documentRevision ?? null,
-            pending: pending.map((node) =>
-              typeof node === 'string' ? node : node.id,
+            pending: pending.map((entry) =>
+              typeof entry === 'string'
+                ? entry
+                : {
+                    parentId: entry.parentId,
+                    index: entry.index,
+                    length: entry.length,
+                    after: entry.after,
+                  },
             ),
           })
         : null;
@@ -118,13 +187,13 @@ function createSearchQueries({
     const text = (args.query || '').toLocaleLowerCase();
     let visited = 0;
     while (pending.length && visited < maxVisited && matches.length < limit) {
-      const entry = pending.pop();
+      const node = await nextNode(pending, selected);
       visited++;
       try {
-        await visitNode(entry, args, text, project, pending, matches);
+        await visitNode(node, args, text, project, pending, matches);
       } catch (error) {
         issues.push({
-          nodeId: typeof entry === 'string' ? entry : entry.id,
+          nodeId: node.id,
           field: 'traversal',
           error: String(error.message || error).slice(0, 200),
         });

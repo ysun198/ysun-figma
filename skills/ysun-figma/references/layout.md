@@ -45,3 +45,7 @@ Layout grids used as guides (`layoutGrids`) and grid Auto Layout (`layoutMode: '
 ## Constraints and clipping
 
 Constraints apply within the parent and do not replace Auto Layout. `clipsContent` clips descendants to a frame, while a mask uses a separate masking node and ordering. Read existing constraints before resizing. Confirm both native bounds and the rendered result when clipping, wrapping or transforms matter; bounds alone do not prove content is visible.
+
+## 3D transforms
+
+Plugin API Update 142 documents beta `transform3d`, `transformOrigin` and `scene3d` properties, plus Motion keyframe fields. The pinned public typings currently omit these declarations. Consult the official property definitions and check the target node in the connected editor before attempting an edit. [Figma Plugin API updates](https://developers.figma.com/docs/plugins/updates/)

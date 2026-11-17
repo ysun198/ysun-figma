@@ -83,6 +83,8 @@ async function verifiedCredentials({
   profile = 'default',
   request,
 } = {}) {
+  if (request && operation(request.endpoint).credentialProfile === 'public')
+    return { type: 'public', accountId: 'public-scim' };
   const auth = credentials(profile);
   if (request) assertAuthentication(request, auth);
   const key = crypto
@@ -493,7 +495,8 @@ function list({ query, offset = 0, limit = 100 } = {}) {
     families: {
       rest: operations.length - supplement.operations.length,
       discovery: 1,
-      scim: 12,
+      scim: supplement.operations.filter((op) => op.tags.includes('SCIM'))
+        .length,
     },
     total: all.length,
     operations: all.slice(offset, offset + limit).map((op) => ({
@@ -630,7 +633,9 @@ function prepare(input) {
   return {
     endpoint: op.operationId,
     credentialProfile:
-      input.credentialProfile || op.credentialProfile || 'default',
+      op.credentialProfile === 'public'
+        ? 'public'
+        : input.credentialProfile || op.credentialProfile || 'default',
     tenantId: pathValues.tenant_id,
     method: op.method,
     url,
@@ -700,7 +705,11 @@ function assertAuthentication(request, auth) {
     );
 }
 function requestHeaders(request, auth) {
-  if (!auth.token)
+  if (operation(request.endpoint).credentialProfile === 'public') {
+    assertAuthentication(request, { type: 'public' });
+    return { Accept: 'application/json' };
+  }
+  if (!auth?.token)
     throw failure(
       'REST_AUTH_REQUIRED',
       'Figma REST credentials have not been configured',
@@ -819,10 +828,9 @@ function responseResult(request, response, { body, invalidJson }) {
     pagination: body?.pagination || null,
   };
 }
-async function execute(
-  request,
-  { fetch: send = fetch, auth = credentials() } = {},
-) {
+async function execute(request, { fetch: send = fetch, auth } = {}) {
+  if (!auth && operation(request.endpoint).credentialProfile !== 'public')
+    auth = credentials(request.credentialProfile);
   const response = await sendRequest(request, auth, send);
   return responseResult(
     request,

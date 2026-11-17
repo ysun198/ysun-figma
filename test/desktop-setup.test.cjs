@@ -405,3 +405,65 @@ test('normal quit targets the observed PID and never escalates a cancelled quit'
   assert.equal(calls[0].args.at(-1), '42');
   assert(!calls[0].args.join(' ').includes('forceTerminate'));
 });
+
+test('desktop discovery uses the two macOS bundle identities and retains renamed executable paths', async () => {
+  const { desktopProcesses } = require('../src/host/desktop-app.cjs');
+  const active = [
+    { pid: 77, executable: '/Applications/Figma QA.app/Contents/MacOS/Figma' },
+  ];
+  const observed = await desktopProcesses(async (command, args) => {
+    assert.equal(command, '/usr/bin/osascript');
+    assert.deepEqual(args.slice(-2), [
+      'com.figma.Desktop',
+      'com.figma.Desktop.dua',
+    ]);
+    return { stdout: JSON.stringify(active) };
+  });
+  assert.deepEqual(observed, active);
+});
+test('backup references survive session replacement and stale session migration', (t) => {
+  fixture(t);
+  const { rememberBackups } = require('../src/host/desktop.cjs');
+  const older = {
+    previousAppPath: '/original.app',
+    settingsBackupPath: '/first.json',
+  };
+  rememberBackups(older, true);
+  rememberBackups({ settingsBackupPath: '/latest.json' });
+  assert.deepEqual(rememberBackups(older, true), {
+    ...older,
+    settingsBackupPath: '/latest.json',
+  });
+  assert.deepEqual(rememberBackups(), {
+    ...older,
+    settingsBackupPath: '/latest.json',
+  });
+});
+test('a retained archive uses the HTTP status and curl exit code for resume decisions', async (t) => {
+  const f = downloadFixture(t),
+    directory = path.join(
+      process.env.FIGMA_PLUGIN_STATE_DIR,
+      'desktop/downloads',
+    );
+  fs.mkdirSync(directory, { recursive: true });
+  const file = path.join(directory, 'Figma-mac-arm-126.11.8.zip');
+  async function attempt(code, stdout, stderr) {
+    fs.writeFileSync(file, 'retained-bytes');
+    let requests = 0;
+    const execute = async (command, args, options) => {
+      if (command.endsWith('/curl') && args.at(-1).endsWith('.zip')) {
+        requests++;
+        if (requests === 1)
+          throw Object.assign(Error('transfer'), { code, stdout, stderr });
+        assert(!args.includes('--continue-at'));
+      }
+      return f.execute(command, args, options);
+    };
+    await installDesktopApp(f.app, { execute, home: f.home, arch: 'arm64' });
+    return requests;
+  }
+  await assert.rejects(attempt(22, '502', 'trace 416'), /transfer/);
+  assert.equal(fs.readFileSync(file, 'utf8'), 'retained-bytes');
+  assert.equal(await attempt(22, '416', 'localized message'), 1);
+  assert.equal(await attempt(33, '200', 'range unsupported'), 2);
+});

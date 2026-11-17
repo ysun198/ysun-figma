@@ -6,6 +6,7 @@ const run = require('node:util').promisify(execFile);
 const { bridgeStateDirectory, privateDirectory } = require('./state.cjs');
 const FIGMA_SIGNER =
   '=anchor apple generic and certificate leaf[subject.OU] = "T8RA8NE3B7"';
+const bundleIds = ['com.figma.Desktop', 'com.figma.Desktop.dua'];
 const DESKTOP_SETUP_TIMEOUT_MS = 32 * 60 * 1000;
 
 async function inspectApp(app, execute = run) {
@@ -15,7 +16,7 @@ async function inspectApp(app, execute = run) {
       await execute('/usr/libexec/PlistBuddy', ['-c', 'Print :' + name, plist])
     ).stdout.trim();
   const id = await property('CFBundleIdentifier');
-  if (!['com.figma.Desktop', 'com.figma.Desktop.dua'].includes(id))
+  if (!bundleIds.includes(id))
     throw new Error('desktop_app_identity_changed: ' + app);
   let valid = false;
   let signatureError;
@@ -49,13 +50,80 @@ async function findDesktopApp({ execute = run, home = os.homedir() } = {}) {
   ])
     if (fs.existsSync(path.join(app, 'Contents/Info.plist'))) return app;
   const { stdout } = await execute('/usr/bin/mdfind', [
-    'kMDItemCFBundleIdentifier == "com.figma.Desktop"',
+    bundleIds
+      .map((id) => 'kMDItemCFBundleIdentifier == "' + id + '"')
+      .join(' || '),
   ]);
   const found = [...new Set(stdout.trim().split('\n'))].filter(
-    (app) => app && fs.existsSync(path.join(app, 'Contents/MacOS/Figma')),
+    (app) =>
+      app &&
+      !app.split(path.sep).some((part) => part.startsWith('.')) &&
+      fs.existsSync(path.join(app, 'Contents/Info.plist')),
   );
   if (found.length > 1) throw new Error('desktop_app_ambiguous');
   return found[0] || null;
+}
+
+// LaunchServices supplies the actual executable even when the bundle was renamed.
+async function desktopProcesses(execute = run) {
+  const script = `ObjC.import('AppKit');
+    function run(ids) {
+      const found = [];
+      for (const id of ids) {
+        const apps = $.NSRunningApplication.runningApplicationsWithBundleIdentifier(id);
+        for (let i=0; i<apps.count; i++) {
+          const app = apps.objectAtIndex(i);
+          found.push({pid: app.processIdentifier, executable: ObjC.unwrap(app.executableURL.path)});
+        }
+      }
+      return JSON.stringify(found);
+    }`;
+  const { stdout } = await execute(
+    '/usr/bin/osascript',
+    ['-l', 'JavaScript', '-e', script, ...bundleIds],
+    { timeout: 5000 },
+  );
+  return JSON.parse(stdout);
+}
+
+async function downloadArchive(execute, archive, url) {
+  const partial = fs.statSync(archive).size > 0;
+  const transfer = (resume) =>
+    execute(
+      '/usr/bin/curl',
+      [
+        '--fail',
+        '--silent',
+        '--show-error',
+        '--location',
+        '--connect-timeout',
+        '20',
+        '--max-time',
+        '1800',
+        '--speed-time',
+        '30',
+        '--speed-limit',
+        '1024',
+        ...(resume ? ['--continue-at', '-'] : []),
+        '--write-out',
+        '%{response_code}',
+        '--max-filesize',
+        String(512 * 1024 * 1024),
+        '--output',
+        archive,
+        url,
+      ],
+      { timeout: 1810000 },
+    );
+  try {
+    await transfer(partial);
+  } catch (error) {
+    // A retained complete file may receive 416. The unpack/signature checks
+    // below determine if those bytes are usable. Exit 33 means no range support.
+    if (partial && error.code === 22 && error.stdout?.trim() === '416') return;
+    if (!partial || error.code !== 33) throw error;
+    await transfer(false);
+  }
 }
 
 // Download the complete architecture-specific application, not the GUI stub.
@@ -106,37 +174,11 @@ async function installDesktopApp(
     archive = path.join(cache, `Figma-${channel}-${version}.zip`);
     if (!fs.existsSync(archive))
       fs.writeFileSync(archive, '', { mode: 0o600, flag: 'wx' });
-    try {
-      await execute(
-        '/usr/bin/curl',
-        [
-          '--fail',
-          '--silent',
-          '--show-error',
-          '--location',
-          '--connect-timeout',
-          '20',
-          '--max-time',
-          '1800',
-          '--speed-time',
-          '30',
-          '--speed-limit',
-          '1024',
-          '--continue-at',
-          '-',
-          '--max-filesize',
-          String(512 * 1024 * 1024),
-          '--output',
-          archive,
-          `https://desktop.figma.com/${channel}/Figma-${version}.zip`,
-        ],
-        { timeout: 1810000 },
-      );
-    } catch (error) {
-      // A complete retained archive can return 416 when resuming. Extract and
-      // verify it below; other network failures retain their partial bytes.
-      if (!/416/.test(error.stderr || '')) throw error;
-    }
+    await downloadArchive(
+      execute,
+      archive,
+      `https://desktop.figma.com/${channel}/Figma-${version}.zip`,
+    );
     const incoming = path.join(unpacked, 'Figma.app');
     try {
       await execute('/usr/bin/ditto', ['-x', '-k', archive, unpacked], {
@@ -203,6 +245,7 @@ async function quitDesktop(
 }
 
 module.exports = {
+  desktopProcesses,
   findDesktopApp,
   inspectApp,
   installDesktopApp,

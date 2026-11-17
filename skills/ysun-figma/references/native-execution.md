@@ -1,5 +1,8 @@
 # Native execution
 
+For a page overview, `figma_inspect` returns up to 100 pages, selected nodes and root layers per list. Use the returned `page.id` and `nextOffset` as `pageId` and `offset` to continue. `counts` gives the actual size of each list. Read a specific `nodeId` for its full lightweight identity when a summary name is marked `nameTruncated`. Search traverses wide layer trees with a compact revision-bound cursor; pass it with the original query.
+
+
 The single API reference is the pinned MIT-licensed [Figma Plugin API types](plugin-api.d.ts); [API-SOURCE.json](API-SOURCE.json) identifies its upstream commit and hash. Search for the relevant interface/method instead of reading the entire type file. A declaration describes the API, not an entitlement: `figma_capabilities` and the actual call determine this account/editor's availability.
 
 `figma_api()` lists task workflows and topics offline; a selected workflow returns its guide text, `figma_api(topic="layout")` reads a focused recipe, and symbol/task queries return bounded, line-numbered declarations with provenance. Indexed task terms resolve to actual symbols; an unmatched phrase returns topics for another native approach. This works without opening Figma. [API map](api-map.md) routes common work to native primitives and identifies remote-only helpers.

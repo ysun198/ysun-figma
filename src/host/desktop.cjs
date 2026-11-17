@@ -5,7 +5,9 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawn, execFile } = require('node:child_process');
 const run = require('node:util').promisify(execFile);
+const { frameReader } = require('./framing.cjs');
 const {
+  desktopProcesses: processes,
   findDesktopApp,
   inspectApp,
   installDesktopApp,
@@ -23,14 +25,19 @@ const {
 const folder = () => path.join(bridgeStateDirectory(), 'desktop');
 const receiptPath = () => path.join(folder(), 'session.json');
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-async function processes() {
-  const { stdout } = await run('/bin/ps', ['-axo', 'pid=,comm=']);
-  return stdout.split('\n').flatMap((line) => {
-    const match = line.match(
-      /^\s*(\d+)\s+(.+\/Figma\.app\/Contents\/MacOS\/(?:Figma|DynamicUniversalApp))$/,
-    );
-    return match ? [{ pid: Number(match[1]), executable: match[2] }] : [];
-  });
+// Recovery references outlive a Desktop process. Import existing session
+// receipts on first use and commit a new reference as each setup step finishes.
+function rememberBackups(setup = {}, legacy = false) {
+  const file = path.join(folder(), 'backups.json');
+  const previous = fs.existsSync(file)
+    ? JSON.parse(fs.readFileSync(file, 'utf8'))
+    : {};
+  const paths = { ...previous };
+  for (const field of ['previousAppPath', 'settingsBackupPath'])
+    if (setup[field] && !(legacy && paths[field])) paths[field] = setup[field];
+  if (JSON.stringify(previous) !== JSON.stringify(paths))
+    writePrivateJson(file, paths);
+  return paths;
 }
 let lifecycle = Promise.resolve();
 function ensureDesktop(options) {
@@ -88,20 +95,25 @@ async function start({ restart = false, install = false, beforeRestart } = {}) {
         throw new Error('desktop_restart_required');
     };
     let setup = {};
+    let backups = rememberBackups(receipt?.setup, true);
     if (application.repair) {
       setup = await installDesktopApp(app, { assertStopped });
       app = setup.app;
+      backups = rememberBackups(setup);
     }
     const registered = await registerDesktopPlugins(readRegistration(), {
       assertStopped,
     });
-    if (registered) setup = { ...setup, ...registered };
+    if (registered) {
+      setup = { ...setup, ...registered };
+      backups = rememberBackups(registered);
+    }
     if (receipt) {
       validate(receipt);
       fs.rmSync(receipt.directory, { recursive: true });
       fs.unlinkSync(receiptPath());
     }
-    return await spawnDesktop(app, setup);
+    return await spawnDesktop(app, { ...backups, ...setup });
   } finally {
     guard?.close(quit);
   }
@@ -201,7 +213,6 @@ async function connectDesktop({ start = ensureDesktop } = {}) {
   let input,
     output,
     timer,
-    buffer = Buffer.alloc(0),
     sequence = crypto.randomInt(1, 1000000000),
     sending = Promise.resolve(),
     closed = false;
@@ -255,6 +266,9 @@ async function connectDesktop({ start = ensureDesktop } = {}) {
       }
     }
     const chunk = Buffer.alloc(65536);
+    const readFrames = frameReader(0, 16 * 1024 * 1024, acceptFrame, () => {
+      throw new Error('desktop_response_too_large');
+    });
     timer = setInterval(() => {
       try {
         process.kill(receipt.pid, 0);
@@ -267,15 +281,7 @@ async function connectDesktop({ start = ensureDesktop } = {}) {
             throw error;
           }
           if (!size) break;
-          buffer = Buffer.concat([buffer, chunk.subarray(0, size)]);
-          if (buffer.length > 16 * 1024 * 1024)
-            throw new Error('desktop_response_too_large');
-          let end;
-          while ((end = buffer.indexOf(0)) !== -1) {
-            const frame = buffer.subarray(0, end);
-            buffer = buffer.subarray(end + 1);
-            acceptFrame(frame);
-          }
+          readFrames(chunk.subarray(0, size));
         }
       } catch (error) {
         close(error);
@@ -580,4 +586,5 @@ module.exports = {
   runtimeResult,
   createPageReader,
   observeDesktop,
+  rememberBackups,
 };

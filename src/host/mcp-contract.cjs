@@ -134,7 +134,8 @@ function classifyError(error, detail, precondition) {
   if (precondition?.code === 'WRITE_CONFLICT') return 'FIGMA_WRITE_CONFLICT';
   if (precondition) return 'FIGMA_PRECONDITION_FAILED';
   if (error.phase === 'delivery') return 'ARTIFACT_DELIVERY_FAILED';
-  if (error.code === 'FILE_AMBIGUOUS') return error.code;
+  if (['FILE_AMBIGUOUS', 'OPERATION_ID_CONFLICT'].includes(serviceCode))
+    return serviceCode;
   if (error.receipt?.job.status === 'outcome_unknown')
     return 'OUTCOME_NEEDS_REVIEW';
   if (error.receipt?.job.status === 'failed') return 'FIGMA_OPERATION_FAILED';
@@ -180,6 +181,8 @@ function recoveryAdvice(
   error,
   { blockingOperationIds, precondition, submitted, operationId },
 ) {
+  if (error.body?.code === 'OPERATION_ID_CONFLICT')
+    return 'Read figma_job for the original operation ID and compare the two requests.';
   if (blockingOperationIds)
     return 'This request was not submitted. Inspect each blocking operation ID and reconcile its actual outcome before another write.';
   if (precondition)
@@ -273,10 +276,12 @@ function retrySafety(
     precondition ||
     blockingOperationIds ||
     code === 'OUTCOME_NEEDS_REVIEW' ||
-    code === 'CLOUD_RECEIPT_UNAVAILABLE'
+    code === 'CLOUD_RECEIPT_UNAVAILABLE' ||
+    code === 'OPERATION_ID_CONFLICT'
   )
     return false;
   if (error.receipt) return error.receipt.job.status === 'failed';
+  if (submitted && operationId) return false;
   if (!submitted && operationId) return true;
 }
 function toolError(error, input = {}) {
@@ -284,6 +289,7 @@ function toolError(error, input = {}) {
   const precondition = error.receipt?.job.result?.precondition;
   const code = classifyError(error, detail, precondition);
   const messages = {
+    OPERATION_ID_CONFLICT: '这个操作 ID 已有记录，请让 Codex 核对原操作。',
     FIGMA_WRITE_CONFLICT: '目标内容已变化，本次脚本尚未执行。',
     FIGMA_PRECONDITION_FAILED: '无法核对写入条件，本次脚本尚未执行。',
     FIGMA_NOT_CONNECTED: '目标 Figma 文件尚未连接。',
@@ -312,12 +318,10 @@ function toolError(error, input = {}) {
   });
   const result = {
     code,
-    message:
-      error.phase === 'preflight' && !blockingOperationIds
-        ? '请求未提交到 Figma，请根据具体错误修正后继续。'
-        : messages[code] || detail,
+    message: messages[code] || '操作未完成，请回到 Codex 查看详情。',
     error: detail,
     phase: error.phase || undefined,
+    targets: error.body?.targets,
     clients: error.clients || error.body?.clients || undefined,
     targetChange:
       error.body?.expected && error.body?.actual
@@ -435,7 +439,7 @@ const tools = [
   ],
   [
     'figma_file',
-    'Manage the account directory and Figma Desktop. status reads actual open file URLs and editor load state without GUI, navigation or pairing. launch brings Desktop forward. sync refreshes account files through the signed-in Desktop session. open accepts an exact fileKey, reusing its connection or opening it for native connection; bind only after verifying the actual file URL and current native instance. Never bind by title or present incomplete pagination as the whole account.',
+    'Manage the account directory and Figma Desktop. status reads actual open file URLs and editor load state without GUI, navigation or pairing. launch brings Desktop forward. sync refreshes account files through the signed-in Desktop session. open accepts a Figma link in figmaUrl or an exact fileKey, reusing its connection or opening it for native connection; bind only after verifying the actual file URL and current native instance. Never bind by title or present incomplete pagination as the whole account.',
     object(
       {
         action: {
@@ -451,6 +455,7 @@ const tools = [
           ],
         },
         fileKey,
+        figmaUrl: target.figmaUrl,
         targetId: { type: 'string', minLength: 1, maxLength: 100 },
         profile: { type: 'string', enum: ['default', 'dev', 'widget'] },
         sourcePath: { type: 'string', minLength: 1, maxLength: 3000 },
@@ -467,10 +472,12 @@ const tools = [
   ],
   [
     'figma_inspect',
-    'Read page roots, page names and selection, or lightweight identities, dimensions and parents for nodeId/nodeIds (up to 20). No vector paths, CSS or screenshots. pageId reads another page without activating it. Available during uncertain-write recovery.',
+    'Read a page overview or up to 20 exact nodes. The overview pages through root layers, pages and selection with one offset and limit (default 100 per list), returning counts and nextOffset. Use pageId to keep the page fixed. Summary names over 256 characters are marked. Exact nodes return identities, dimensions and parents. Available during uncertain-write recovery.',
     object({
       ...target,
       pageId: nodeId,
+      offset: integer(0, Number.MAX_SAFE_INTEGER, 0),
+      limit: integer(1, 500, 100),
       nodeId,
       nodeIds: {
         type: 'array',

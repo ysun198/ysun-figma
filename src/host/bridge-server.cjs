@@ -16,7 +16,7 @@ const {
   formatBridgeError,
 } = require('../shared/core.js');
 const { createArtifacts, validName } = require('./artifacts.cjs');
-const { resolveTarget, targetIdentity } = require('./targets.cjs');
+const { resolveTarget, targetIdentity, sameFile } = require('./targets.cjs');
 const {
   createExecution,
   MAX_RUN_MS,
@@ -58,6 +58,7 @@ function publicClient(client, now, expectedNativeBuild) {
       'pageName',
       'pageId',
       'selection',
+      'selectionCount',
       'documentId',
       'pluginId',
       'runtimeVersion',
@@ -92,19 +93,22 @@ function summarizeStatus(
     clientId || fileKey
       ? resolveTarget({ clientId, fileKey }, state.clients).clientId
       : null;
-  const visible = new Set(
-    state.clients
-      .filter(
-        (client) => client.connected && (!selected || client.id === selected),
-      )
-      .map((client) => client.id),
-  );
-  const jobCounts = {};
-  for (const job of state.jobs)
-    jobCounts[job.status] = (jobCounts[job.status] || 0) + 1;
+  const visible = state.clients
+    .filter(
+      (client) => client.connected && (!selected || client.id === selected),
+    )
+    .map(targetIdentity);
+  const jobCounts = state.jobCounts || {};
+  if (!state.jobCounts)
+    for (const job of state.jobs)
+      jobCounts[job.status] = (jobCounts[job.status] || 0) + 1;
   const unresolved = state.jobs.filter((j) => !resolved(j));
   const jobs = unresolved
-    .filter((j) => scope === 'all' || visible.has(j.target?.clientId))
+    .filter(
+      (j) =>
+        scope === 'all' ||
+        (j.target && visible.some((target) => sameFile(j.target, target))),
+    )
     .map((j) => ({
       id: j.id,
       kind: j.kind,
@@ -127,7 +131,7 @@ function summarizeStatus(
     scopedUnresolvedJobCount: jobs.length,
     jobs,
     globalUnresolvedJobCount: unresolved.length,
-    jobCount: state.jobs.length,
+    jobCount: Object.values(jobCounts).reduce((sum, count) => sum + count, 0),
     jobCounts,
     jobsTruncated: false,
   };
@@ -149,13 +153,11 @@ function createBridgeServer(options = {}) {
     publicClient(client, now(), expectedNativeBuild);
   const clients = new Map(),
     sessions = new Map(),
-    pairings = new Map(),
-    grants = new Map();
+    pairings = new Map();
+  let grants = new Map();
   let execution, externalJobs;
-  const externalClients = new Map();
-  const nativeRecoveries = new Set();
-  let desktopRecovering = false;
-  let desktopPreparing = 0;
+  let desktop;
+  let admittedRequests = 0;
   const catalog = require('./catalog.cjs').createCatalog(options.catalogPath);
   let catalogWorker = null;
   const grantPath =
@@ -169,13 +171,17 @@ function createBridgeServer(options = {}) {
         '/figma-artifacts-' +
         crypto.randomUUID());
   const artifacts = createArtifacts(artifactDirectory);
-  const saveGrants = () => {
+  function storeGrant(id, value) {
+    const next = new Map(grants);
+    if (value) next.set(id, value);
+    else next.delete(id);
     if (grantPath)
       writePrivateJson(grantPath, {
         protocolVersion: PROTOCOL_VERSION,
-        grants: [...grants.values()],
+        grants: [...next.values()],
       });
-  };
+    grants = next;
+  }
   function metadata(client, body) {
     if (
       typeof body.nativeBuild === 'string' &&
@@ -199,12 +205,18 @@ function createBridgeServer(options = {}) {
       (!body.fileKey || /^[A-Za-z0-9]{6,100}$/.test(body.fileKey))
     )
       client.fileKey = body.fileKey;
-    if (['figma', 'figjam', 'slides', 'buzz'].includes(body.editorType))
+    if (['figma', 'figjam', 'dev', 'slides', 'buzz'].includes(body.editorType))
       client.editorType = body.editorType;
-    if (Array.isArray(body.selection))
+    if (Array.isArray(body.selection)) {
       client.selection = body.selection
         .filter((id) => typeof id === 'string' && id.length <= 100)
         .slice(0, 100);
+      client.selectionCount =
+        Number.isSafeInteger(body.selectionCount) &&
+        body.selectionCount >= client.selection.length
+          ? body.selectionCount
+          : client.selection.length;
+    }
   }
   function authorize(client, grantToken) {
     for (const [secret, session] of sessions)
@@ -268,9 +280,7 @@ function createBridgeServer(options = {}) {
     return { code, expiresAt };
   }
   function cleanup() {
-    let next = execution.cleanup(new Map([...clients, ...externalClients]));
-    for (const [id, client] of externalClients)
-      if (now() >= client.expiresAt) externalClients.delete(id);
+    let next = execution.cleanup(clients, externalJobs?.isRunning);
     if (now() >= nextAssetCleanup)
       nextAssetCleanup = artifacts.cleanupAssets(now(), execution.assetIds());
     next = Math.min(next, nextAssetCleanup);
@@ -385,6 +395,8 @@ function createBridgeServer(options = {}) {
     const requireClient = (id) => {
       if (!session || (id && id !== session.clientId))
         throw problem(403, 'this operation belongs to another client');
+      if (sessions.get(supplied) !== session || now() >= session.expiresAt)
+        throw problem(401, 'session was rotated or expired');
       return clients.get(session.clientId);
     };
     return { admin, session, supplied, requireAdmin, requireClient };
@@ -412,7 +424,6 @@ function createBridgeServer(options = {}) {
       pairingFailures.count++;
       throw problem(401, 'invalid or expired pairing code');
     }
-    pairings.delete(body.code);
     const grantToken = crypto.randomBytes(32).toString('base64url');
     const client = {
       id: body.clientId,
@@ -430,12 +441,12 @@ function createBridgeServer(options = {}) {
     )
       client.documentId = body.documentId;
     metadata(client, body);
-    grants.set(client.id, {
+    storeGrant(client.id, {
       hash: crypto.createHash('sha256').update(grantToken).digest('hex'),
       client: { ...client },
       expiresAt: now() + GRANT_TTL_MS,
     });
-    saveGrants();
+    pairings.delete(body.code);
     return send(res, 200, authorize(client, grantToken));
   }
 
@@ -467,7 +478,7 @@ function createBridgeServer(options = {}) {
         409,
         'this document is already connected in another plugin window; close that window first',
       );
-    const client = existing || { ...grant.client };
+    const client = { ...(existing || grant.client) };
     if (
       existing &&
       body.instanceId &&
@@ -483,9 +494,11 @@ function createBridgeServer(options = {}) {
     }
     client.runtimeVersion = BRIDGE_RUNTIME_VERSION;
     metadata(client, body);
-    grant.client = { ...client };
-    grant.expiresAt = now() + GRANT_TTL_MS;
-    saveGrants();
+    storeGrant(client.id, {
+      ...grant,
+      client: { ...client },
+      expiresAt: now() + GRANT_TTL_MS,
+    });
     return send(res, 200, authorize(client));
   }
 
@@ -507,10 +520,11 @@ function createBridgeServer(options = {}) {
   }
 
   async function heartbeatRoute({ req, res, requireClient }) {
+    const body = await readJson(req);
     const client = requireClient();
     if (!client) throw problem(401, 'client must pair again');
     client.lastSeenAt = now();
-    metadata(client, await readJson(req));
+    metadata(client, body);
     notifyChange();
     // State comes from the canonical ledger, scoped to this paired client.
     // A poll is a claim: losing its reply may leave an unknown native action.
@@ -527,11 +541,14 @@ function createBridgeServer(options = {}) {
     match: revoke,
   }) {
     if (!admin) requireClient(revoke[1]);
+    storeGrant(revoke[1]);
     clients.delete(revoke[1]);
-    grants.delete(revoke[1]);
-    saveGrants();
     for (const [secret, value] of sessions)
       if (value.clientId === revoke[1]) sessions.delete(secret);
+    execution.endInstance(
+      revoke[1],
+      'authorization revoked before result delivery',
+    );
     cleanup();
     notifyChange();
     return send(res, 200, { revoked: revoke[1] });
@@ -543,9 +560,9 @@ function createBridgeServer(options = {}) {
     // Never let an edit enter between the updater's idle check and stop.
     if (
       externalJobs?.pendingCount ||
-      desktopPreparing ||
-      nativeRecoveries.size ||
-      execution.list().some((job) => ['queued', 'running'].includes(job.status))
+      admittedRequests ||
+      catalogWorker ||
+      execution.active().length
     )
       throw problem(409, 'Finish pending operations before updating');
     maintenance = true;
@@ -561,11 +578,9 @@ function createBridgeServer(options = {}) {
       clients: catalog.decorate(
         activeClients().map((client) => clientStatus(client)),
       ),
-      jobs: execution
-        .list()
-        .map((job) =>
-          url.searchParams.get('summary') === '1' ? job : execution.get(job.id),
-        ),
+      ...(url.searchParams.get('summary') === '1'
+        ? { jobs: execution.unresolved(), jobCounts: execution.counts() }
+        : { jobs: execution.list().map((job) => execution.get(job.id)) }),
     };
     if (url.searchParams.get('summary') !== '1') return send(res, 200, state);
     try {
@@ -586,8 +601,9 @@ function createBridgeServer(options = {}) {
     }
   }
 
-  async function filesRoute({ res, requireAdmin }) {
+  async function filesRoute({ res, url, requireAdmin }) {
     requireAdmin();
+    const fileKey = url.searchParams.get('fileKey');
     return send(
       res,
       200,
@@ -597,9 +613,9 @@ function createBridgeServer(options = {}) {
           clients: catalog.decorate(
             activeClients().map((client) => clientStatus(client)),
           ),
-          jobs: execution.list(),
+          jobs: execution.active(),
         },
-        catalog.view(),
+        catalog.view(fileKey),
       ),
     );
   }
@@ -627,7 +643,7 @@ function createBridgeServer(options = {}) {
         request,
         ...(options.restFetch ? { fetch: options.restFetch } : {}),
       });
-    if (!auth.token)
+    if (!auth.token && auth.type !== 'public')
       throw Object.assign(
         problem(
           401,
@@ -655,238 +671,6 @@ function createBridgeServer(options = {}) {
             ...(options.restFetch ? { fetch: options.restFetch } : {}),
           }),
       }),
-    );
-  }
-
-  function beforeDesktopRestart() {
-    const observed = activeClients()
-      .filter((client) => clientStatus(client).connected)
-      .map(({ id, instanceId }) => ({ id, instanceId }));
-    if (
-      desktopRecovering ||
-      nativeRecoveries.size > 1 ||
-      execution
-        .list()
-        .some(
-          (job) =>
-            ['queued', 'running'].includes(job.status) ||
-            (!resolved(job) &&
-              observed.some(
-                (client) =>
-                  client.id === job.target?.clientId &&
-                  client.instanceId === job.target?.instanceId,
-              )),
-        )
-    )
-      throw problem(
-        409,
-        'Finish or reconcile active operations before restarting Figma Desktop',
-      );
-    desktopRecovering = true;
-    return {
-      close(quit) {
-        if (quit)
-          for (const previous of observed) {
-            const client = clients.get(previous.id);
-            if (client?.instanceId === previous.instanceId)
-              client.suspended = true;
-          }
-        desktopRecovering = false;
-        notifyChange();
-      },
-    };
-  }
-
-  async function launchDesktopRoute({ req, res, requireAdmin }) {
-    requireAdmin();
-    const { fileKey } = await readJson(req);
-    desktopPreparing++;
-    try {
-      return send(
-        res,
-        200,
-        await (options.desktopLaunch || require('./desktop.cjs').launchDesktop)(
-          fileKey,
-          { beforeRestart: beforeDesktopRestart },
-        ),
-      );
-    } finally {
-      desktopPreparing--;
-    }
-  }
-
-  async function connectDesktopRoute({ req, res, requireAdmin }) {
-    requireAdmin();
-    const {
-      fileKey,
-      targetId,
-      profile = 'default',
-      widgetNodeId,
-      operationId,
-      restart = false,
-    } = await readJson(req);
-    const { pluginId } = require('./native-profiles.cjs').profileInfo(profile);
-    if (
-      profile === 'widget' &&
-      !/^[A-Za-z0-9_-]{8,100}$/.test(operationId || '')
-    )
-      throw problem(
-        400,
-        'Widget connection can insert a widget; supply a stable operationId and an existing widgetNodeId when reconnecting',
-      );
-    async function recoverNativeSession() {
-      const nativeClients = catalog
-        .decorate(activeClients().map((client) => clientStatus(client)))
-        .filter(
-          (c) =>
-            c.connected && c.fileKey === fileKey && c.pluginId === pluginId,
-        );
-      if (nativeClients.length > 1)
-        throw problem(
-          409,
-          'Multiple native instances match this file; select an exact client',
-        );
-      const active = nativeClients[0];
-      if (
-        execution
-          .list()
-          .some(
-            (job) =>
-              job.id !== operationId &&
-              (job.target?.fileKey === fileKey ||
-                job.target?.fileKeys?.includes(fileKey) ||
-                job.target?.clientId === active?.id) &&
-              (!resolved(job) || ['queued', 'running'].includes(job.status)),
-          )
-      )
-        throw problem(
-          409,
-          'Finish or reconcile original operations before recovering the native plugin',
-        );
-      const pairing = createPairing();
-      let result;
-      try {
-        result = await (
-          options.nativeConnect ||
-          require('./native-lifecycle.cjs').connectNativeFile
-        )({
-          fileKey,
-          targetId,
-          profile,
-          widgetNodeId,
-          pairingCode: pairing.code,
-          beforeRestart: beforeDesktopRestart,
-          restart: restart || !!active?.needsPluginUpdate,
-          ...(expectedNativeBuild ? { expectedNativeBuild } : {}),
-        });
-        retireNativeClients(result.endedClients);
-      } catch (error) {
-        retireNativeClients(error.endedClients);
-        throw error;
-      } finally {
-        pairings.delete(pairing.code);
-      }
-      const client = clients.get(result.native?.clientId);
-      if (
-        !client ||
-        client.instanceId !== result.native.instanceId ||
-        client.documentId !== result.native.documentId ||
-        !clientStatus(client).connected
-      )
-        throw problem(409, 'Native lifecycle identity changed before binding');
-      catalog.bind(
-        {
-          fileKey,
-          clientId: client.id,
-          documentId: client.documentId,
-          verifiedUrl: result.verifiedUrl,
-        },
-        activeClients().map((c) => clientStatus(c)),
-      );
-      notifyChange();
-      return { ...result, clientId: client.id };
-    }
-    async function recoverNative() {
-      if (nativeRecoveries.has(fileKey))
-        throw problem(
-          409,
-          'Native connection recovery is already in progress for this file',
-        );
-      nativeRecoveries.add(fileKey);
-      try {
-        return await recoverNativeSession();
-      } finally {
-        nativeRecoveries.delete(fileKey);
-      }
-    }
-    if (profile !== 'widget') return send(res, 200, await recoverNative());
-    const record = await externalJobs.run({
-      id: operationId,
-      kind: 'widget-connect',
-      accountId: catalog.view().accountId || 'desktop',
-      fileKey,
-      source: 'Connect native Widget API',
-      args: { fileKey, targetId, widgetNodeId, restart },
-      readOnly: false,
-      perform: async () => ({ ...(await recoverNative()), ok: true }),
-    });
-    return send(res, 200, { ...(record.job.result?.value || {}), ...record });
-  }
-
-  function retireNativeClients(endedClients = []) {
-    for (const ended of endedClients) {
-      const previous = clients.get(ended.clientId);
-      if (
-        previous?.instanceId !== ended.instanceId ||
-        previous.pluginId !== ended.pluginId
-      )
-        continue;
-      previous.suspended = true;
-      execution.endInstance(
-        previous.id,
-        'the original native iframe ended during a profile change; this instance cannot receive new operations',
-      );
-    }
-    if (endedClients.length) notifyChange();
-  }
-
-  async function nativeProfileRoute({ req, res, requireAdmin }) {
-    requireAdmin();
-    const { profile, sourcePath } = await readJson(req);
-    if (profile !== 'widget' || typeof sourcePath !== 'string')
-      throw problem(
-        400,
-        'prepare requires profile=widget and an absolute sourcePath',
-      );
-    const ids = new Set(
-      activeClients()
-        .filter(
-          (c) =>
-            c.pluginId ===
-            require('./native-profiles.cjs').profiles.widget.pluginId,
-        )
-        .map((c) => c.id),
-    );
-    if (
-      execution
-        .list()
-        .some(
-          (job) =>
-            ids.has(job.target?.clientId) &&
-            (!resolved(job) || ['queued', 'running'].includes(job.status)),
-        )
-    )
-      throw problem(
-        409,
-        'Finish or reconcile Widget operations before replacing its local render module',
-      );
-    return send(
-      res,
-      200,
-      require('./native-profiles.cjs').prepareWidget(
-        sourcePath,
-        path.resolve(__dirname, '../..'),
-      ),
     );
   }
 
@@ -1042,53 +826,48 @@ function createBridgeServer(options = {}) {
     return job === NO_VALUE ? send(res, 204) : send(res, 200, { job });
   }
 
-  async function submitJobRoute({ req, res, requireAdmin }) {
-    requireAdmin();
-    const body = await readJson(req);
-    if (maintenance)
-      throw problem(
-        503,
-        'The companion is activating an update; no operation was submitted',
-      );
-    const kind = body.kind || 'exec';
-    if (kind !== 'exec')
-      throw problem(400, 'only native exec jobs are supported');
-    let source, args, assets;
+  function nativePayload(body) {
+    const { source, args = {}, assets = {} } = body;
     try {
-      source = body.source;
-      args = body.args === undefined ? {} : body.args;
-      assets = body.assets || {};
       if (
         typeof source !== 'string' ||
         !source.trim() ||
         Buffer.byteLength(source) > 1024 * 1024
       )
         throw new Error('script source must be nonempty and at most 1 MiB');
-      if (
-        !assets ||
-        typeof assets !== 'object' ||
-        Array.isArray(assets) ||
-        Object.entries(assets).some(
-          ([name, data]) =>
-            !validName(name) ||
-            !data ||
-            typeof data !== 'object' ||
-            !/^[A-Za-z0-9_-]{8,100}$/.test(data.assetId || '') ||
-            artifacts.describe('assets', data.assetId).sha256 !== data.sha256,
-        )
-      )
+      if (!assets || typeof assets !== 'object' || Array.isArray(assets))
         throw new Error(
           'assets must map simple names to uploaded byte receipts',
         );
-      const inputBytes = Object.values(assets).reduce(
-        (sum, asset) => sum + artifacts.describe('assets', asset.assetId).size,
-        0,
-      );
-      if (inputBytes > 32 * 1024 * 1024)
-        throw new Error('assets exceed 32 MiB total');
+      let inputBytes = 0;
+      for (const [name, asset] of Object.entries(assets)) {
+        if (
+          !validName(name) ||
+          !/^[A-Za-z0-9_-]{8,100}$/.test(asset?.assetId || '')
+        )
+          throw new Error(
+            'assets must map simple names to uploaded byte receipts',
+          );
+        const stored = artifacts.describe('assets', asset.assetId);
+        if (stored.sha256 !== asset.sha256)
+          throw new Error('invalid uploaded asset receipt');
+        inputBytes += stored.size;
+        if (inputBytes > 32 * 1024 * 1024)
+          throw new Error('assets exceed 32 MiB total');
+      }
+      return { source, args, assets };
     } catch (error) {
       throw problem(400, formatBridgeError(error));
     }
+  }
+
+  async function submitJobRoute({ req, res, requireAdmin }) {
+    requireAdmin();
+    const body = await readJson(req);
+    const kind = body.kind || 'exec';
+    if (kind !== 'exec')
+      throw problem(400, 'only native exec jobs are supported');
+    const { source, args, assets } = nativePayload(body);
     const id = body.operationId;
     if (!/^[A-Za-z0-9_-]{8,100}$/.test(id))
       throw problem(400, 'invalid operationId');
@@ -1104,13 +883,7 @@ function createBridgeServer(options = {}) {
       ...body.target,
       id: body.target.clientId,
     });
-    if (
-      !execution.get(id) &&
-      (desktopRecovering ||
-        [expected.fileKey, ...(expected.fileKeys || [])].some((key) =>
-          nativeRecoveries.has(key),
-        ))
-    )
+    if (!execution.get(id) && desktop.recovering(expected))
       throw problem(
         503,
         'Native connection recovery is in progress; no operation was submitted',
@@ -1176,6 +949,11 @@ function createBridgeServer(options = {}) {
     return send(res, 200, { job: execution.get(job.id) });
   }
 
+  const desktopAction =
+    (action) =>
+    async ({ req, res }) =>
+      send(res, 200, await desktop[action](await readJson(req)));
+
   const routes = [
     { method: 'POST', path: '/v1/pair', public: true, handle: pairClientRoute },
     {
@@ -1196,21 +974,38 @@ function createBridgeServer(options = {}) {
     { method: 'GET', path: '/v1/status', handle: statusRoute },
     { method: 'GET', path: '/v1/files', handle: filesRoute },
     { method: 'GET', path: '/v1/desktop/files', handle: desktopFilesRoute },
-    { method: 'POST', path: '/v1/rest', handle: restRoute },
-    { method: 'POST', path: '/v1/desktop', handle: launchDesktopRoute },
+    { method: 'POST', path: '/v1/rest', admit: true, handle: restRoute },
+    {
+      method: 'POST',
+      path: '/v1/desktop',
+      admit: true,
+      handle: desktopAction('launch'),
+    },
     {
       method: 'POST',
       path: '/v1/desktop/connect',
-      handle: connectDesktopRoute,
+      admit: true,
+      handle: desktopAction('connect'),
     },
-    { method: 'POST', path: '/v1/native-profile', handle: nativeProfileRoute },
+    {
+      method: 'POST',
+      path: '/v1/native-profile',
+      admit: true,
+      handle: desktopAction('prepare'),
+    },
     { method: 'POST', path: '/v1/community', handle: communityRoute },
     { method: null, path: '/v1/catalog', handle: catalogRoute },
     { method: 'POST', path: '/v1/catalog/bind', handle: bindCatalogRoute },
-    { method: 'POST', path: '/v1/catalog/sync', handle: syncCatalogRoute },
+    {
+      method: 'POST',
+      path: '/v1/catalog/sync',
+      admit: true,
+      handle: syncCatalogRoute,
+    },
     {
       method: 'POST',
       path: /^\/v1\/assets\/([A-Za-z0-9_-]{8,100})$/,
+      admit: true,
       handle: uploadAssetRoute,
     },
     {
@@ -1219,7 +1014,7 @@ function createBridgeServer(options = {}) {
       handle: binaryRoute,
     },
     { method: 'GET', path: '/v1/jobs/next', handle: claimJobRoute },
-    { method: 'POST', path: '/v1/jobs', handle: submitJobRoute },
+    { method: 'POST', path: '/v1/jobs', admit: true, handle: submitJobRoute },
     {
       method: 'POST',
       path: /^\/v1\/jobs\/([^/]+)\/result$/,
@@ -1280,7 +1075,24 @@ function createBridgeServer(options = {}) {
     const route = findRoute(req.method, url.pathname);
     const authorization = route?.public ? {} : authorizeRequest(req);
     if (!route) throw problem(404, 'route was not found');
-    await route.handle({ req, res, url, ...authorization, match: route.match });
+    const context = { req, res, url, ...authorization, match: route.match };
+    if (route.admit) {
+      authorization.requireAdmin();
+      if (maintenance)
+        throw Object.assign(
+          problem(
+            503,
+            'The companion is activating an update; no operation was submitted',
+          ),
+          { phase: 'preflight' },
+        );
+      admittedRequests++;
+      try {
+        await route.handle(context);
+      } finally {
+        admittedRequests--;
+      }
+    } else await route.handle(context);
     if (!res.headersSent && !res.destroyed)
       throw problem(404, 'route was not found');
   }
@@ -1295,7 +1107,15 @@ function createBridgeServer(options = {}) {
             : {}),
           error: formatBridgeError(error),
           ...Object.fromEntries(
-            ['clients', 'expected', 'actual', 'blockingOperationIds']
+            [
+              'clients',
+              'targets',
+              'expected',
+              'actual',
+              'blockingOperationIds',
+              'phase',
+              'operationId',
+            ]
               .filter((key) => error[key] !== undefined)
               .map((key) => [key, error[key]]),
           ),
@@ -1330,10 +1150,24 @@ function createBridgeServer(options = {}) {
         });
         externalJobs = require('./external-jobs.cjs').createExternalJobs({
           execution,
-          clients: externalClients,
           artifacts,
-          now,
         });
+        desktop = require('./desktop-coordinator.cjs').createDesktopCoordinator(
+          {
+            execution,
+            externalJobs,
+            clients,
+            catalog,
+            activeClients: () => activeClients().map(clientStatus),
+            clientStatus,
+            notifyChange,
+            createPairing,
+            releasePairing: (code) => pairings.delete(code),
+            expectedNativeBuild,
+            launchDesktop: options.desktopLaunch,
+            connectNative: options.nativeConnect,
+          },
+        );
         restoreGrants();
         ready = true;
         maintain();

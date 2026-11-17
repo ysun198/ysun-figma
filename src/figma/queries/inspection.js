@@ -3,6 +3,7 @@ function createInspectionQueries({
   aliases,
   componentInfo,
   describe,
+  summaryNode,
   exportNode,
   figma,
   identity,
@@ -29,14 +30,33 @@ function createInspectionQueries({
     const page = args.pageId ? await nodeById(args.pageId) : figma.currentPage;
     if (page.type !== 'PAGE') throw new Error('pageId must identify a page');
     await nativeRead('loadAsync', page.id, () => page.loadAsync());
+    const offset = args.offset ?? 0,
+      limit = args.limit ?? 100;
+    const pages = figma.root.children,
+      children = page.children,
+      selection = page.selection;
+    const window = (items) =>
+      items.slice(offset, offset + limit).map(summaryNode);
+    const counts = {
+      pages: pages.length,
+      children: children.length,
+      selection: selection.length,
+    };
+    const nextOffset =
+      offset + limit < Math.max(...Object.values(counts))
+        ? offset + limit
+        : null;
     return {
       fileName: figma.root.name,
       editorType: figma.editorType,
       apiVersion: figma.apiVersion,
-      pages: figma.root.children.map(describe),
+      pages: window(pages),
       page: describe(page),
-      selection: page.selection.map(describe),
-      children: page.children.map(describe),
+      selection: window(selection),
+      children: window(children),
+      counts,
+      nextOffset,
+      truncated: nextOffset !== null,
     };
   }
 
@@ -44,7 +64,6 @@ function createInspectionQueries({
     const page = figma.root.children.find((node) => node.id === args.pageId);
     if (!page) throw new Error('The requested page is not in this file');
     const previousPageId = figma.currentPage.id;
-    await figma.setCurrentPageAsync(page);
     const nodeIds = args.nodeIds || (args.nodeId ? [args.nodeId] : null),
       selected = [];
     for (const id of nodeIds || []) {
@@ -57,13 +76,16 @@ function createInspectionQueries({
         throw new Error('Node is on another page: ' + id);
       selected.push(node);
     }
+    await figma.setCurrentPageAsync(page);
     if (nodeIds) page.selection = selected;
     if (args.zoomToFit && selected.length)
       figma.viewport.scrollAndZoomIntoView(selected);
+    const actualSelection = page.selection;
     return {
       previousPageId,
       page: { id: page.id, name: page.name },
-      selection: page.selection.map((node) => node.id),
+      selection: actualSelection.slice(0, 100).map((node) => node.id),
+      selectionCount: actualSelection.length,
       viewport: { center: figma.viewport.center, zoom: figma.viewport.zoom },
     };
   }

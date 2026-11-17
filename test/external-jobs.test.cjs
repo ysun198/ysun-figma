@@ -138,3 +138,86 @@ test('explicit preflight rejection and a rejected cloud response remain known fa
     assert.equal(result.job.status, 'failed');
   }
 });
+
+test('200 same-file admissions have immediate receipts, bounded capacity and a single execution per ID under concurrent retries', async (t) => {
+  const { jobs, execution } = executor(t);
+  const gate = Promise.withResolvers();
+  let active = 0,
+    peak = 0;
+  const order = [];
+  const request = (n) => ({
+    id: 'cloud-burst-' + n,
+    kind: 'rest',
+    accountId: 'test',
+    fileKey: 'CloudBurst1',
+    source: 'POST fixture',
+    readOnly: false,
+    perform: async () => {
+      peak = Math.max(peak, ++active);
+      order.push(n);
+      await gate.promise;
+      active--;
+      return { ok: true };
+    },
+  });
+  const calls = [];
+  for (let i = 0; i < 200; i++) {
+    for (let repeat = 0; repeat < 5; repeat++) calls.push(jobs.run(request(i)));
+    assert.equal(execution.get(request(i).id).status, 'queued');
+  }
+  await assert.rejects(jobs.run(request(200)), { statusCode: 429 });
+  assert.equal(execution.get(request(200).id), null);
+  gate.resolve();
+  const receipts = await Promise.all(calls);
+  assert.equal(peak, 1);
+  assert.deepEqual(
+    order,
+    Array.from({ length: 200 }, (_, i) => i),
+  );
+  assert.equal(receipts.length, 1000);
+  assert(receipts.every((r) => r.job.status === 'succeeded'));
+  assert.equal(jobs.pendingCount, 0);
+});
+
+test('local calls wait for overlapping files, run unrelated files, and finish queued calls on shutdown', async (t) => {
+  const { jobs, execution } = executor(t);
+  const gate = Promise.withResolvers(),
+    entered = Promise.withResolvers();
+  const common = {
+    kind: 'rest',
+    accountId: 'test',
+    source: 'fixture',
+    readOnly: false,
+  };
+  const running = jobs.run({
+    ...common,
+    id: 'cloud-overlap-first',
+    fileKeys: ['CloudFileA', 'CloudFileB'],
+    perform: async () => {
+      entered.resolve();
+      await gate.promise;
+      return { ok: true };
+    },
+  });
+  await entered.promise;
+  const waiting = jobs.run({
+    ...common,
+    id: 'cloud-overlap-next',
+    fileKey: 'CloudFileB',
+    perform: () => assert.fail('queued call started'),
+  });
+  const independent = await jobs.run({
+    ...common,
+    id: 'cloud-other-file',
+    fileKey: 'CloudFileC',
+    perform: async () => ({ ok: true }),
+  });
+  assert.equal(independent.job.status, 'succeeded');
+  execution.cleanup(new Map(), jobs.isRunning);
+  assert.equal(execution.get('cloud-overlap-first').status, 'running');
+  const closed = jobs.close();
+  assert.equal((await waiting).job.status, 'failed');
+  gate.resolve();
+  await closed;
+  assert.equal((await running).job.status, 'succeeded');
+});

@@ -11,7 +11,7 @@ For a first installation or missing Node/Desktop, use [setup](../ysun-figma-setu
 
 ## Open or create
 
-Prefer the requested file. Read `figma_status`, retain its current clients/instance IDs, and call `figma_file(action="open", fileKey=...)` using the exact key from Figma's actual URL. A newly created file need not wait for account sync or already exist in the directory. `verifiedUrl` can carry its observed Design, board or Slides URL. `launch` brings Desktop forward without pairing.
+Pass the original Figma link directly to `figma_file(action="open", figmaUrl=...)`. Branch links resolve to the branch file. When you already have the exact key, use `fileKey`. The response identifies the connected client and the requested file. Reuse its `clientId` in subsequent native calls. Newly created files can open before directory sync. Use `figma_status` when you need to discover the target or review ambiguous candidates. `launch` brings Desktop forward without pairing.
 
 For a connected file, navigate pages and native selection with `figma_navigate(pageId, nodeIds?, zoomToFit?)`. It activates the real page through `setCurrentPageAsync` and reports selection/viewport without bringing the application forward. Prefer this to clicking page tabs or searching layers in the GUI. Queries can read explicit pages without activating them; navigate only when the task benefits from it. Keep routine inspection, edits, exports and recovery in MCP.
 

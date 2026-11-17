@@ -4,20 +4,27 @@ const {
   resolveTarget,
 } = require('./targets.cjs');
 const { DESKTOP_SETUP_TIMEOUT_MS } = require('./desktop-app.cjs');
+const { submitOperation } = require('./bridge-client.cjs');
 
 async function connectDesktop(input, request) {
-  const result = await request('/v1/desktop/connect', {
-    method: 'POST',
-    body: JSON.stringify({
-      fileKey: input.fileKey,
-      targetId: input.targetId,
-      profile: input.profile,
-      widgetNodeId: input.widgetNodeId,
-      operationId: input.operationId,
-      restart: input.restart,
-    }),
-    timeoutMs: DESKTOP_SETUP_TIMEOUT_MS,
-  });
+  const body = {
+    fileKey: input.fileKey,
+    targetId: input.targetId,
+    clientId: input.clientId,
+    profile: input.profile,
+    widgetNodeId: input.widgetNodeId,
+    operationId: input.operationId,
+    restart: input.restart,
+  };
+  const route = '/v1/desktop/connect';
+  const result =
+    input.profile === 'widget'
+      ? await submitOperation(request, route, body, DESKTOP_SETUP_TIMEOUT_MS)
+      : await request(route, {
+          method: 'POST',
+          body: JSON.stringify(body),
+          timeoutMs: DESKTOP_SETUP_TIMEOUT_MS,
+        });
   if (result.job && ['failed', 'outcome_unknown'].includes(result.job.status))
     throw Object.assign(new Error(result.job.error), {
       phase: 'execution',
@@ -39,65 +46,89 @@ async function connectAndDescribe(input, request, describe) {
   }
 }
 
-async function openFile(input, { request, launchDesktop, directory }) {
-  const catalog = await request('/v1/catalog');
-  if (!input.fileKey) throw new Error('fileKey is required to open a file.');
+function fileRequest(input) {
   if (
-    input.verifiedUrl &&
-    parseFigmaUrl(input.verifiedUrl).fileKey !== input.fileKey
+    input.widgetNodeId &&
+    (input.profile !== 'widget' || !['open', 'connect'].includes(input.action))
   )
-    throw new Error('verifiedUrl does not match fileKey.');
-  const file = catalog.files.find((file) => file.fileKey === input.fileKey) || {
-    fileKey: input.fileKey,
-    url: input.verifiedUrl || 'https://www.figma.com/design/' + input.fileKey,
-  };
-  if (input.action === 'launch') return launchDesktop(file.fileKey);
-  const state = await request('/v1/status?summary=1');
+    throw new Error('widgetNodeId requires opening or connecting a Widget');
+  if (
+    input.profile === 'widget' &&
+    ['open', 'connect'].includes(input.action) &&
+    !input.operationId
+  )
+    throw new Error('Supply a stable operationId when connecting a Widget');
+  if (!input.figmaUrl && !input.verifiedUrl) return input;
+  if (
+    input.figmaUrl &&
+    !['open', 'connect', 'status', 'launch'].includes(input.action)
+  )
+    throw new Error('figmaUrl requires open, connect, status or launch');
+  const link = parseFigmaUrl(input.figmaUrl || input.verifiedUrl);
+  if (
+    (input.fileKey && input.fileKey !== link.fileKey) ||
+    (input.verifiedUrl &&
+      parseFigmaUrl(input.verifiedUrl).fileKey !== link.fileKey)
+  )
+    throw new Error('Conflicting Figma file keys');
+  return { ...input, fileKey: input.fileKey || link.fileKey };
+}
+
+async function openFile(
+  input,
+  { request, launchDesktop, directory, connection },
+) {
+  const { fileKey } = input;
+  if (!fileKey)
+    throw new Error('Provide a Figma URL or fileKey to open a file.');
+  const state = connection?.status || (await request('/v1/status?summary=1'));
   const target = {
-    fileKey: file.fileKey,
+    fileKey,
     profile: input.profile || 'default',
     ...(input.clientId ? { clientId: input.clientId } : {}),
+  };
+  const describe = async () => {
+    const result = await directory();
+    return {
+      ...result,
+      file: result.files[0] || {
+        fileKey,
+        url:
+          input.figmaUrl ||
+          input.verifiedUrl ||
+          'https://www.figma.com/design/' + fileKey,
+      },
+    };
   };
   if (input.clientId || matchingClients(target, state.clients).length) {
     const selected = resolveTarget(target, state.clients);
     const client = state.clients.find(
       (client) => client.id === selected.clientId,
     );
-    if (client.needsPluginUpdate || input.restart)
-      return connectAndDescribe({ ...input, ...target }, request, async () => ({
-        file,
-        ...(await directory()),
-      }));
-    return {
-      state: 'connected',
-      file,
-      clientId: selected.clientId,
-      targeting: selected.targeting,
-      ...(await request('/v1/files')),
-    };
-  }
-  await launchDesktop(file.fileKey);
-  return connectAndDescribe(
-    { ...input, fileKey: file.fileKey },
-    request,
-    async () => ({
-      file,
-      ...(await request('/v1/files')),
-    }),
-  );
+    if (
+      !client.needsPluginUpdate &&
+      !input.restart &&
+      !input.targetId &&
+      !input.widgetNodeId
+    )
+      return {
+        state: 'connected',
+        clientId: selected.clientId,
+        targeting: selected.targeting,
+        ...(await describe()),
+      };
+  } else await launchDesktop(fileKey);
+  return connectAndDescribe(input, request, describe);
 }
 
-async function callFile(input, { request, launchDesktop }) {
-  if (input.action === 'launch' && !input.fileKey) return launchDesktop();
-  const directory = async () => {
-    const result = await request('/v1/files');
-    return input.fileKey
-      ? {
-          ...result,
-          files: result.files.filter((file) => file.fileKey === input.fileKey),
-        }
-      : result;
-  };
+async function callFile(input, { request, launchDesktop, connection }) {
+  if (input.action === 'launch') return launchDesktop(input.fileKey);
+  const directory = () =>
+    request(
+      input.fileKey
+        ? '/v1/files?fileKey=' + encodeURIComponent(input.fileKey)
+        : '/v1/files',
+    );
   switch (input.action) {
     case 'prepare':
       return {
@@ -138,8 +169,8 @@ async function callFile(input, { request, launchDesktop }) {
       });
       return request('/v1/files');
     default:
-      return openFile(input, { request, launchDesktop, directory });
+      return openFile(input, { request, launchDesktop, directory, connection });
   }
 }
 
-module.exports = { callFile };
+module.exports = { callFile, fileRequest };
