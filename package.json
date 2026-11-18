@@ -1,6 +1,6 @@
 {
   "name": "figma-plugin-local",
-  "version": "0.35.1",
+  "version": "0.35.2",
   "private": true,
   "description": "ysun figma：在 Codex 中读取、编辑和导出 Figma 设计",
   "license": "MIT",
@@ -24,6 +24,7 @@
     "src/host/file-tools.cjs",
     "src/host/file-list.cjs",
     "src/host/framing.cjs",
+    "src/host/process-lock.cjs",
     "src/host/rest.cjs",
     "src/host/rest-supplement.cjs",
     "src/host/external-jobs.cjs",

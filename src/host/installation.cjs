@@ -9,64 +9,19 @@ const {
   installPlugin,
 } = require('./state.cjs');
 const { readConnection, bridgeRequest } = require('./bridge-client.cjs');
+const { acquireProcessLock } = require('./process-lock.cjs');
 const product = require('../../package.json').name;
 const directory = () => path.join(bridgeStateDirectory(), 'companion');
 const currentPath = () => path.join(directory(), 'current');
 const hash = (file) =>
   crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
-// Kept self-contained for launchd recovery while current/ is between renames.
-async function acquireInstallationLock(state) {
-  const fs = require('node:fs'),
-    path = require('node:path'),
-    crypto = require('node:crypto');
-  const directory = path.join(state, 'companion');
-  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-  if (fs.lstatSync(directory).isSymbolicLink())
-    throw new Error('Private state directory cannot be a symlink');
-  fs.chmodSync(directory, 0o700);
-  const lock = path.join(directory, '.install-lock'),
-    owner = process.pid + '-' + crypto.randomUUID(),
-    deadline = Date.now() + 15000;
-  function readOwner() {
-    try {
-      const active = fs.readlinkSync(lock);
-      if (!/^\d+-[a-f0-9-]{36}$/.test(active))
-        throw new Error('Invalid installation lock; it was preserved');
-      return active;
-    } catch (error) {
-      if (error.code === 'ENOENT') return null;
-      throw error;
-    }
-  }
-  while (true) {
-    try {
-      fs.symlinkSync(owner, lock);
-      return {
-        close() {
-          if (readOwner() === owner) fs.unlinkSync(lock);
-        },
-      };
-    } catch (error) {
-      if (error.code !== 'EEXIST') throw error;
-    }
-    const active = readOwner();
-    if (!active) continue;
-    try {
-      process.kill(Number(active.split('-')[0]), 0);
-    } catch (error) {
-      if (error.code !== 'ESRCH') throw error;
-      if (readOwner() !== active) continue;
-      try {
-        fs.unlinkSync(lock);
-      } catch (error) {
-        if (error.code !== 'ENOENT') throw error;
-      }
-      continue;
-    }
-    if (Date.now() >= deadline)
-      throw new Error('Another installation is still running');
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
+function acquireInstallationLock(state) {
+  return acquireProcessLock(
+    state,
+    'companion/.install-lock',
+    15000,
+    'Another installation is still running',
+  );
 }
 
 function restoreInstallation(state) {

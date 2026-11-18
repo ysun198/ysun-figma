@@ -78,12 +78,23 @@ async function desktopProcesses(execute = run) {
       }
       return JSON.stringify(found);
     }`;
-  const { stdout } = await execute(
-    '/usr/bin/osascript',
-    ['-l', 'JavaScript', '-e', script, ...bundleIds],
-    { timeout: 5000 },
-  );
-  return JSON.parse(stdout);
+  try {
+    // LaunchServices can answer the empty case without starting the JXA/AppKit interpreter.
+    const matches = await execute(
+      '/usr/bin/lsappinfo',
+      ['-nonames', ...bundleIds.flatMap((id) => ['find', 'bundleid=' + id])],
+      { timeout: 15000 },
+    );
+    if (!matches.stdout.trim()) return [];
+    const { stdout } = await execute(
+      '/usr/bin/osascript',
+      ['-l', 'JavaScript', '-e', script, ...bundleIds],
+      { timeout: 15000 },
+    );
+    return JSON.parse(stdout);
+  } catch (cause) {
+    throw new Error('desktop_process_query_unavailable', { cause });
+  }
 }
 
 async function downloadArchive(execute, archive, url) {

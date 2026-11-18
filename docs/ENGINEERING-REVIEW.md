@@ -34,3 +34,11 @@
 - 回归入口包括 `test/mcp-sdk.test.cjs`、`test/execution-store.test.cjs`、`test/external-jobs.test.cjs`、`test/native-features.test.cjs` 和 `test/ui.test.cjs`。更改原生执行、挂载或桌面连接时，还需通过已授权编辑器完成实际的写入、读回和清理。
 
 本轮实机覆盖一个已登录的桌面环境。Intel、其他 macOS 版本、首次登录、企业席位与权限写入、Dev Mode 内的付费回调、跨设备协同和云端最终保存仍有独立的验收条件。桌面启动和账号目录依赖 Figma Desktop 的部分内部接口，未来的 Desktop 版本需要重新验证。现场单次延迟和合成图层测量的适用范围分别是上述设备和样本。
+
+## 0.35.2 推送验收
+
+首次 GitHub Actions 验证在 Intel macOS 26 与 Node.js 24 上分别观察到两个故障。冷启动进程查询触及原先 5 秒的 AppKit 脚本期限。另一份日志中，两个进程交接安装权时，读取旧 PID 符号链接返回了 `EINVAL`。
+
+0.35.2 使用 LaunchServices 直接判断 Figma 是否在运行，有匹配时再读取 AppKit 进程身份。安装器与桌面管道读取器各自使用内核管理的互斥锁。进程崩溃后，继任者可以获得同一把锁并清理旧标记。旧包和 launchd 的恢复入口仍可识别 PID 标记。新增回归覆盖锁持有者崩溃、旧标记在读取中消失，以及同名普通文件的保留。
+
+在安装了 Figma 的本机，330 项测试中 329 项通过，1 项专测未安装 Figma 的环境并按条件跳过。Codex 已启用 0.35.2，安装目录和 Codex 缓存中的 101 个分发文件均与构建逐字节一致。通过 Codex 从关闭的 Figma Desktop 打开既有 Design 测试文件，原生连接成功，分页概况正确返回当前页和 5 个顶层对象的总数。验收全程只读，结束后已恢复桌面应用原先的关闭状态。

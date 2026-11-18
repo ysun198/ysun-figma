@@ -406,20 +406,37 @@ test('normal quit targets the observed PID and never escalates a cancelled quit'
   assert(!calls[0].args.join(' ').includes('forceTerminate'));
 });
 
-test('desktop discovery uses the two macOS bundle identities and retains renamed executable paths', async () => {
+test('Desktop discovery uses the system bundle index before requesting executable paths', async () => {
   const { desktopProcesses } = require('../src/host/desktop-app.cjs');
   const active = [
     { pid: 77, executable: '/Applications/Figma QA.app/Contents/MacOS/Figma' },
   ];
-  const observed = await desktopProcesses(async (command, args) => {
+  const bundleIds = ['com.figma.Desktop', 'com.figma.Desktop.dua'];
+  const commands = [];
+  let matches = '';
+  const execute = async (command, args) => {
+    commands.push(command);
+    if (command === '/usr/bin/lsappinfo') {
+      assert.deepEqual(args, [
+        '-nonames',
+        ...bundleIds.flatMap((id) => ['find', 'bundleid=' + id]),
+      ]);
+      return { stdout: matches };
+    }
     assert.equal(command, '/usr/bin/osascript');
-    assert.deepEqual(args.slice(-2), [
-      'com.figma.Desktop',
-      'com.figma.Desktop.dua',
-    ]);
+    assert.deepEqual(args.slice(-2), bundleIds);
     return { stdout: JSON.stringify(active) };
-  });
-  assert.deepEqual(observed, active);
+  };
+  assert.deepEqual(await desktopProcesses(execute), []);
+  assert.deepEqual(commands, ['/usr/bin/lsappinfo']);
+  matches = 'ASN:0x0-0x22022:';
+  assert.deepEqual(await desktopProcesses(execute), active);
+  await assert.rejects(
+    desktopProcesses(async () => {
+      throw Error('OS timeout');
+    }),
+    /desktop_process_query_unavailable/,
+  );
 });
 test('backup references survive session replacement and stale session migration', (t) => {
   fixture(t);

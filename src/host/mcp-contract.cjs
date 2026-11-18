@@ -143,6 +143,7 @@ function classifyError(error, detail, precondition) {
     [/desktop_required/, 'FIGMA_DESKTOP_REQUIRED'],
     [/desktop_restart_required/, 'FIGMA_DESKTOP_RESTART_REQUIRED'],
     [/desktop_not_running/, 'FIGMA_DESKTOP_NOT_RUNNING'],
+    [/desktop_process_query_unavailable/, 'CONNECTION_UNAVAILABLE'],
     [/desktop_quit_pending/, 'FIGMA_DESKTOP_QUIT_PENDING'],
     [
       /desktop_(?:editor|launcher|widget|plugin)_not_ready/,
@@ -211,6 +212,10 @@ function setupRecovery(detail) {
     [
       /desktop_restart_required/,
       'Use figma_file(action="open", fileKey=...) or launch to prepare Desktop. Explicit connection handles normal quit, stable registration and relaunch; passive status/sync never restarts a running app. Preserve pending operations and designs.',
+    ],
+    [
+      /desktop_process_query_unavailable/,
+      'macOS could not read the current Desktop processes. Retry passive file status after LaunchServices responds.',
     ],
     [
       /desktop_not_running/,

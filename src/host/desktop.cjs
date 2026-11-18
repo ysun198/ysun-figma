@@ -6,6 +6,7 @@ const crypto = require('node:crypto');
 const { spawn, execFile } = require('node:child_process');
 const run = require('node:util').promisify(execFile);
 const { frameReader } = require('./framing.cjs');
+const { acquireProcessLock } = require('./process-lock.cjs');
 const {
   desktopProcesses: processes,
   findDesktopApp,
@@ -190,24 +191,12 @@ function validate(receipt) {
 async function connectDesktop({ start = ensureDesktop } = {}) {
   const receipt = await start();
   validate(receipt);
-  const lock = path.join(folder(), '.reader-lock'),
-    owner = process.pid + '-' + crypto.randomUUID();
-  try {
-    fs.symlinkSync(owner, lock);
-  } catch (error) {
-    if (error.code !== 'EEXIST') throw error;
-    const previous = fs.readlinkSync(lock);
-    if (!/^\d+-[a-f0-9-]{36}$/.test(previous))
-      throw new Error('Invalid Figma desktop reader lock', { cause: error });
-    try {
-      process.kill(Number(previous.split('-')[0]), 0);
-    } catch (error) {
-      if (error.code !== 'ESRCH') throw error;
-      if (fs.readlinkSync(lock) === previous) fs.unlinkSync(lock);
-      return connectDesktop({ start });
-    }
-    throw new Error('desktop_reader_busy', { cause: error });
-  }
+  const lock = await acquireProcessLock(
+    bridgeStateDirectory(),
+    'desktop/.reader-lock',
+    0,
+    'desktop_reader_busy',
+  );
   const pending = new Map(),
     listeners = new Set();
   let input,
@@ -226,11 +215,10 @@ async function connectDesktop({ start = ensureDesktop } = {}) {
     }
     pending.clear();
     listeners.clear();
-    for (const fd of [input, output]) if (fd !== undefined) fs.closeSync(fd);
     try {
-      if (fs.readlinkSync(lock) === owner) fs.unlinkSync(lock);
-    } catch (error) {
-      if (error.code !== 'ENOENT') throw error;
+      for (const fd of [input, output]) if (fd !== undefined) fs.closeSync(fd);
+    } finally {
+      lock.close();
     }
   }
   try {
