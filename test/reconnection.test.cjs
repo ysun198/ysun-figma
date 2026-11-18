@@ -136,7 +136,10 @@ test('an outdated recovery response cannot authorize another poll', async () => 
   });
   await f.context.run();
   assert.equal(f.requests.length, 2);
-  assert.match(f.elements.get('status').textContent, /recovery|Recovery/);
+  assert.equal(
+    f.elements.get('status').textContent,
+    '连接中断，请回到 Codex 重新连接此文件。',
+  );
 });
 
 test('a transient heartbeat does not pause an executing native operation', async () => {

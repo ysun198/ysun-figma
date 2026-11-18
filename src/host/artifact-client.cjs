@@ -19,12 +19,27 @@ async function uploadAssets(connection, sources = {}, signal) {
       throw new Error(
         'Asset ' + JSON.stringify(name) + ' requires a local file path.',
       );
-    total += fs.statSync(source).size;
+    const stat = fs.statSync(source);
+    if (!stat.isFile())
+      throw new Error('Asset must be a regular file: ' + name);
+    total += stat.size;
     if (total > MAX_BINARY_BYTES) throw new Error('asset exceeds 32 MiB');
   }
+  total = 0;
   for (const [name, source] of entries) {
-    const bytes = fs.readFileSync(source),
-      id = crypto.createHash('sha256').update(bytes).digest('hex');
+    const chunks = [];
+    let size = 0;
+    for await (const chunk of fs.createReadStream(source, {
+      signal,
+      flags: fs.constants.O_RDONLY | fs.constants.O_NONBLOCK,
+    })) {
+      total += chunk.length;
+      if (total > MAX_BINARY_BYTES) throw new Error('asset exceeds 32 MiB');
+      size += chunk.length;
+      chunks.push(chunk);
+    }
+    const bytes = Buffer.concat(chunks, size);
+    const id = crypto.createHash('sha256').update(bytes).digest('hex');
     assets[name] = await bridgeRequest(connection, `/v1/assets/${id}`, {
       method: 'POST',
       body: bytes,
@@ -57,7 +72,13 @@ async function saveExports(connection, job, directory, signal) {
       const bytes = await readExport(connection, job.id, file, signal);
       signal?.throwIfAborted();
       const destination = path.join(root, file.name);
-      fs.writeFileSync(destination, bytes, { flag: 'wx', mode: 0o600 });
+      const staging = path.join(root, '.' + crypto.randomUUID() + '.tmp');
+      try {
+        fs.writeFileSync(staging, bytes, { flag: 'wx', mode: 0o600 });
+        fs.linkSync(staging, destination);
+      } finally {
+        fs.rmSync(staging, { force: true });
+      }
       saved.push({
         path: destination,
         size: bytes.length,
@@ -92,9 +113,16 @@ async function readExport(connection, operationId, file, signal) {
   );
   if (!response.ok)
     throw new Error(`export download failed: HTTP ${response.status}`);
-  const bytes = Buffer.from(await response.arrayBuffer());
+  const bytes = Buffer.allocUnsafe(file.size);
+  let received = 0;
+  for await (const chunk of response.body || []) {
+    if (received + chunk.length > bytes.length)
+      throw new Error('export integrity check failed');
+    bytes.set(chunk, received);
+    received += chunk.length;
+  }
   if (
-    bytes.length !== file.size ||
+    received !== file.size ||
     crypto.createHash('sha256').update(bytes).digest('hex') !== file.sha256
   )
     throw new Error('export integrity check failed');

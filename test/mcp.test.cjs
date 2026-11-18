@@ -27,6 +27,10 @@ function isolatedRuntime(t, overrides) {
 for (const [reason, code] of [
   ['desktop_required', 'FIGMA_DESKTOP_REQUIRED'],
   ['desktop_restart_required', 'FIGMA_DESKTOP_RESTART_REQUIRED'],
+  ['desktop_not_running', 'FIGMA_DESKTOP_NOT_RUNNING'],
+  ['desktop_quit_pending', 'FIGMA_DESKTOP_QUIT_PENDING'],
+  ['desktop_editor_not_ready', 'FIGMA_DESKTOP_NOT_READY'],
+  ['desktop_registration_schema_changed', 'FIGMA_DESKTOP_SETUP_FAILED'],
   ['login_required', 'FIGMA_LOGIN_REQUIRED'],
   ['desktop_plugin_not_imported', 'FIGMA_NATIVE_IMPORT_REQUIRED'],
   ['desktop_launcher_schema_changed', 'FIGMA_DESKTOP_ADAPTER_UNAVAILABLE'],
@@ -79,7 +83,7 @@ test('opening a file preserves a failed native connection receipt instead of rep
             },
           };
         }
-        if (route === '/v1/files') return { files: [] };
+        if (route === '/v1/files?fileKey=CloudFile12') return { files: [] };
         assert.fail('unexpected route: ' + route);
       },
     },
@@ -107,7 +111,7 @@ test('file-directory failure after Widget connection preserves the successful or
           return {
             job: { id: 'widget-connect-done', status: 'succeeded', result: {} },
           };
-        if (route === '/v1/files')
+        if (route === '/v1/files?fileKey=CloudFile12')
           throw new Error('file directory unavailable');
         assert.fail('unexpected route: ' + route);
       },
@@ -751,7 +755,7 @@ test('file status reads Desktop readiness without launching, syncing, pairing or
     'bridge-client': {
       bridgeRequest: async (_connection, route, options) => {
         routes.push({ route, options });
-        if (route === '/v1/files')
+        if (route === '/v1/files?fileKey=CloudFile12')
           return { files: [], catalog: { status: 'empty' } };
         if (route === '/v1/desktop/files?fileKey=CloudFile12')
           return {
@@ -770,13 +774,16 @@ test('file status reads Desktop readiness without launching, syncing, pairing or
   assert.equal(result.desktop.files[0].editorLoaded, false);
   assert.deepEqual(
     routes.map((r) => r.route),
-    ['/v1/files', '/v1/desktop/files?fileKey=CloudFile12'],
+    ['/v1/files?fileKey=CloudFile12', '/v1/desktop/files?fileKey=CloudFile12'],
   );
   assert(routes.every((r) => !r.options?.method || r.options.method === 'GET'));
 });
 test('desktop launcher uses exact native URLs, also opens home, and surfaces failures', async () => {
   const { launchDesktop } = require('../src/host/desktop.cjs');
   const calls = [];
+  const connect = async () => ({
+    executable: '/Users/example/Apps/Figma.app/Contents/MacOS/Figma',
+  });
   const run = async (...args) => {
     calls.push(args);
   };
@@ -784,7 +791,7 @@ test('desktop launcher uses exact native URLs, also opens home, and surfaces fai
     (
       await launchDesktop('CloudFile12', {
         execute: run,
-        connect: async () => {},
+        connect,
         platform: 'darwin',
       })
     ).state,
@@ -792,19 +799,19 @@ test('desktop launcher uses exact native URLs, also opens home, and surfaces fai
   );
   assert.deepEqual(calls[0], [
     '/usr/bin/open',
-    ['-a', 'Figma', 'figma://file/CloudFile12'],
+    ['-a', '/Users/example/Apps/Figma.app', 'figma://file/CloudFile12'],
     { timeout: 10000 },
   ]);
   await launchDesktop(undefined, {
     execute: run,
-    connect: async () => {},
+    connect,
     platform: 'darwin',
   });
-  assert.deepEqual(calls[1][1], ['-a', 'Figma']);
+  assert.deepEqual(calls[1][1], ['-a', '/Users/example/Apps/Figma.app']);
   await assert.rejects(
     launchDesktop('../../private', {
       execute: run,
-      connect: async () => {},
+      connect,
       platform: 'darwin',
     }),
     /Invalid/,
@@ -812,7 +819,7 @@ test('desktop launcher uses exact native URLs, also opens home, and surfaces fai
   await assert.rejects(
     launchDesktop(undefined, {
       execute: run,
-      connect: async () => {},
+      connect,
       platform: 'linux',
     }),
     /requires macOS/,
@@ -822,7 +829,7 @@ test('desktop launcher uses exact native URLs, also opens home, and surfaces fai
       execute: async () => {
         throw new Error('App not installed');
       },
-      connect: async () => {},
+      connect,
       platform: 'darwin',
     }),
     /not installed/,
@@ -980,4 +987,125 @@ test('navigation and JSON exports use the existing exact-target receipt channel 
   assert.equal(json.options.commitUndo, false);
   assert.match(json.source, /bridge.query\('exportNode'/);
   assert.equal(json.args.format, 'JSON_REST_V1');
+});
+
+test('opening a pasted Figma link reuses the verified client with a single scoped request', async (t) => {
+  const client = {
+    id: 'client-ready',
+    connected: true,
+    fileKey: 'CloudFile12',
+    pluginId: '1675211139174009382',
+  };
+  const calls = [];
+  const api = isolatedRuntime(t, {
+    companion: {
+      ensureCompanion: async () => ({ status: { clients: [client] } }),
+    },
+    'bridge-client': {
+      bridgeRequest: async (_connection, route) => {
+        calls.push(route);
+        return {
+          files: [{ fileKey: 'CloudFile12', name: 'Design' }],
+          catalog: { fileCount: 20000 },
+        };
+      },
+    },
+  });
+  const input = {
+    action: 'open',
+    figmaUrl:
+      'https://www.figma.com/design/BaseKey12/branch/CloudFile12/Example?node-id=2-3',
+  };
+  const result = await api.callTool('figma_file', input);
+  assert.equal(result.clientId, client.id);
+  assert.equal(result.file.fileKey, 'CloudFile12');
+  assert.deepEqual(calls, ['/v1/files?fileKey=CloudFile12']);
+  await assert.rejects(
+    api.callTool('figma_file', { ...input, fileKey: 'WrongFile12' }),
+    /Conflicting/,
+  );
+  assert.equal(calls.length, 1);
+});
+
+test('lost REST and Widget admission replies keep their original operation ID and recovery advice', async (t) => {
+  const api = isolatedRuntime(t, {
+    companion: { ensureCompanion: async () => ({}) },
+    'bridge-client': {
+      bridgeRequest: async () => {
+        throw Error('reply lost after POST');
+      },
+    },
+  });
+  const operationId = 'keep-original-id';
+  for (const [name, input] of [
+    [
+      'figma_rest',
+      {
+        action: 'request',
+        endpoint: 'postComment',
+        pathParams: { file_key: 'CloudFile12' },
+        body: { message: 'fixture' },
+      },
+    ],
+    [
+      'figma_file',
+      { action: 'connect', profile: 'widget', fileKey: 'CloudFile12' },
+    ],
+  ]) {
+    await assert.rejects(api.callTool(name, { ...input, operationId }), (e) => {
+      const hint = api.toolError(e);
+      assert.equal(hint.phase, 'submitted');
+      assert.equal(hint.operationId, operationId);
+      assert.equal(hint.safeToRetryWithoutCanvasRead, false);
+      return true;
+    });
+  }
+});
+
+test('stdio processes multiple large frames in one read, recovers after an oversized frame and keeps the original cancellable request', async (t) => {
+  const { PassThrough } = require('node:stream');
+  const input = new PassThrough(),
+    output = new PassThrough(),
+    replies = [];
+  output.on('data', (b) => replies.push(JSON.parse(b.toString())));
+  let forwarded;
+  const api = isolatedRuntime(t, {
+    companion: { ensureCompanion: async () => ({}) },
+    'bridge-client': {
+      bridgeRequest: async (_c, _r, { signal }) => {
+        forwarded = signal;
+        await new Promise((_, reject) =>
+          signal.addEventListener('abort', () => reject(Error('cancelled')), {
+            once: true,
+          }),
+        );
+      },
+    },
+  });
+  api.serve(input, output);
+  const packet = (method, id, params) =>
+    JSON.stringify({ jsonrpc: '2.0', method, id, params }) + '\n';
+  input.write(
+    packet('initialize', 1, {
+      protocolVersion: '2025-11-25',
+      capabilities: {},
+      clientInfo: { name: 'test', version: '1' },
+    }) + packet('notifications/initialized'),
+  );
+  const padding = 'a'.repeat(3 * 1024 * 1024 + 4);
+  input.write(packet('ping', 2, { padding }) + packet('ping', 3, { padding }));
+  input.write('z'.repeat(6 * 1024 * 1024 + 1) + '\n' + packet('ping', 4));
+  input.write(
+    packet('tools/call', 5, { name: 'figma_status' }) + packet('ping', 5),
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  input.write(packet('notifications/cancelled', undefined, { requestId: 5 }));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert(forwarded.aborted);
+  assert.deepEqual(
+    replies.filter((m) => m.result).map((m) => m.id),
+    [1, 2, 3, 4],
+  );
+  assert.equal(replies.filter((m) => m.error?.code === -32600).length, 2);
+  input.end();
 });

@@ -342,3 +342,82 @@ test('same-file writes are reflected on each connected file session', () => {
     false,
   );
 });
+
+test('operation states across interruption, expiration and a real ledger reopen', (t) => {
+  let cases = 0;
+  const phases = [
+    'queued',
+    'claimed',
+    'success',
+    'failure',
+    'uncertain',
+    'reconciled',
+  ];
+  for (const readOnly of [false, true])
+    for (const phase of phases)
+      for (const interruption of ['session ended', 'deadline', 'restart']) {
+        const f = fixture(t);
+        let clock = 1000;
+        let e = f.open({ now: () => clock });
+        const id = 'matrix-operation';
+        const request = { ...input(id), options: { readOnly } };
+        e.submit(request, [client]);
+        if (phase !== 'queued') e.claim(targetIdentity(client));
+        if (phase === 'success')
+          e.complete(id, client.id, { ok: true, result: { value: 42 } });
+        if (phase === 'failure')
+          e.complete(id, client.id, { ok: false, error: 'known failure' });
+        if (phase === 'uncertain' || phase === 'reconciled')
+          e.complete(id, client.id, {
+            ok: false,
+            outcomeUnknown: true,
+            error: 'uncertain',
+          });
+        const reconciliation = { outcome: 'applied', note: 'verified fixture' };
+        if (phase === 'reconciled') {
+          const original = e.reconcile(id, reconciliation);
+          clock++;
+          assert.deepEqual(e.reconcile(id, reconciliation), original);
+          assert.throws(
+            () =>
+              e.reconcile(id, { ...reconciliation, outcome: 'not_applied' }),
+            /different reconciliation/,
+          );
+        }
+        if (interruption === 'session ended')
+          e.endInstance(client.id, 'closed');
+        if (interruption === 'deadline') {
+          clock += 700000;
+          e.cleanup(new Map());
+        }
+        if (interruption === 'restart') {
+          f.close();
+          e = f.open({ now: () => clock });
+        }
+        const expected = {
+          queued: 'failed',
+          claimed: readOnly ? 'failed' : 'outcome_unknown',
+          success: 'succeeded',
+          failure: 'failed',
+          uncertain: 'outcome_unknown',
+          reconciled: 'outcome_unknown',
+        }[phase];
+        assert.equal(
+          e.get(id).status,
+          expected,
+          [readOnly, phase, interruption].join('/'),
+        );
+        assert.equal(e.submit(request, [client]).created, false);
+        assert.equal(e.claim(targetIdentity(client)), null);
+        if (expected === 'outcome_unknown' && phase !== 'reconciled')
+          assert.throws(
+            () => e.submit(input('next-write'), [client]),
+            /unresolved/,
+          );
+        else
+          assert.equal(e.submit(input('next-write'), [client]).created, true);
+        f.close();
+        cases++;
+      }
+  assert.equal(cases, 36);
+});

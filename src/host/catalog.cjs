@@ -76,8 +76,14 @@ function createCatalog(filename) {
     if (!filename) return;
     writePrivateJson(filename, state);
   }
-  function view() {
-    return JSON.parse(JSON.stringify(state));
+  function view(fileKey) {
+    if (!fileKey) return structuredClone(state);
+    return structuredClone({
+      ...state,
+      files: state.files.filter((file) => file.fileKey === fileKey),
+      bindings: state.bindings.filter((binding) => binding.fileKey === fileKey),
+      fileCount: state.files.length,
+    });
   }
   function update(input) {
     const statuses = [

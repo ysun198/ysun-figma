@@ -1,7 +1,11 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { bridgeStateDirectory, privateDirectory } = require('./state.cjs');
+const {
+  bridgeStateDirectory,
+  privateDirectory,
+  writePrivateFile,
+} = require('./state.cjs');
 const profiles = Object.freeze({
   default: { pluginId: '1675211139174009382', directory: 'plugin' },
   dev: { pluginId: '1700203379527851322', directory: 'dev' },
@@ -59,15 +63,8 @@ function installExtraProfiles(sourceRoot, selected = ['dev', 'widget']) {
           ? Buffer.from(widgetCode(raw.toString(), savedDefinition()))
           : raw;
       const target = path.join(destination, file);
-      if (!fs.existsSync(target) || !fs.readFileSync(target).equals(bytes)) {
-        const temporary = target + '.' + crypto.randomUUID() + '.tmp';
-        try {
-          fs.writeFileSync(temporary, bytes, { mode: 0o600, flag: 'wx' });
-          fs.renameSync(temporary, target);
-        } finally {
-          fs.rmSync(temporary, { force: true });
-        }
-      }
+      if (!fs.existsSync(target) || !fs.readFileSync(target).equals(bytes))
+        writePrivateFile(target, bytes);
       if ((fs.statSync(target).mode & 0o777) !== 0o600)
         fs.chmodSync(target, 0o600);
     }
@@ -104,16 +101,7 @@ function prepareWidget(sourcePath, sourceRoot) {
   widgetCode(base, definition);
   const destination = path.join(bridgeStateDirectory(), 'widget');
   privateDirectory(destination);
-  const temporary = path.join(
-    destination,
-    'definition.' + crypto.randomUUID() + '.tmp',
-  );
-  try {
-    fs.writeFileSync(temporary, definition, { mode: 0o600, flag: 'wx' });
-    fs.renameSync(temporary, path.join(destination, 'definition.js'));
-  } finally {
-    fs.rmSync(temporary, { force: true });
-  }
+  writePrivateFile(path.join(destination, 'definition.js'), definition);
   installExtraProfiles(sourceRoot, ['widget']);
   return {
     ...profileInfo('widget'),

@@ -1,5 +1,6 @@
 const {
   queuedDesktop,
+  ensureDesktop,
   createPageReader,
   launchDesktop,
 } = require('./desktop.cjs');
@@ -9,6 +10,40 @@ const { profileInfo } = require('./native-profiles.cjs');
 const { parseFigmaUrl } = require('./targets.cjs');
 const { BRIDGE_RUNTIME_VERSION } = require('../shared/core.js');
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function waitForReadiness(perform, deadline) {
+  while (true) {
+    try {
+      return await perform();
+    } catch (error) {
+      if (
+        error.message === 'desktop_plugin_not_ready' &&
+        Date.now() >= deadline
+      )
+        throw new Error('desktop_plugin_not_imported', { cause: error });
+      if (
+        !/^desktop_(?:file_not_open|editor_not_ready|launcher_not_ready|widget_not_ready|plugin_not_ready)$/.test(
+          error.message,
+        ) ||
+        Date.now() >= deadline
+      )
+        throw error;
+      await pause(200);
+    }
+  }
+}
+
+async function releaseEditor(connection, session) {
+  session.frames?.close();
+  await session.reader?.close().catch(() => {});
+  if (session.id)
+    await connection
+      .call('Target.detachFromTarget', { sessionId: session.id })
+      .catch(() => {});
+  delete session.frames;
+  delete session.reader;
+  delete session.id;
+}
 
 async function findEditor(connection, fileKey, targetId) {
   const { targetInfos } = await connection.call('Target.getTargets');
@@ -111,6 +146,23 @@ function connectionResult(
   };
 }
 
+async function mountWidget(session, status, widgetNodeId, activate) {
+  const activated = await showWidgetEditor(session.reader, status, activate);
+  session.widgetStarted = true;
+  try {
+    const launched = await session.reader.invoke('startWidget', widgetNodeId);
+    return { activated, widgetNodeId: widgetNodeId || launched?.widgetNodeId };
+  } catch (error) {
+    if (
+      /^desktop_widget_(?:not_imported|not_permitted|identity_changed|schema_changed|insertion_rejected)$/.test(
+        error.message,
+      )
+    )
+      session.widgetStarted = false;
+    throw error;
+  }
+}
+
 async function connectEditor(connection, input, session) {
   const {
     fileKey,
@@ -123,30 +175,55 @@ async function connectEditor(connection, input, session) {
     activate,
   } = input;
   let { widgetNodeId } = input;
-  const target = await findEditor(connection, fileKey, targetId);
-  const { sessionId } = await connection.call('Target.attachToTarget', {
-    targetId: target.targetId,
-    flatten: true,
-  });
-  session.id = sessionId;
-  const frames = (session.frames = createNativeFrames(
-    connection,
-    sessionId,
-    pluginId,
-  ));
-  const reader = (session.reader = await createPageReader(
-    connection,
-    sessionId,
-    createEditorReader,
-    'desktop_editor_unavailable',
-    { pluginId },
-  ));
-  const status = await reader.invoke('status');
-  if (parseFigmaUrl(status.url).fileKey !== fileKey)
-    throw new Error('desktop_file_identity_changed');
-  if (!status.editorLoaded) throw new Error('desktop_editor_not_ready');
+  const deadline = Date.now() + 20000;
+  const { target, status } = await waitForReadiness(async () => {
+    await releaseEditor(connection, session);
+    const target = await findEditor(connection, fileKey, targetId);
+    const { sessionId } = await connection.call('Target.attachToTarget', {
+      targetId: target.targetId,
+      flatten: true,
+    });
+    session.id = sessionId;
+    session.frames = createNativeFrames(connection, sessionId, pluginId);
+    session.reader = await createPageReader(
+      connection,
+      sessionId,
+      createEditorReader,
+      'desktop_editor_unavailable',
+      { pluginId },
+    );
+    const status = await session.reader.invoke('status');
+    if (parseFigmaUrl(status.url).fileKey !== fileKey)
+      throw new Error('desktop_file_identity_changed');
+    if (!status.editorLoaded) throw new Error('desktop_editor_not_ready');
+    return { target, status };
+  }, deadline);
+  const { frames, reader } = session;
   let ui = await frames.read();
-  if (needsRestart(ui, restart, expectedNativeBuild)) {
+  if (
+    input.expectedClient &&
+    (ui?.clientId !== input.expectedClient.id ||
+      ui.instanceId !== input.expectedClient.instanceId)
+  )
+    throw new Error('Requested native instance no longer matches this editor');
+  const replace = needsRestart(
+    ui,
+    restart || !!(widgetNodeId && ui?.widgetNodeId !== widgetNodeId),
+    expectedNativeBuild,
+  );
+  if (!ui || replace)
+    await waitForReadiness(async () => {
+      const current = await reader.invoke('status');
+      if (current.nativePlugin?.matches === 0)
+        throw new Error('desktop_plugin_not_ready');
+      const adapter =
+        current.desktopAdapter?.[
+          profile === 'widget' ? 'widgetLauncher' : 'pluginLauncher'
+        ];
+      if (adapter?.available === false)
+        throw new Error(adapter.issue || 'desktop_launcher_schema_changed');
+    }, deadline);
+  if (replace) {
     await frames.closeIdle(ui);
     ui = null;
   }
@@ -154,12 +231,11 @@ async function connectEditor(connection, input, session) {
   if (!ui) {
     if (frames.busy()) throw new Error('desktop_native_operation_pending');
     if (profile === 'widget') {
-      activatedEditor = await showWidgetEditor(reader, status, () =>
+      const state = await mountWidget(session, status, widgetNodeId, () =>
         activate(fileKey),
       );
-      session.widgetStarted = true;
-      const launched = await reader.invoke('startWidget', widgetNodeId);
-      widgetNodeId ||= launched?.widgetNodeId;
+      activatedEditor = state.activated;
+      widgetNodeId = state.widgetNodeId;
     } else {
       const started = await startPlugin(reader, () => activate(fileKey));
       activatedEditor = started.activated;
@@ -168,6 +244,9 @@ async function connectEditor(connection, input, session) {
   }
   if (expectedNativeBuild && ui.nativeBuild !== expectedNativeBuild)
     throw new Error('desktop_native_build_mismatch');
+  if (widgetNodeId && ui.widgetNodeId !== widgetNodeId)
+    throw new Error('desktop_widget_identity_changed');
+  widgetNodeId ||= ui.widgetNodeId;
   ui = await frames.authorize(ui, pairingCode);
   const options = { activatedEditor, widgetNodeId };
   if (ui && !ui.connected && !pairingCode)
@@ -193,7 +272,13 @@ async function connectNativeFile({
   profile = 'default',
   widgetNodeId,
   expectedNativeBuild,
-  connect = queuedDesktop,
+  expectedClient,
+  beforeRestart,
+  connect = () =>
+    queuedDesktop({
+      start: () =>
+        ensureDesktop({ restart: true, install: true, beforeRestart }),
+    }),
   activate = launchDesktop,
 }) {
   if (!/^[A-Za-z0-9]{6,100}$/.test(fileKey || ''))
@@ -201,9 +286,10 @@ async function connectNativeFile({
   if (expectedNativeBuild && !/^[a-f0-9]{64}$/.test(expectedNativeBuild))
     throw new Error('Invalid expected native build identity');
   const { pluginId } = profileInfo(profile);
-  const connection = await connect(),
-    session = {};
+  let connection;
+  const session = {};
   try {
+    connection = await connect();
     return await connectEditor(
       connection,
       {
@@ -214,6 +300,7 @@ async function connectNativeFile({
         profile,
         widgetNodeId,
         expectedNativeBuild,
+        expectedClient,
         pluginId,
         activate,
       },
@@ -222,22 +309,14 @@ async function connectNativeFile({
   } catch (error) {
     const ended = session.frames?.endedClients;
     if (ended?.length) error.endedClients = ended;
-    if (
-      session.widgetStarted &&
-      !/^desktop_widget_(?:not_imported|not_permitted|identity_changed|schema_changed|insertion_rejected)$/.test(
-        error.message,
-      )
-    )
-      error.outcomeUnknown = true;
+    if (session.widgetStarted) error.outcomeUnknown = true;
+    else if (profile === 'widget') error.phase = 'preflight';
     throw error;
   } finally {
-    session.frames?.close();
-    await session.reader?.close().catch(() => {});
-    if (session.id)
-      await connection
-        .call('Target.detachFromTarget', { sessionId: session.id })
-        .catch(() => {});
-    connection.close();
+    if (connection) {
+      await releaseEditor(connection, session);
+      connection.close();
+    }
   }
 }
 module.exports = { connectNativeFile };

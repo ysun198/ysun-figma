@@ -5,77 +5,109 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>ysun figma</title>
     <style>
-      /* CODEX_STYLES */
+      :root {
+        font:
+          12px/1.5 Inter,
+          -apple-system,
+          BlinkMacSystemFont,
+          sans-serif;
+        color: var(--figma-color-text, CanvasText);
+        background: var(--figma-color-bg, Canvas);
+      }
+      * {
+        box-sizing: border-box;
+      }
       body {
-        padding: calc(var(--unit) * 5);
+        margin: 0;
+        padding: 16px;
       }
       .file {
-        display: flex;
-        flex-direction: column;
-        gap: calc(var(--unit) / 2);
-        margin-bottom: calc(var(--unit) * 4);
+        display: grid;
+        gap: 2px;
+        margin-bottom: 12px;
       }
       #target-file {
-        white-space: nowrap;
+        font-size: 14px;
+        font-weight: 600;
         overflow: hidden;
         text-overflow: ellipsis;
-        font-weight: var(--medium);
+        white-space: nowrap;
       }
       small,
-      .status {
-        color: var(--muted);
-        font-size: var(--sm);
+      .status,
+      summary {
+        color: var(--figma-color-text-secondary, GrayText);
+      }
+      summary,
+      button {
+        cursor: pointer;
+      }
+      summary {
+        width: fit-content;
       }
       label {
         display: block;
+        margin-top: 8px;
       }
-      input {
-        width: 100%;
-        min-height: var(--field-size);
-        margin: calc(var(--unit) * 2) 0;
-        padding: 0 calc(var(--unit) * 3);
-        border: var(--stroke) solid var(--search-line);
-        border-radius: var(--radius);
+      input,
+      button {
+        font: inherit;
+        color: inherit;
+        border: 1px solid var(--figma-color-border, ButtonBorder);
+        border-radius: 5px;
         background: transparent;
       }
-      input:focus {
-        outline: calc(var(--stroke) * 2) solid var(--ring);
-        outline-offset: calc(var(--stroke) * 2);
+      input {
+        display: block;
+        width: 100%;
+        margin: 4px 0 8px;
+        padding: 5px 8px;
+      }
+      button {
+        padding: 4px 10px;
+        min-height: 28px;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      button:focus-visible,
+      input:focus-visible,
+      summary:focus-visible {
+        outline: 2px solid var(--figma-color-border-selected, Highlight);
+        outline-offset: 2px;
       }
       .status {
-        padding: calc(var(--unit) * 3) 0;
+        padding: 10px 0;
         overflow-wrap: anywhere;
-        white-space: pre-line;
       }
       .status[data-tone='error'] {
-        color: var(--color-text-danger, var(--fg));
-      }
-      .status[data-tone='success'] {
-        color: var(--color-text-success, var(--fg));
+        color: var(--figma-color-text-danger, CanvasText);
       }
       footer {
         display: flex;
         flex-wrap: wrap;
+        gap: 8px;
         justify-content: space-between;
-        gap: calc(var(--unit) * 2);
-        margin-top: calc(var(--unit) * 2);
+        margin-top: 8px;
       }
     </style>
   </head>
   <body>
     <div class="file">
-      <span id="target-file">正在连接…</span><small id="target-page"></small>
+      <span id="target-file"></span><small id="target-page"></small>
     </div>
-    <div id="pair-form">
+    <details id="pair-form" hidden>
+      <summary>使用连接码</summary>
       <label for="pair-code">Codex 连接码</label
       ><input
         id="pair-code"
         type="password"
         autocomplete="off"
         spellcheck="false"
-        placeholder="由 Codex 自动填写"
+        placeholder="输入 Codex 提供的连接码"
       /><button id="pair" class="action">连接</button>
-    </div>
+    </details>
     <div id="status" class="status" role="status" aria-live="polite">
       正在连接…
     </div>

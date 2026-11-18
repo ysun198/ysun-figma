@@ -909,3 +909,23 @@ test('job observation skips existing root arrays and registers newly loaded empt
   assert.equal(packets.at(-1).documentRevision, 1);
   assert.equal(figma.currentPage, active);
 });
+
+test('maintenance closes every work-admission entry while status and receipt inspection remain available', async (t) => {
+  const f = await fixture(t);
+  assert.equal((await f.call('/v1/maintenance', {})).status, 200);
+  for (const route of [
+    '/v1/jobs',
+    '/v1/rest',
+    '/v1/desktop',
+    '/v1/desktop/connect',
+    '/v1/native-profile',
+    '/v1/catalog/sync',
+    '/v1/assets/example-asset',
+  ]) {
+    const result = await f.call(route, {});
+    assert.equal(result.status, 503, route);
+    assert.equal(result.body.phase, 'preflight', route);
+  }
+  assert.equal((await f.call('/v1/status?summary=1')).status, 200);
+  assert.equal((await f.call('/v1/jobs/missing-operation')).status, 404);
+});

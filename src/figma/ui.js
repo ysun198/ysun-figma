@@ -16,11 +16,13 @@ const direct = {
   heartbeat: null,
   blockedJobId: null,
   closed: false,
+  revoking: false,
   heartbeatBusy: false,
   heartbeatAgain: false,
   epoch: 0,
   pollController: null,
   recovering: null,
+  pairing: null,
   expiresAt: 0,
 };
 const post = (message) => parent.postMessage({ pluginMessage: message }, '*');
@@ -30,8 +32,8 @@ function status(message, tone = 'neutral') {
   byId('status').dataset.tone = tone;
 }
 function busy(value) {
-  byId('close').disabled = value || !!direct.pending;
-  byId('disconnect').disabled = value || !!direct.pending;
+  byId('close').disabled = value || !!direct.pending || direct.revoking;
+  byId('disconnect').disabled = value || !!direct.pending || direct.revoking;
 }
 function updateContext(value) {
   if (!value) return;
@@ -42,7 +44,9 @@ function updateContext(value) {
     'pageName',
     'pageId',
     'selection',
+    'selectionCount',
     'pluginId',
+    'widgetNodeId',
     'documentId',
     'runtimeVersion',
     'protocolVersion',
@@ -59,7 +63,7 @@ function updateContext(value) {
   };
   byId('target-file').textContent = direct.context.fileName;
   byId('target-page').textContent =
-    `${direct.context.pageName} · 已选 ${(direct.context.selection || []).length} 项`;
+    `${direct.context.pageName} · 已选 ${direct.context.selectionCount ?? (direct.context.selection || []).length} 项`;
 }
 async function rawRequest(
   path,
@@ -125,16 +129,8 @@ function recoveryState(reply) {
     );
 }
 function readyStatus() {
-  if (direct.blockedJobId)
-    status(
-      `上次操作需要 Codex 核对：${direct.blockedJobId}。仍可以读取设计。`,
-      'error',
-    );
-  else
-    status(
-      `已连接「${direct.context.fileName}」，可以回到 Codex 使用。`,
-      'success',
-    );
+  if (direct.blockedJobId) status('请回到 Codex 核对上次操作。', 'error');
+  else status('已连接，可以回到 Codex 继续。', 'success');
 }
 
 async function restoreConnection() {
@@ -142,6 +138,7 @@ async function restoreConnection() {
   direct.recovering = (async () => {
     if (!direct.grantToken || !direct.context)
       throw new Error('Enter a pairing code to authorize this file.');
+    const grant = direct.grantToken;
     const reply = await rawRequest(
       '/v1/resume',
       {
@@ -152,7 +149,15 @@ async function restoreConnection() {
       },
       false,
       5000,
-    );
+    ).catch((error) => {
+      if (error.statusCode === 401 && direct.grantToken === grant) {
+        direct.token = '';
+        direct.grantToken = '';
+        post({ type: 'CLEAR_CONNECTION' });
+      }
+      throw error;
+    });
+    if (direct.closed) throw new Error('Connection closed');
     if (reply.protocolVersion !== direct.context.protocolVersion)
       throw new Error(
         'Companion version mismatch. Update the companion and reopen the plugin.',
@@ -244,7 +249,7 @@ async function pollNext(epoch) {
   return null;
 }
 async function heartbeat() {
-  if (direct.closed || !direct.token) return;
+  if (direct.closed || direct.revoking || !direct.token) return;
   if (direct.heartbeatBusy) {
     direct.heartbeatAgain = true;
     return;
@@ -260,6 +265,7 @@ async function heartbeat() {
       true,
       5000,
     );
+    if (direct.closed || direct.revoking) return;
     if (!direct.pending) {
       const previous = direct.blockedJobId;
       recoveryState(reply);
@@ -287,10 +293,17 @@ function pause(message) {
   post({ type: 'SHOW_UI' });
   byId('resume').hidden = !direct.token || !!direct.pending;
   byId('retry-receipt').hidden = !direct.pending || !direct.pending.message;
-  byId('pair-form').hidden = !!direct.blockedJobId;
+  byId('pair-form').hidden = !!(
+    direct.pending ||
+    direct.blockedJobId ||
+    direct.token
+  );
   byId('disconnect').hidden = !direct.token && !direct.grantToken;
 }
 function connectionError(error) {
+  if (direct.pending?.message) return '结果已保留，可以重新发送。';
+  if (direct.pending || direct.blockedJobId)
+    return '请回到 Codex 核对上次操作。';
   const message = String(error.message || error);
   if (/invalid or expired pairing code/.test(message))
     return '连接码已失效，请让 Codex 获取新码后重试。';
@@ -301,9 +314,10 @@ function connectionError(error) {
   if (/version mismatch|update the plugin|outdated/.test(message))
     return '插件已更新，请让 Codex 重新打开此插件。';
   if (transient(error)) return '等待 Codex 恢复连接…';
-  return message;
+  return '连接中断，请回到 Codex 重新连接此文件。';
 }
 function startPolling() {
+  if (direct.closed || direct.revoking) return;
   direct.enabled = true;
   direct.epoch++;
   if (direct.pollController) direct.pollController.abort();
@@ -311,6 +325,7 @@ function startPolling() {
   if (!direct.running && !direct.pending) void run();
 }
 function connected() {
+  if (direct.closed || direct.revoking) return;
   clearInterval(direct.heartbeat);
   direct.heartbeat = setInterval(() => {
     void heartbeat();
@@ -326,9 +341,11 @@ async function deliverReceipt() {
   pending.sending = true;
   try {
     const message = pending.message;
-    const result = message.result;
+    let result = message.result;
     if (result && Array.isArray(result.exports)) {
-      for (let i = 0; i < result.exports.length; i++) {
+      // Keep the native result immutable. Only confirmed upload receipts move
+      // the cursor; a lost reply resends the same bytes under the same name.
+      for (let i = pending.uploaded.length; i < result.exports.length; i++) {
         const file = result.exports[i];
         const saved = await retryTransport(
           () =>
@@ -342,8 +359,9 @@ async function deliverReceipt() {
             ),
           () => direct.pending === pending && !direct.closed,
         );
-        result.exports[i] = { ...saved, mimeType: file.mimeType };
+        pending.uploaded.push({ ...saved, mimeType: file.mimeType });
       }
+      result = { ...result, exports: pending.uploaded };
     }
     await retryTransport(
       () =>
@@ -365,17 +383,14 @@ async function deliverReceipt() {
     byId('retry-receipt').hidden = true;
     if (message.outcomeUnknown) {
       direct.blockedJobId = pending.id;
-      status(
-        `${message.message}\n请让 Codex 核对上次操作：${pending.id}。仍可以读取设计。`,
-        'error',
-      );
+      readyStatus();
     } else if (!direct.enabled) {
       status('结果已发送，可以恢复连接。', 'success');
       byId('resume').hidden = false;
     } else readyStatus();
   } catch (error) {
     pending.sending = false;
-    pause(`操作结果已保留（${pending.id}），发送失败：${error.message}`);
+    pause(connectionError(error));
     pending.reject(error);
   }
 }
@@ -387,13 +402,24 @@ function execute(job) {
       reject,
       message: null,
       sending: false,
+      uploaded: [],
+      launched: false,
     };
     direct.pending = pending;
     busy(true);
     pending.timer = setTimeout(
       () => {
         if (direct.pending !== pending || pending.message) return;
-        pause(`仍在等待操作结果（${job.id}），请让 Codex 核对后继续。`);
+        if (!pending.launched) {
+          pending.message = {
+            type: 'ERROR',
+            requestId: job.id,
+            message: 'Input transfer expired before native execution',
+          };
+          void deliverReceipt();
+          return;
+        }
+        pause('请回到 Codex 核对上次操作。');
         reject(new Error('Figma execution deadline exceeded'));
       },
       10 * 60 * 1000,
@@ -401,6 +427,7 @@ function execute(job) {
     const launch = () => {
       if (direct.pending !== pending || pending.message || direct.closed)
         return;
+      pending.launched = true;
       post({
         type: 'RUN_JOB',
         requestId: job.id,
@@ -413,6 +440,8 @@ function execute(job) {
     };
     if (Object.keys(job.assets || {}).length) {
       void loadAssets(job).then(launch, (error) => {
+        if (direct.pending !== pending || pending.message || direct.closed)
+          return;
         // A claimed job owns the Close guard during asset transfer as well.
         // No native code has run, so its failed receipt is safe to retain/retry.
         pending.message = {
@@ -452,7 +481,7 @@ async function run() {
       const payload = await pollNext(epoch);
       if (!payload) continue;
       // A claimed job remains this instance's responsibility even if its poll was cancelled.
-      if (direct.closed) break;
+      if (direct.closed || direct.revoking) break;
       status('Codex 正在处理设计…');
       await execute(payload.job);
       busy(false);
@@ -470,12 +499,26 @@ async function run() {
       void run();
   }
 }
-async function pair(suppliedCode) {
+function pair(suppliedCode) {
+  if (!direct.pairing)
+    direct.pairing = pairFile(suppliedCode).finally(() => {
+      direct.pairing = null;
+    });
+  return direct.pairing;
+}
+async function pairFile(suppliedCode) {
   const code =
     typeof suppliedCode === 'string'
       ? suppliedCode
       : byId('pair-code').value.trim();
-  if (!code || !direct.context || direct.pending) return;
+  if (
+    !code ||
+    !direct.context ||
+    direct.pending ||
+    direct.closed ||
+    direct.blockedJobId
+  )
+    return;
   byId('pair').disabled = true;
   try {
     const documentId = direct.context.documentId || newClientId();
@@ -490,6 +533,7 @@ async function pair(suppliedCode) {
       },
       false,
     );
+    if (direct.closed) return;
     if (reply.protocolVersion !== direct.context.protocolVersion)
       throw new Error('Companion version mismatch.');
     direct.token = reply.token;
@@ -549,8 +593,9 @@ Object.defineProperty(globalThis, '__ysunFigmaLifecycle', {
       instanceId: direct.instanceId,
       documentId: direct.context?.documentId || null,
       pluginId: direct.context?.pluginId || null,
+      widgetNodeId: direct.context?.widgetNodeId || null,
       connected: !!direct.token,
-      busy: !!direct.pending || !!direct.blockedJobId,
+      busy: !!direct.pending || !!direct.blockedJobId || direct.revoking,
       closed: direct.closed,
     }),
     pair: async (code) => {
@@ -565,7 +610,8 @@ Object.defineProperty(globalThis, '__ysunFigmaLifecycle', {
       return !!direct.token;
     },
     closeIdle: () => {
-      if (direct.pending || direct.blockedJobId) return false;
+      if (direct.pending || direct.blockedJobId || direct.revoking)
+        return false;
       closePlugin();
       return true;
     },
@@ -573,7 +619,13 @@ Object.defineProperty(globalThis, '__ysunFigmaLifecycle', {
 });
 byId('close').addEventListener('click', closePlugin);
 byId('disconnect').addEventListener('click', async () => {
-  if (direct.pending || !direct.token) return;
+  if (direct.pending || direct.revoking || direct.closed || !direct.token)
+    return;
+  direct.revoking = true;
+  direct.enabled = false;
+  direct.epoch++;
+  direct.pollController?.abort();
+  busy(true);
   try {
     await request(
       `/v1/clients/${encodeURIComponent(direct.clientId)}`,
@@ -584,9 +636,11 @@ byId('disconnect').addEventListener('click', async () => {
     );
     post({ type: 'CLEAR_CONNECTION' });
     direct.grantToken = '';
+    direct.token = '';
     closePlugin();
   } catch (error) {
-    pause(`未能撤销授权：${error.message}`);
+    direct.revoking = false;
+    pause('授权尚未撤销，请恢复连接后再试。');
   }
 });
 function trustedHostMessage(event) {
@@ -624,6 +678,7 @@ onmessage = (event) => {
         })
         .catch((error) => pause(connectionError(error)));
     } else {
+      byId('pair-form').hidden = false;
       status('等待 Codex 连接此文件。');
       post({ type: 'SHOW_UI' });
     }
@@ -643,7 +698,11 @@ onmessage = (event) => {
   }
   if (message.type === 'APPLIED' || message.type === 'ERROR') {
     updateContext(message.context);
-    if (direct.pending && message.requestId === direct.pending.id) {
+    if (
+      direct.pending &&
+      !direct.pending.message &&
+      message.requestId === direct.pending.id
+    ) {
       direct.pending.message = message;
       clearTimeout(direct.pending.timer);
       void deliverReceipt();

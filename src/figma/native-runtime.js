@@ -1,26 +1,31 @@
 // Figma owns the canvas; this host only runs native scripts and connection UI.
-function startNativePlugin() {
+function startNativePlugin(widgetNodeId) {
   let executing = false,
-    awaitingReceipt = false,
+    awaitingReceipt = null,
     savedConnection = null;
   let storageTask = Promise.resolve();
   let documentRevision = 0;
   let documentId = figma.root.getPluginData('figmaPluginDocumentId');
-  const context = () => ({
-    fileName: figma.root.name,
-    fileKey: figma.fileKey || '',
-    editorType: figma.editorType,
-    pageName: figma.currentPage.name,
-    pageId: figma.currentPage.id,
-    selection: figma.currentPage.selection.slice(0, 100).map((node) => node.id),
-    pluginId: figma.pluginId || figma.widgetId || '',
-    documentId,
-    runtimeVersion: BRIDGE_RUNTIME_VERSION,
-    nativeBuild:
-      typeof FIGMA_PLUGIN_BUILD === 'string' ? FIGMA_PLUGIN_BUILD : undefined,
-    documentRevision,
-    protocolVersion: BRIDGE_PROTOCOL_VERSION,
-  });
+  const context = () => {
+    const selection = figma.currentPage.selection;
+    return {
+      fileName: figma.root.name,
+      fileKey: figma.fileKey || '',
+      editorType: figma.editorType,
+      pageName: figma.currentPage.name,
+      pageId: figma.currentPage.id,
+      selection: selection.slice(0, 100).map((node) => node.id),
+      selectionCount: selection.length,
+      pluginId: figma.pluginId || figma.widgetId || '',
+      ...(widgetNodeId ? { widgetNodeId } : {}),
+      documentId,
+      runtimeVersion: BRIDGE_RUNTIME_VERSION,
+      nativeBuild:
+        typeof FIGMA_PLUGIN_BUILD === 'string' ? FIGMA_PLUGIN_BUILD : undefined,
+      documentRevision,
+      protocolVersion: BRIDGE_PROTOCOL_VERSION,
+    };
+  };
   const sendContext = () =>
     figma.ui.postMessage({ type: 'CONTEXT', ...context() });
   figma.showUI(__html__, {
@@ -48,7 +53,7 @@ function startNativePlugin() {
   });
   void watchPage(figma.currentPage).catch(() => {});
   async function runNativeJob(message) {
-    if (executing || awaitingReceipt) {
+    if (executing || awaitingReceipt !== null) {
       figma.ui.postMessage({
         type: 'ERROR',
         requestId: message.requestId,
@@ -57,7 +62,7 @@ function startNativePlugin() {
       return;
     }
     executing = true;
-    awaitingReceipt = true;
+    awaitingReceipt = message.requestId;
     try {
       if (message.kind !== 'exec')
         throw new Error('Only native scripts are supported.');
@@ -123,7 +128,7 @@ function startNativePlugin() {
     }
     if (message.type === 'GET_CONTEXT') sendContext();
     if (message.type === 'SAVE_CONNECTION') {
-      storageTask = (async () => {
+      storageTask = storageTask.then(async () => {
         try {
           documentId = documentId || message.documentId;
           if (!/^[a-f0-9]{32}$/.test(documentId || ''))
@@ -140,22 +145,32 @@ function startNativePlugin() {
             message: formatBridgeError(error),
           });
         }
-      })();
+      });
       await storageTask;
     }
     if (message.type === 'CLEAR_CONNECTION' && documentId) {
-      storageTask = figma.clientStorage.deleteAsync('connection:' + documentId);
+      storageTask = storageTask
+        .then(() => figma.clientStorage.deleteAsync('connection:' + documentId))
+        .catch((error) => {
+          figma.ui.postMessage({
+            type: 'STORAGE_ERROR',
+            message: formatBridgeError(error),
+          });
+        });
       await storageTask;
       savedConnection = null;
     }
     if (message.type === 'RUN_JOB') await runNativeJob(message);
-    if (message.type === 'RECEIPT_DELIVERED') awaitingReceipt = false;
+    if (
+      message.type === 'RECEIPT_DELIVERED' &&
+      !executing &&
+      message.requestId === awaitingReceipt
+    )
+      awaitingReceipt = null;
     if (message.type === 'CLOSE') {
       await storageTask;
-      if (executing || awaitingReceipt) {
-        figma.notify(
-          'Wait for the operation and result delivery before closing.',
-        );
+      if (executing || awaitingReceipt !== null) {
+        figma.notify('操作完成后即可关闭。');
         return;
       }
       figma.closePlugin();

@@ -36,26 +36,13 @@ async function running() {
 let starting;
 async function startCompanion() {
   const lock = path.join(bridgeStateDirectory(), 'companion/.install-lock');
-  if (process.env.FIGMA_PLUGIN_ACTIVATION_PROBE !== '1') {
-    const deadline = Date.now() + 15000;
-    while (true) {
-      let owner;
-      try {
-        owner = Number(fs.readlinkSync(lock).split('-')[0]);
-      } catch (error) {
-        if (error.code === 'ENOENT') break;
-        throw error;
-      }
-      try {
-        process.kill(owner, 0);
-      } catch (error) {
-        if (error.code === 'ESRCH') break;
-        throw error;
-      }
-      if (Date.now() >= deadline)
-        throw new Error('The companion update has not completed yet');
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
+  if (
+    process.env.FIGMA_PLUGIN_ACTIVATION_PROBE !== '1' &&
+    fs.lstatSync(lock, { throwIfNoEntry: false })
+  ) {
+    const { acquireInstallationLock } = require('./installation.cjs');
+    const current = await acquireInstallationLock(bridgeStateDirectory());
+    current.close();
   }
   const existing = await running();
   if (existing) return existing;

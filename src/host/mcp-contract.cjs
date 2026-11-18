@@ -134,13 +134,25 @@ function classifyError(error, detail, precondition) {
   if (precondition?.code === 'WRITE_CONFLICT') return 'FIGMA_WRITE_CONFLICT';
   if (precondition) return 'FIGMA_PRECONDITION_FAILED';
   if (error.phase === 'delivery') return 'ARTIFACT_DELIVERY_FAILED';
-  if (error.code === 'FILE_AMBIGUOUS') return error.code;
+  if (['FILE_AMBIGUOUS', 'OPERATION_ID_CONFLICT'].includes(serviceCode))
+    return serviceCode;
   if (error.receipt?.job.status === 'outcome_unknown')
     return 'OUTCOME_NEEDS_REVIEW';
   if (error.receipt?.job.status === 'failed') return 'FIGMA_OPERATION_FAILED';
   const patterns = [
     [/desktop_required/, 'FIGMA_DESKTOP_REQUIRED'],
     [/desktop_restart_required/, 'FIGMA_DESKTOP_RESTART_REQUIRED'],
+    [/desktop_not_running/, 'FIGMA_DESKTOP_NOT_RUNNING'],
+    [/desktop_process_query_unavailable/, 'CONNECTION_UNAVAILABLE'],
+    [/desktop_quit_pending/, 'FIGMA_DESKTOP_QUIT_PENDING'],
+    [
+      /desktop_(?:editor|launcher|widget|plugin)_not_ready/,
+      'FIGMA_DESKTOP_NOT_READY',
+    ],
+    [
+      /desktop_(?:registration|app_signature|installer|download|native_manifest)/,
+      'FIGMA_DESKTOP_SETUP_FAILED',
+    ],
     [/login_required/, 'FIGMA_LOGIN_REQUIRED'],
     [/desktop_plugin_not_imported/, 'FIGMA_NATIVE_IMPORT_REQUIRED'],
     [
@@ -170,6 +182,8 @@ function recoveryAdvice(
   error,
   { blockingOperationIds, precondition, submitted, operationId },
 ) {
+  if (error.body?.code === 'OPERATION_ID_CONFLICT')
+    return 'Read figma_job for the original operation ID and compare the two requests.';
   if (blockingOperationIds)
     return 'This request was not submitted. Inspect each blocking operation ID and reconcile its actual outcome before another write.';
   if (precondition)
@@ -197,7 +211,23 @@ function setupRecovery(detail) {
     ],
     [
       /desktop_restart_required/,
-      'Inspect pending operations and Desktop save state, quit normally only when safe, then relaunch through figma_file(action="launch") and reconnect the exact file. Preserve the login and designs.',
+      'Use figma_file(action="open", fileKey=...) or launch to prepare Desktop. Explicit connection handles normal quit, stable registration and relaunch; passive status/sync never restarts a running app. Preserve pending operations and designs.',
+    ],
+    [
+      /desktop_process_query_unavailable/,
+      'macOS could not read the current Desktop processes. Retry passive file status after LaunchServices responds.',
+    ],
+    [
+      /desktop_not_running/,
+      'Use figma_file(action="open", fileKey=...) to start and connect the intended file. Status is read-only and does not launch Desktop.',
+    ],
+    [
+      /desktop_quit_pending/,
+      'Figma has not completed its normal quit. Inspect its existing save/cancel prompt or let synchronization finish, then retry the same open/connect. Never force quit.',
+    ],
+    [
+      /desktop_(?:editor|launcher|widget|plugin)_not_ready/,
+      'The bounded startup wait expired before readiness. Retain the exact diagnostic and observed URL; retry open/connect after checking the network/editor state. Do not reimport manifests or guess module IDs.',
     ],
     [
       /login_required/,
@@ -205,7 +235,11 @@ function setupRecovery(detail) {
     ],
     [
       /desktop_plugin_not_imported/,
-      'Read figma_connect for the stable manifest path, import only that missing manifest once through app automation, then retry figma_file(action="connect", fileKey=...). No manual pairing code is needed.',
+      'Direct open/connect prepares the stable registrations while Desktop is stopped and waits for their renderer state. Retain this diagnostic and inspect the packaged setup skill if the app did not load them; manual import is only a diagnosed compatibility fallback.',
+    ],
+    [
+      /desktop_(?:registration|app_signature|installer|download|native_manifest)/,
+      'Read the exact setup diagnostic. Existing settings/application backups are retained. Repair the concrete schema, download or signature issue; do not erase settings, merge app bundles, re-sign Figma or repeatedly use GUI import.',
     ],
     [
       /desktop_\w*schema_changed|desktop_(?:launcher|state|widget)_ambiguous/,
@@ -247,10 +281,12 @@ function retrySafety(
     precondition ||
     blockingOperationIds ||
     code === 'OUTCOME_NEEDS_REVIEW' ||
-    code === 'CLOUD_RECEIPT_UNAVAILABLE'
+    code === 'CLOUD_RECEIPT_UNAVAILABLE' ||
+    code === 'OPERATION_ID_CONFLICT'
   )
     return false;
   if (error.receipt) return error.receipt.job.status === 'failed';
+  if (submitted && operationId) return false;
   if (!submitted && operationId) return true;
 }
 function toolError(error, input = {}) {
@@ -258,6 +294,7 @@ function toolError(error, input = {}) {
   const precondition = error.receipt?.job.result?.precondition;
   const code = classifyError(error, detail, precondition);
   const messages = {
+    OPERATION_ID_CONFLICT: '这个操作 ID 已有记录，请让 Codex 核对原操作。',
     FIGMA_WRITE_CONFLICT: '目标内容已变化，本次脚本尚未执行。',
     FIGMA_PRECONDITION_FAILED: '无法核对写入条件，本次脚本尚未执行。',
     FIGMA_NOT_CONNECTED: '目标 Figma 文件尚未连接。',
@@ -266,6 +303,10 @@ function toolError(error, input = {}) {
     PLUGIN_UPDATE_REQUIRED: 'Figma 中的 ysun figma 需要更新并恢复连接。',
     FIGMA_DESKTOP_REQUIRED: '需要先安装 Figma 桌面端。',
     FIGMA_DESKTOP_RESTART_REQUIRED: '需要由 Codex 安全重连 Figma 桌面端。',
+    FIGMA_DESKTOP_NOT_RUNNING: 'Figma 桌面端尚未运行，可直接打开目标文件。',
+    FIGMA_DESKTOP_QUIT_PENDING: 'Figma 正等待正常退出，请处理现有保存提示。',
+    FIGMA_DESKTOP_NOT_READY: 'Figma 编辑器尚未完成加载。',
+    FIGMA_DESKTOP_SETUP_FAILED: 'Figma 桌面准备未完成，请查看具体原因。',
     FIGMA_LOGIN_REQUIRED: '需要先完成 Figma 自己的登录。',
     FIGMA_NATIVE_IMPORT_REQUIRED: '需要先导入一次原生插件。',
     FIGMA_DESKTOP_ADAPTER_UNAVAILABLE: '当前 Figma 桌面接口需要兼容性处理。',
@@ -282,12 +323,10 @@ function toolError(error, input = {}) {
   });
   const result = {
     code,
-    message:
-      error.phase === 'preflight' && !blockingOperationIds
-        ? '请求未提交到 Figma，请根据具体错误修正后继续。'
-        : messages[code] || detail,
+    message: messages[code] || '操作未完成，请回到 Codex 查看详情。',
     error: detail,
     phase: error.phase || undefined,
+    targets: error.body?.targets,
     clients: error.clients || error.body?.clients || undefined,
     targetChange:
       error.body?.expected && error.body?.actual
@@ -405,7 +444,7 @@ const tools = [
   ],
   [
     'figma_file',
-    'Manage the account directory and Figma Desktop. status reads actual open file URLs and editor load state without GUI, navigation or pairing. launch brings Desktop forward. sync refreshes account files through the signed-in Desktop session. open accepts an exact fileKey, reusing its connection or opening it for native connection; bind only after verifying the actual file URL and current native instance. Never bind by title or present incomplete pagination as the whole account.',
+    'Manage the account directory and Figma Desktop. status reads actual open file URLs and editor load state without GUI, navigation or pairing. launch brings Desktop forward. sync refreshes account files through the signed-in Desktop session. open accepts a Figma link in figmaUrl or an exact fileKey, reusing its connection or opening it for native connection; bind only after verifying the actual file URL and current native instance. Never bind by title or present incomplete pagination as the whole account.',
     object(
       {
         action: {
@@ -421,6 +460,7 @@ const tools = [
           ],
         },
         fileKey,
+        figmaUrl: target.figmaUrl,
         targetId: { type: 'string', minLength: 1, maxLength: 100 },
         profile: { type: 'string', enum: ['default', 'dev', 'widget'] },
         sourcePath: { type: 'string', minLength: 1, maxLength: 3000 },
@@ -437,10 +477,12 @@ const tools = [
   ],
   [
     'figma_inspect',
-    'Read page roots, page names and selection, or lightweight identities, dimensions and parents for nodeId/nodeIds (up to 20). No vector paths, CSS or screenshots. pageId reads another page without activating it. Available during uncertain-write recovery.',
+    'Read a page overview or up to 20 exact nodes. The overview pages through root layers, pages and selection with one offset and limit (default 100 per list), returning counts and nextOffset. Use pageId to keep the page fixed. Summary names over 256 characters are marked. Exact nodes return identities, dimensions and parents. Available during uncertain-write recovery.',
     object({
       ...target,
       pageId: nodeId,
+      offset: integer(0, Number.MAX_SAFE_INTEGER, 0),
+      limit: integer(1, 500, 100),
       nodeId,
       nodeIds: {
         type: 'array',

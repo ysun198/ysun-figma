@@ -4,7 +4,8 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { ensureCompanion } = require('./companion.cjs');
 const { bridgeStateDirectory } = require('./state.cjs');
-const { bridgeRequest } = require('./bridge-client.cjs');
+const { DESKTOP_SETUP_TIMEOUT_MS } = require('./desktop-app.cjs');
+const { bridgeRequest, submitOperation } = require('./bridge-client.cjs');
 const { readAPIReference } = require('./api-reference.cjs');
 const {
   uploadAssets,
@@ -88,18 +89,13 @@ function compactSuccess(record) {
 }
 async function callRest(name, input, { connection, request, signal }) {
   const rest = require('./rest.cjs');
-  rest.prepare(input);
-  const result = await request('/v1/rest', {
-    method: 'POST',
-    body: JSON.stringify(input),
-    timeoutMs: 125000,
-  }).catch((error) => {
-    if (error.body?.code === 'CLOUD_RECEIPT_UNAVAILABLE') {
-      error.phase = 'receipt';
-      error.operationId = input.operationId;
-    }
-    throw error;
-  });
+  const { operationId } = rest.prepare(input);
+  const result = await submitOperation(
+    request,
+    '/v1/rest',
+    { ...input, operationId },
+    125000,
+  );
   if (['failed', 'outcome_unknown'].includes(result.job?.status))
     throw Object.assign(
       new Error(result.job.error || 'Figma REST request failed'),
@@ -142,9 +138,11 @@ async function callCommunity(name, input, { connection, request, signal }) {
 async function callStatus(name, input, { connection, request, signal }) {
   return {
     updates: require('./updates.cjs').updateStatus(version),
-    ...(await request(
-      '/v1/status?' + new URLSearchParams({ summary: '1', ...input }),
-    )),
+    ...(Object.keys(input).length === 0 && connection.status
+      ? connection.status
+      : await request(
+          '/v1/status?' + new URLSearchParams({ summary: '1', ...input }),
+        )),
     skillRootPath: path.join(
       bridgeStateDirectory(),
       'companion/current/skills',
@@ -157,7 +155,7 @@ async function callStatus(name, input, { connection, request, signal }) {
 }
 
 async function callConnect(name, input, { connection, request, signal }) {
-  const state = await request('/v1/status?summary=1');
+  const state = connection.status || (await request('/v1/status?summary=1'));
   const files = state.clients;
   const manifestPath = path.join(
     bridgeStateDirectory(),
@@ -168,7 +166,7 @@ async function callConnect(name, input, { connection, request, signal }) {
       state: 'pairing_required',
       manifestPath,
       ...(await request('/v1/pairings', { method: 'POST', body: '{}' })),
-      next: 'Manual fallback only after the direct Desktop lifecycle is diagnosed as unavailable. Import this stable manifest only if absent, run its Connect command and enter this one-time code using available app automation. Verify the exact file/client with figma_status. Ordinary setup uses figma_file(action="open" or "connect", fileKey=...) without a connection code.',
+      next: 'Run Connect in Figma and enter this one-time code.',
     };
   if (files.length && !input.newFile)
     return {
@@ -177,13 +175,13 @@ async function callConnect(name, input, { connection, request, signal }) {
         : 'connection_required',
       manifestPath,
       files,
-      next: 'Reuse the exact intended file/client, without a new pairing. If needsPluginUpdate, finish or reconcile its original operations, then use figma_file(action="connect", fileKey=...) to verify and recover its actual native instance. Dev/Widget profile changes can replace the previous iframe; read the returned client identity again before submitting work. For an additional existing file, use figma_file(action="open", fileKey=...).',
+      next: 'Use the matching clientId. If needsPluginUpdate is true, connect the same file again after its pending work settles.',
     };
   return {
     state: 'connection_required',
     manifestPath,
     files,
-    next: 'Use the requested Figma URL/fileKey with figma_file(action="open", fileKey=...), or inspect actual open editors with figma_file(action="status") and connect the intended exact file. Direct connection handles saved authorization and owned-frame pairing without GUI or a code. Only desktop_plugin_not_imported requires a one-time import of this stable manifest using app automation; retry the same direct connection afterward. This preparation does not create a Figma file. See the packaged ysun-figma-setup skill for missing Node/Desktop, sign-in or safe Desktop restart.',
+    next: 'Open the intended file with figma_file(action="open", figmaUrl=...). Use figma_file(action="status") to identify an already open editor.',
   };
 }
 
@@ -195,11 +193,7 @@ async function callReconcile(name, input, { connection, request, signal }) {
 }
 
 async function callReceipt(name, input, { connection, request, signal }) {
-  let phase = 'receipt',
-    submittedId = input.operationId;
   try {
-    phase = 'receipt';
-    submittedId = input.operationId;
     const record = await request(
       `/v1/jobs/${input.operationId}?wait=${input.waitMs || 0}`,
     );
@@ -209,8 +203,8 @@ async function callReceipt(name, input, { connection, request, signal }) {
       includePreviews: name === 'figma_job' && input.includePreviews !== false,
     });
   } catch (error) {
-    error.phase ||= phase;
-    error.operationId ||= submittedId;
+    error.phase ||= 'receipt';
+    error.operationId ||= input.operationId;
     throw error;
   }
 }
@@ -357,13 +351,7 @@ async function callNative(name, input, { connection, request, signal }) {
     signal?.throwIfAborted();
     phase = 'submitted';
     submittedId = body.operationId;
-    const { job } = await request('/v1/jobs', {
-      method: 'POST',
-      body: JSON.stringify(body),
-    }).catch((error) => {
-      if (error.statusCode) error.phase = 'preflight';
-      throw error;
-    });
+    const { job } = await submitOperation(request, '/v1/jobs', body);
     const waitMs = input.waitMs ?? 20000;
     receipt = { job };
     const result =
@@ -438,6 +426,8 @@ async function callTool(name, input, signal) {
     }
     if (name === 'figma_rest' && input.action !== 'request')
       return restMetadata(input);
+    if (name === 'figma_file')
+      input = require('./file-tools.cjs').fileRequest(input);
     validateToolInput(name, input);
     const connection = await ensureCompanion();
     const request = (route, options) =>
@@ -446,6 +436,7 @@ async function callTool(name, input, signal) {
       request('/v1/desktop', {
         method: 'POST',
         body: JSON.stringify({ fileKey }),
+        timeoutMs: DESKTOP_SETUP_TIMEOUT_MS,
       });
     return await (connectedTools[name] || callNative)(name, input, {
       connection,

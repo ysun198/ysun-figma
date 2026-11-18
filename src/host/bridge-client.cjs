@@ -78,4 +78,27 @@ async function bridgeRequest(connection, pathname, options = {}) {
   return body;
 }
 
-module.exports = { bridgeRequest, readConnection, validateConnection };
+// Once a POST is on the wire, only the companion can attest that it refused
+// admission. A timeout, a lost response or an internal error carries the ID.
+async function submitOperation(request, route, body, timeoutMs) {
+  const options = { method: 'POST', body: JSON.stringify(body), timeoutMs };
+  try {
+    return await request(route, options);
+  } catch (error) {
+    error.operationId = body.operationId;
+    error.phase =
+      error.body?.phase ||
+      (error.body?.code === 'CLOUD_RECEIPT_UNAVAILABLE'
+        ? 'receipt'
+        : error.statusCode >= 400 && error.statusCode < 500
+          ? 'preflight'
+          : 'submitted');
+    throw error;
+  }
+}
+module.exports = {
+  bridgeRequest,
+  readConnection,
+  validateConnection,
+  submitOperation,
+};

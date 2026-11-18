@@ -86,6 +86,7 @@ test('native navigation rejects a missing page or a node on a different page', a
     /another page/,
   );
   assert.equal(other.selection.length, 0);
+  assert.equal(f.figma.currentPage, f.initial);
   assert.equal(f.calls.commits, 0);
 });
 

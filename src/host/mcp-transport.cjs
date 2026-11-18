@@ -1,12 +1,20 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { isRecord } = require('./mcp-contract.cjs');
+const { frameReader } = require('./framing.cjs');
 
 function serve(input = process.stdin, output = process.stdout) {
-  let buffer = '',
-    phase = 'new';
+  let phase = 'new';
   const pending = new Map();
-  const send = (message) => output.write(JSON.stringify(message) + '\n');
+  let closed = false;
+  const resumeInput = () => {
+    if (!closed) input.resume();
+  };
+  function send(message) {
+    if (closed) return;
+    if (!output.write(JSON.stringify(message) + '\n')) input.pause();
+  }
+  output.on('drain', resumeInput);
   let runtime, updateWatch;
   function currentRuntime() {
     runtime ||= require('./mcp.cjs');
@@ -86,7 +94,7 @@ function serve(input = process.stdin, output = process.stdout) {
         version: api.version,
       },
       instructions:
-        'Use ysun-figma skills in this conversation. For first installation or missing local tools, use the packaged ysun-figma-setup skill; figma_api(workflow="setup") works offline once Node is available. Ordinary connection uses figma_file open/connect with an exact fileKey, without a manual pairing code. Confirm exact file/client with figma_status; reuse one native client per file across tasks, never bind by title. Choose native capabilities from desired behavior without asking the user to name features. figma_api workflows give guides: edit for coherent or conditional edits, motion for timed animation, prototype for interactions, handoff for code. Prefer one live read/compute/write. When a decision spans tool calls, figma_snapshot its dependent fields and pass job.id as ifUnchanged; pin rootId rather than currentPage. On conflict re-read and merge; the body did not run. Keep one operationId per edit. After interruption inspect original figma_job and reconcile uncertain writes; repair delivery from original output. Use native MCP for edits/navigation/exports, GUI only for uncovered lifecycle or actual interactions. Sparse/truncated reads are incomplete; cloud-only services remain separate.',
+        'Open a Figma link with figma_file(action="open", figmaUrl=...). Reuse its exact clientId for native reads and edits. Discover operations offline with figma_api(query=...) or figma_api(workflow=...). Prefer one native read/compute/write. For a decision based on earlier reads, pass figma_snapshot receipt IDs in ifUnchanged. Use one stable operationId per edit and check figma_job after interruption. Use figma_export for original files.',
     };
   }
   async function toolResult(api, params, signal) {
@@ -158,6 +166,17 @@ function serve(input = process.stdin, output = process.stdout) {
       notification(message);
       return;
     }
+    if (pending.has(message.id)) {
+      send({
+        jsonrpc: '2.0',
+        id: null,
+        error: {
+          code: -32600,
+          message: 'A request with this ID is still in progress',
+        },
+      });
+      return;
+    }
     const controller = new AbortController();
     pending.set(message.id, controller);
     try {
@@ -182,37 +201,42 @@ function serve(input = process.stdin, output = process.stdout) {
       pending.delete(message.id);
     }
   }
-  input.setEncoding('utf8');
-  input.on('data', (chunk) => {
-    buffer += chunk;
-    if (Buffer.byteLength(buffer) > 6 * 1024 * 1024) {
-      input.destroy();
-      process.exitCode = 1;
-      return;
-    }
-    let newline;
-    while ((newline = buffer.indexOf('\n')) >= 0) {
-      const line = buffer.slice(0, newline);
-      buffer = buffer.slice(newline + 1);
-      if (!line.trim()) continue;
-      let message;
-      try {
-        message = JSON.parse(line);
-      } catch {
+  input.on(
+    'data',
+    frameReader(
+      10,
+      6 * 1024 * 1024,
+      (bytes) => {
+        const line = bytes.toString('utf8');
+        if (!line.trim()) return;
+        let message;
+        try {
+          message = JSON.parse(line);
+        } catch {
+          send({
+            jsonrpc: '2.0',
+            id: null,
+            error: { code: -32700, message: 'Parse error' },
+          });
+          return;
+        }
+        void handle(message);
+      },
+      () =>
         send({
           jsonrpc: '2.0',
           id: null,
-          error: { code: -32700, message: 'Parse error' },
-        });
-        continue;
-      }
-      void handle(message);
-    }
-  });
+          error: { code: -32600, message: 'Message exceeds 6 MiB' },
+        }),
+    ),
+  );
   const stop = () => {
+    closed = true;
+    output.off('drain', resumeInput);
     updateWatch?.close();
     for (const controller of pending.values()) controller.abort();
   };
   for (const event of ['end', 'close', 'error']) input.once(event, stop);
+  for (const event of ['close', 'error']) output.once(event, stop);
 }
 module.exports = { serve };

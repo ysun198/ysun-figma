@@ -153,3 +153,36 @@ test(
     );
   },
 );
+
+test('the packaged runtime generation includes iframe bytes and is independent of skill prose', (t) => {
+  const { generatedFiles } = require('../scripts/build.cjs');
+  const root = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'figma-runtime-generation-'),
+  );
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const repo = path.resolve(__dirname, '..');
+  for (const name of [
+    'src',
+    'assets',
+    'manifest.json',
+    'package.json',
+    'plugin.json',
+  ])
+    fs.cpSync(path.join(repo, name), path.join(root, name), {
+      recursive: true,
+    });
+  const generation = () =>
+    generatedFiles(root)['plugin-runtime.js'].match(
+      /^const FIGMA_PLUGIN_BUILD = "([a-f0-9]{64})"/m,
+    )[1];
+  const before = generation();
+  fs.appendFileSync(
+    path.join(root, 'src/figma/ui.js'),
+    '\n// transport revision\n',
+  );
+  const after = generation();
+  assert.notEqual(before, after);
+  fs.mkdirSync(path.join(root, 'skills'));
+  fs.writeFileSync(path.join(root, 'skills/example.md'), 'edited help');
+  assert.equal(generation(), after);
+});

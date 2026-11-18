@@ -62,8 +62,8 @@ function sample(schema, depth = 0) {
   return 'SampleValue12';
 }
 test('every official REST operation has a complete executable route and discoverable input/response contract', async () => {
-  assert.equal(rest.list().total, 72);
-  assert.deepEqual(rest.list().families, { rest: 59, discovery: 1, scim: 12 });
+  assert.equal(rest.list().total, 76);
+  assert.deepEqual(rest.list().families, { rest: 59, discovery: 1, scim: 16 });
   const contract = mcp.tools.find((tool) => tool.name === 'figma_rest');
   assert(rest.operations.some((op) => op.method === 'DELETE'));
   assert.equal(
@@ -84,7 +84,8 @@ test('every official REST operation has a complete executable route and discover
       query: {},
     };
     for (const p of op.parameters) {
-      if (p.in === 'path') input.pathParams[p.name] = 'SampleValue12';
+      if (p.in === 'path')
+        input.pathParams[p.name] = p.schema.enum?.[0] || 'SampleValue12';
       else if (p.in === 'query' && p.required)
         input.query[p.name] =
           p.name === 'start_date' ? '2026-01-01T00:00:00Z' : sample(p.schema);
@@ -103,7 +104,7 @@ test('every official REST operation has a complete executable route and discover
     assert(!result.url.includes('{'));
     assert.equal(result.method, op.method);
     assert(rest.describe(op.operationId).operation.responses);
-    const scheme = Object.keys(op.security[0])[0];
+    const scheme = Object.keys(op.security[0] || {})[0];
     const type = {
       PersonalAccessToken: 'pat',
       PlanAccessToken: 'plan',
@@ -121,14 +122,17 @@ test('every official REST operation has a complete executable route and discover
         assert.equal(url, result.url);
         assert.equal(init.method, op.method);
         assert.equal(init.redirect, 'error');
-        assert.equal(
-          init.headers[
-            ['pat', 'plan'].includes(type) ? 'X-Figma-Token' : 'Authorization'
-          ],
-          ['pat', 'plan'].includes(type)
-            ? 'contract-test'
-            : 'Bearer contract-test',
-        );
+        if (op.credentialProfile === 'public')
+          assert.deepEqual(init.headers, { Accept: 'application/json' });
+        else
+          assert.equal(
+            init.headers[
+              ['pat', 'plan'].includes(type) ? 'X-Figma-Token' : 'Authorization'
+            ],
+            ['pat', 'plan'].includes(type)
+              ? 'contract-test'
+              : 'Bearer contract-test',
+          );
         assert.equal(
           init.body,
           input.body === undefined ? undefined : JSON.stringify(input.body),
@@ -545,7 +549,8 @@ test('every documented supplemental route sends the correct service authenticati
     for (const p of op.parameters)
       if (p.required) {
         const value =
-          p.name === 'start_date' ? '2026-01-01T00:00:00Z' : 'tenant-12';
+          p.schema.enum?.[0] ||
+          (p.name === 'start_date' ? '2026-01-01T00:00:00Z' : 'tenant-12');
         (p.in === 'path' ? input.pathParams : input.query)[p.name] = value;
       }
     if (op.requestBody)
@@ -561,7 +566,9 @@ test('every documented supplemental route sends the correct service authenticati
         assert.equal(url, req.url);
         assert.equal(init.method, op.method);
         assert.equal(init.redirect, 'error');
-        assert.equal(init.headers.Authorization, 'Bearer test-supplement');
+        if (op.credentialProfile === 'public')
+          assert.deepEqual(init.headers, { Accept: 'application/json' });
+        else assert.equal(init.headers.Authorization, 'Bearer test-supplement');
         if (input.body) assert.deepEqual(JSON.parse(init.body), input.body);
         return op.method === 'DELETE'
           ? new Response(null, { status: 204 })
@@ -582,4 +589,38 @@ test('every documented supplemental route sends the correct service authenticati
       }),
     /24 hours/,
   );
+});
+
+test('public SCIM metadata crosses the authenticated local bridge without any configured Figma credential', async (t) => {
+  const root = environment(t);
+  const calls = [];
+  const bridge = createBridgeServer({
+    port: 0,
+    databasePath: path.join(root, 'operations.sqlite'),
+    artifactDirectory: path.join(root, 'artifacts'),
+    restFetch: async (url, init) => {
+      calls.push(url);
+      assert.deepEqual(init.headers, { Accept: 'application/json' });
+      return Response.json({ Resources: [] });
+    },
+  });
+  const { url } = await bridge.start();
+  t.after(() => bridge.stop());
+  const response = await fetch(url + '/v1/rest', {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer ' + bridge.token,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      action: 'request',
+      endpoint: 'scimGetSchemas',
+      operationId: 'public-metadata-read',
+    }),
+  });
+  assert.equal(response.status, 200);
+  const { job } = await response.json();
+  assert.equal(job.status, 'succeeded');
+  assert.deepEqual(calls, ['https://www.figma.com/scim/v2/Schemas']);
+  assert.deepEqual(job.result.value.body, { Resources: [] });
 });

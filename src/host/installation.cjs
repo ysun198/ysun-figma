@@ -9,64 +9,19 @@ const {
   installPlugin,
 } = require('./state.cjs');
 const { readConnection, bridgeRequest } = require('./bridge-client.cjs');
+const { acquireProcessLock } = require('./process-lock.cjs');
 const product = require('../../package.json').name;
 const directory = () => path.join(bridgeStateDirectory(), 'companion');
 const currentPath = () => path.join(directory(), 'current');
 const hash = (file) =>
   crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
-// Kept self-contained for launchd recovery while current/ is between renames.
-async function acquireInstallationLock(state) {
-  const fs = require('node:fs'),
-    path = require('node:path'),
-    crypto = require('node:crypto');
-  const directory = path.join(state, 'companion');
-  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-  if (fs.lstatSync(directory).isSymbolicLink())
-    throw new Error('Private state directory cannot be a symlink');
-  fs.chmodSync(directory, 0o700);
-  const lock = path.join(directory, '.install-lock'),
-    owner = process.pid + '-' + crypto.randomUUID(),
-    deadline = Date.now() + 15000;
-  function readOwner() {
-    try {
-      const active = fs.readlinkSync(lock);
-      if (!/^\d+-[a-f0-9-]{36}$/.test(active))
-        throw new Error('Invalid installation lock; it was preserved');
-      return active;
-    } catch (error) {
-      if (error.code === 'ENOENT') return null;
-      throw error;
-    }
-  }
-  while (true) {
-    try {
-      fs.symlinkSync(owner, lock);
-      return {
-        close() {
-          if (readOwner() === owner) fs.unlinkSync(lock);
-        },
-      };
-    } catch (error) {
-      if (error.code !== 'EEXIST') throw error;
-    }
-    const active = readOwner();
-    if (!active) continue;
-    try {
-      process.kill(Number(active.split('-')[0]), 0);
-    } catch (error) {
-      if (error.code !== 'ESRCH') throw error;
-      if (readOwner() !== active) continue;
-      try {
-        fs.unlinkSync(lock);
-      } catch (error) {
-        if (error.code !== 'ENOENT') throw error;
-      }
-      continue;
-    }
-    if (Date.now() >= deadline)
-      throw new Error('Another installation is still running');
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
+function acquireInstallationLock(state) {
+  return acquireProcessLock(
+    state,
+    'companion/.install-lock',
+    15000,
+    'Another installation is still running',
+  );
 }
 
 function restoreInstallation(state) {
@@ -81,7 +36,7 @@ function restoreInstallation(state) {
     if (error.code === 'ENOENT') return;
     throw error;
   }
-  const { staging } = JSON.parse(record);
+  const { staging, hadCurrent } = JSON.parse(record);
   if (
     path.dirname(staging) !== directory ||
     !/^\.install-[\w]+$/.test(path.basename(staging))
@@ -92,6 +47,40 @@ function restoreInstallation(state) {
   if (fs.existsSync(backup)) {
     fs.rmSync(current, { recursive: true, force: true });
     fs.renameSync(backup, current);
+  } else if (hadCurrent === false) {
+    fs.rmSync(current, { recursive: true, force: true });
+  }
+  const snapshot = path.join(staging, 'native');
+  if (fs.existsSync(snapshot)) {
+    // A snapshot contains only the entrypoints this activation can replace.
+    // Restore by copy so another interruption can restart the same recovery.
+    const entries = JSON.parse(
+      fs.readFileSync(path.join(snapshot, 'entries.json')),
+    );
+    for (const entry of entries) {
+      if (
+        !/^(?:plugin\/(?:manifest\.json|plugin-runtime\.js|ui\.html)|(?:dev|widget)\/(?:manifest\.json|code\.js|ui\.html))$/.test(
+          entry,
+        )
+      )
+        throw new Error('Invalid native recovery entry');
+      const saved = path.join(snapshot, entry),
+        file = path.join(state, entry);
+      if (!fs.existsSync(saved)) fs.rmSync(file, { force: true });
+      else {
+        fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+        const temporary =
+          file + '.' + require('node:crypto').randomUUID() + '.tmp';
+        try {
+          fs.copyFileSync(saved, temporary, fs.constants.COPYFILE_EXCL);
+          fs.renameSync(temporary, file);
+        } finally {
+          fs.rmSync(temporary, { force: true });
+        }
+      }
+    }
+  } else if (fs.existsSync(current)) {
+    // Activation journals from versions before native entrypoint snapshots.
     for (const name of ['manifest.json', 'plugin-runtime.js', 'ui.html'])
       fs.copyFileSync(
         path.join(current, name),
@@ -187,6 +176,12 @@ async function stopForMaintenance() {
     if (/not running/.test(error.message)) return;
     throw error;
   }
+  if (
+    !Number.isSafeInteger(connection.pid) ||
+    connection.pid <= 1 ||
+    connection.pid === process.pid
+  )
+    throw new Error('No managed companion PID is available');
   try {
     await bridgeRequest(connection, '/v1/maintenance', {
       method: 'POST',
@@ -195,14 +190,19 @@ async function stopForMaintenance() {
   } catch (error) {
     if (error.statusCode === 409) error.code = 'UPDATE_BUSY';
     if (error.statusCode) throw error;
-    return;
+    try {
+      process.kill(connection.pid, 0);
+    } catch (probe) {
+      if (probe.code === 'ESRCH') return;
+      throw probe;
+    }
+    throw Object.assign(
+      new Error('Cannot confirm that the running companion is idle', {
+        cause: error,
+      }),
+      { code: 'UPDATE_BUSY' },
+    );
   }
-  if (
-    !Number.isSafeInteger(connection.pid) ||
-    connection.pid <= 1 ||
-    connection.pid === process.pid
-  )
-    throw new Error('No managed companion PID is available');
   process.kill(connection.pid, 'SIGTERM');
   const deadline = Date.now() + 3000;
   while (Date.now() < deadline) {
@@ -263,6 +263,31 @@ function reusableInstallation(current, requested) {
   // the observation and sends the caller through the shared critical section.
   return busy() || generation() !== before ? null : ready;
 }
+function snapshotEntrypoints(state, next, staging) {
+  const entries = [
+    'plugin/manifest.json',
+    'plugin/plugin-runtime.js',
+    'plugin/ui.html',
+  ];
+  for (const profile of ['dev', 'widget']) {
+    if (fs.existsSync(path.join(next, 'profiles', profile, 'manifest.json')))
+      entries.push(
+        ...['manifest.json', 'code.js', 'ui.html'].map(
+          (name) => profile + '/' + name,
+        ),
+      );
+  }
+  const snapshot = path.join(staging, 'native');
+  for (const entry of entries) {
+    const file = path.join(state, entry);
+    if (!fs.existsSync(file)) continue;
+    const saved = path.join(snapshot, entry);
+    privateDirectory(path.dirname(saved));
+    fs.copyFileSync(file, saved, fs.constants.COPYFILE_EXCL);
+  }
+  writePrivateJson(path.join(snapshot, 'entries.json'), entries);
+}
+
 async function prepareManagedCompanion(source, options = {}) {
   const requested = receiptFor(source),
     current = currentPath();
@@ -282,6 +307,7 @@ async function prepareManagedCompanion(source, options = {}) {
     }
     const staging = fs.mkdtempSync(path.join(directory(), '.install-'));
     const backup = path.join(staging, 'replaced');
+    const journal = path.join(directory(), '.activation.json');
     try {
       const next = path.join(staging, 'next');
       for (const file of Object.keys(requested.files)) {
@@ -296,8 +322,11 @@ async function prepareManagedCompanion(source, options = {}) {
       writePrivateJson(path.join(next, '.installation.json'), requested);
       verify(next);
       await stopForMaintenance();
-      const journal = path.join(directory(), '.activation.json');
-      writePrivateJson(journal, { staging });
+      snapshotEntrypoints(bridgeStateDirectory(), next, staging);
+      writePrivateJson(journal, {
+        staging,
+        hadCurrent: fs.existsSync(current),
+      });
       try {
         if (fs.existsSync(current)) fs.renameSync(current, backup);
         fs.renameSync(next, current);
@@ -305,20 +334,15 @@ async function prepareManagedCompanion(source, options = {}) {
         if (options.healthCheck) await verifyActivation(requested.version);
         fs.unlinkSync(journal);
       } catch (error) {
-        try {
-          await stopForMaintenance();
-        } catch {}
-        if (fs.existsSync(backup)) {
-          fs.rmSync(current, { recursive: true, force: true });
-          fs.renameSync(backup, current);
-          installPlugin(current);
-        }
-        fs.rmSync(journal, { force: true });
+        await stopForMaintenance();
+        restoreInstallation(bridgeStateDirectory());
         throw error;
       }
       return { version: requested.version, changed: true };
     } finally {
-      fs.rmSync(staging, { recursive: true, force: true });
+      // A failed rollback still owns these bytes and can resume under the lock.
+      if (!fs.existsSync(journal))
+        fs.rmSync(staging, { recursive: true, force: true });
     }
   } finally {
     lock.close();

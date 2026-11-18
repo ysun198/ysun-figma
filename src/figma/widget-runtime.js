@@ -27,10 +27,13 @@ function startWidgetPlugin() {
     );
   }
   widget.register(function YsunWidget() {
+    const widgetNodeId = widget.useWidgetNodeId
+      ? widget.useWidgetNodeId()
+      : widget.useWidgetId();
     widget.useEffect(() => {
       if (!started) {
         started = true;
-        startNativePlugin();
+        startNativePlugin(widgetNodeId);
         widget.waitForTask(new Promise(() => {}));
       }
     });

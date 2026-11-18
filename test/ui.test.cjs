@@ -208,7 +208,10 @@ test('an uncertain receipt retains its identity and cannot be cleared by re-pair
   await context.deliverReceipt();
   await done;
   assert.equal(vm.runInContext('direct.blockedJobId', context), 'native-error');
-  assert.match(elements.get('status').textContent, /Native reaction failed/);
+  assert.equal(
+    elements.get('status').textContent,
+    '请回到 Codex 核对上次操作。',
+  );
   await context.run();
   assert.equal(messages.filter((m) => m.type === 'RUN_JOB').length, 1);
   vm.runInContext('byId("pair-code").value="new-code"', context);
@@ -216,4 +219,152 @@ test('an uncertain receipt retains its identity and cannot be cleared by re-pair
   assert.equal(vm.runInContext('direct.clientId', context), id);
   assert.equal(vm.runInContext('direct.blockedJobId', context), 'native-error');
   assert.equal(vm.runInContext('direct.enabled', context), false);
+});
+
+test('multi-export delivery resumes at the last confirmed file and retries only the final receipt after all files are saved', async () => {
+  const elements = new Map(),
+    messages = [],
+    uploads = [],
+    receipts = [];
+  const parent = { postMessage: (m) => messages.push(m.pluginMessage) };
+  let failFile = true,
+    failReceipt = true;
+  const response = (status, value) => ({
+    status,
+    ok: status === 200,
+    json: async () => value,
+  });
+  const context = vm.createContext({
+    parent,
+    crypto: require('node:crypto').webcrypto,
+    AbortController,
+    setTimeout,
+    clearTimeout,
+    addEventListener() {},
+    document: {
+      getElementById(id) {
+        if (!elements.has(id))
+          elements.set(id, { dataset: {}, addEventListener() {} });
+        return elements.get(id);
+      },
+    },
+    async fetch(url, options) {
+      if (url.endsWith('/result')) {
+        receipts.push(JSON.parse(options.body));
+        if (failReceipt) {
+          failReceipt = false;
+          return response(409, { error: 'fixture receipt error' });
+        }
+        return response(200, {});
+      }
+      const name = url.split('/').at(-1);
+      uploads.push([name, Array.from(options.body)]);
+      if (name === 'b.png' && failFile) {
+        failFile = false;
+        return response(409, { error: 'fixture export error' });
+      }
+      return response(200, { name, size: 1, sha256: name });
+    },
+  });
+  vm.runInContext(
+    fs.readFileSync(path.join(__dirname, '../src/figma/ui.js'), 'utf8'),
+    context,
+  );
+  const done = context
+    .execute({ id: 'partial-export', kind: 'exec', options: {} })
+    .catch(() => {});
+  const files = ['a.png', 'b.png'].map((name, i) => ({
+    name,
+    mimeType: 'image/png',
+    bytes: new Uint8Array([i + 1]),
+  }));
+  context.result = {
+    type: 'APPLIED',
+    requestId: 'partial-export',
+    result: { exports: files },
+  };
+  vm.runInContext('direct.pending.message=result', context);
+  await context.deliverReceipt();
+  assert.equal(
+    elements.get('status').textContent,
+    '结果已保留，可以重新发送。',
+  );
+  await context.deliverReceipt();
+  await context.deliverReceipt();
+  await done;
+  assert.deepEqual(uploads, [
+    ['a.png', [1]],
+    ['b.png', [2]],
+    ['b.png', [2]],
+  ]);
+  assert.deepEqual(receipts[0], receipts[1]);
+  assert(files.every((f) => f.bytes instanceof Uint8Array));
+  assert.equal(messages.filter((m) => m.type === 'RUN_JOB').length, 1);
+  assert.equal(
+    messages.filter((m) => m.type === 'RECEIPT_DELIVERED').length,
+    1,
+  );
+});
+
+test('revoking a grant stops a late poll from starting a native write', async () => {
+  const poll = Promise.withResolvers(),
+    removal = Promise.withResolvers();
+  const messages = [],
+    elements = new Map();
+  let deletes = 0;
+  const context = vm.createContext({
+    parent: {
+      postMessage: ({ pluginMessage }) => messages.push(pluginMessage),
+    },
+    crypto: require('node:crypto').webcrypto,
+    AbortController,
+    setTimeout,
+    clearTimeout,
+    clearInterval,
+    addEventListener() {},
+    document: {
+      getElementById(id) {
+        if (!elements.has(id))
+          elements.set(id, {
+            dataset: {},
+            addEventListener(key, fn) {
+              this[key] = fn;
+            },
+          });
+        return elements.get(id);
+      },
+    },
+    async fetch(url, { method }) {
+      if (method === 'DELETE') {
+        deletes++;
+        return removal.promise;
+      }
+      assert.match(url, /jobs\/next/);
+      return poll.promise;
+    },
+  });
+  vm.runInContext(
+    fs.readFileSync(path.join(__dirname, '../src/figma/ui.js'), 'utf8'),
+    context,
+  );
+  const done = vm.runInContext(
+    'direct.token="test"; direct.grantToken="grant"; run()',
+    context,
+  );
+  const revoking = elements.get('disconnect').click();
+  await elements.get('disconnect').click();
+  assert.equal(deletes, 1);
+  poll.resolve({
+    ok: true,
+    status: 200,
+    json: async () => ({ job: { id: 'already-claimed' } }),
+  });
+  await done;
+  assert.equal(messages.filter((m) => m.type === 'RUN_JOB').length, 0);
+  removal.resolve({ ok: true, status: 200, json: async () => ({}) });
+  await revoking;
+  assert.deepEqual(
+    messages.slice(-2).map((m) => m.type),
+    ['CLEAR_CONNECTION', 'CLOSE'],
+  );
 });
