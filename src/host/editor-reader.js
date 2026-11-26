@@ -69,6 +69,47 @@ function createEditorReader(options = {}) {
     )
       throw new Error('desktop_file_identity_changed');
   }
+  function editorLoaded(state) {
+    if (typeof state.isFullscreenDocumentLoaded === 'boolean')
+      return state.isFullscreenDocumentLoaded;
+    if (typeof state.isOpenFileLoadedFromLiveGraph !== 'boolean') return null;
+    // The live graph can supply file metadata before the editor has a canvas.
+    return (
+      state.isOpenFileLoadedFromLiveGraph &&
+      state.openFile?.key === fileKey &&
+      document.readyState === 'complete' &&
+      [...document.querySelectorAll('canvas')].some(
+        (canvas) =>
+          canvas.width > 0 &&
+          canvas.height > 0 &&
+          canvas.clientWidth > 0 &&
+          canvas.clientHeight > 0,
+      )
+    );
+  }
+  function localExtensions(state) {
+    if (state.localPlugins) return state.localPlugins;
+    // New editors get local extensions from the registry used by the app menu.
+    const lookup =
+      /\blocalExtensions\s*:\s*([\w$]+)\.([\w$]+)\.get\(([\w$]+)\.([\w$]+)\)/;
+    const [, factory] = uniqueFactory(
+      (source) =>
+        source.includes('allSavedPlugins:') &&
+        source.includes('recentlyUsedPlugins:') &&
+        lookup.test(source),
+      'state',
+    );
+    const source = String(factory);
+    const [, storeAlias, storeExport, keyAlias, keyExport] =
+      source.match(lookup);
+    const registry = require(dependency(source, storeAlias, 'state'))?.[
+      storeExport
+    ];
+    const key = require(dependency(source, keyAlias, 'state'))?.[keyExport];
+    if (typeof registry?.get !== 'function' || !key)
+      throw new Error('desktop_state_schema_changed');
+    return registry.get(key) || {};
+  }
   function launcher() {
     const [, entry] = uniqueFactory(
       (source) =>
@@ -141,7 +182,7 @@ function createEditorReader(options = {}) {
   }
   function startWidget(nodeId) {
     check();
-    const plugins = Object.values(store.getState().localPlugins || {}).filter(
+    const plugins = Object.values(localExtensions(store.getState())).filter(
       (p) => p.plugin_id === pluginId && p.manifest?.containsWidget === true,
     );
     if (plugins.length !== 1)
@@ -208,13 +249,10 @@ function createEditorReader(options = {}) {
           typeof document.visibilityState === 'string'
             ? document.visibilityState === 'visible'
             : null,
-        editorLoaded:
-          typeof state.isFullscreenDocumentLoaded === 'boolean'
-            ? state.isFullscreenDocumentLoaded
-            : null,
+        editorLoaded: editorLoaded(state),
         openFileKey: state.openFile?.key || null,
         nativePlugin: {
-          matches: Object.values(state.localPlugins || {}).filter(
+          matches: Object.values(localExtensions(state)).filter(
             (p) => p.plugin_id === pluginId,
           ).length,
         },
@@ -238,9 +276,8 @@ function createEditorReader(options = {}) {
     start() {
       check();
       const state = store.getState();
-      if (!state.isFullscreenDocumentLoaded)
-        throw new Error('desktop_editor_not_ready');
-      const plugins = Object.values(state.localPlugins || {}).filter(
+      if (!editorLoaded(state)) throw new Error('desktop_editor_not_ready');
+      const plugins = Object.values(localExtensions(state)).filter(
         (p) => p.plugin_id === pluginId,
       );
       if (plugins.length !== 1)

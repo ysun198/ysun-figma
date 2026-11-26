@@ -10,6 +10,7 @@ function editor(prepare = () => {}) {
     localPlugins: { 4: { plugin_id: '1675211139174009382', localFileId: 4 } },
     saveStatus: { hasUnsavedChanges: false, error: 0 },
   };
+  const document = { readyState: 'complete', querySelectorAll: () => [] };
   const runs = [];
   let permitted = true;
   const runner = {
@@ -32,7 +33,7 @@ function editor(prepare = () => {}) {
     301: { JT: () => ({ canRun: permitted, message: 'account denied' }) },
     401: { R0: { instance: runner } },
   };
-  prepare({ factories, modules, factory, state, runner });
+  prepare({ factories, modules, factory, state, runner, document });
   const chunks = [[[], factories]];
   chunks.push = function (item) {
     Array.prototype.push.call(this, item);
@@ -55,7 +56,7 @@ function editor(prepare = () => {}) {
         },
       },
       location,
-      document: { readyState: 'complete' },
+      document,
       URL,
       console,
     },
@@ -245,6 +246,58 @@ test('native identity accepts viewport query changes, rejects file changes and d
   assert.equal(f.reader.status().editorLoaded, false);
   f.state.openFile = { key: 'OtherFile12' };
   assert.throws(() => f.reader.status(), /identity_changed/);
+});
+test('a live-graph editor without the legacy flag waits for its rendered canvas', () => {
+  const canvas = { width: 100, height: 100, clientWidth: 0, clientHeight: 100 };
+  const f = editor(({ state, document }) => {
+    delete state.isFullscreenDocumentLoaded;
+    document.querySelectorAll = (selector) => {
+      assert.equal(selector, 'canvas');
+      return [canvas];
+    };
+  });
+  assert.equal(f.reader.status().editorLoaded, null);
+  f.state.isOpenFileLoadedFromLiveGraph = true;
+  assert.equal(f.reader.status().editorLoaded, false);
+  assert.throws(() => f.reader.start(), /desktop_editor_not_ready/);
+  assert.equal(f.runs.length, 0);
+
+  canvas.clientWidth = 100;
+  assert.equal(f.reader.status().editorLoaded, true);
+  assert.equal(f.reader.start().state, 'starting');
+  f.deny();
+  assert.throws(() => f.reader.start(), /desktop_plugin_not_permitted/);
+  assert.equal(f.runs.length, 1);
+
+  f.state.isFullscreenDocumentLoaded = false;
+  assert.equal(f.reader.status().editorLoaded, false);
+  assert.throws(() => f.reader.start(), /desktop_editor_not_ready/);
+});
+test('new editors read local plugin registrations from the app menu registry', () => {
+  const atom = {};
+  let registrations;
+  const f = editor(({ state, modules, factories, factory }) => {
+    registrations = state.localPlugins;
+    delete state.localPlugins;
+    factories[280] = factory(
+      '280(e,t,n){var menu=n(286),local=n(287);return {allSavedPlugins:{},recentlyUsedPlugins:[],localExtensions:menu.registry.get(local.key)}}',
+    );
+    modules[286] = {
+      registry: {
+        get(key) {
+          assert.equal(key, atom);
+          return registrations;
+        },
+      },
+    };
+    modules[287] = { key: atom };
+  });
+  assert.equal(f.reader.status().nativePlugin.matches, 1);
+  assert.equal(f.reader.start().state, 'starting');
+  assert.equal(f.runs[0].runPluginArgs.plugin.localFileId, 4);
+  registrations = {};
+  assert.equal(f.reader.status().nativePlugin.matches, 0);
+  assert.throws(() => f.reader.start(), /desktop_plugin_not_imported/);
 });
 for (const booting of [false, true])
   test(`new native pairing waits for readiness and uses only the owned context without GUI: ${booting ? 'cold startup' : 'ready'}`, async () => {
